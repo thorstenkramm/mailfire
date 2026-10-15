@@ -45,11 +45,13 @@ func TestSendHTMLFragment(t *testing.T) {
 			t.Errorf("html part missing template frame %q", want)
 		}
 	}
-	// The fragment is inserted verbatim: inline styles and colors in
-	// --html input survive (template inheritance contract).
+	// The fragment's markup survives inlining: its own inline style wins
+	// over the template rules now merged into the same attribute, and the
+	// text content is intact (entities are re-encoded by the inliner, so
+	// &quot; comes back as &#34;).
 	for _, want := range []string{
-		`<h2 style="color:#b23b12;">Deploy <em>done</em></h2>`,
-		`<p>Host <strong>web01</strong>: all &quot;green&quot; &amp; running</p>`,
+		`<h2 style="font-weight:bold;margin:36px 0 12px;font-size:22px;line-height:29px;color:#b23b12">Deploy <em>done</em></h2>`,
+		`<p style="margin:0 0 18px">Host <strong>web01</strong>: all &#34;green&#34; &amp; running</p>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("html part missing fragment %q", want)
@@ -130,7 +132,7 @@ func TestSendHTMLFromFile(t *testing.T) {
 	}
 	req := m.LastRequest(t)
 	html, text := req.Field("html"), req.Field("text")
-	if !strings.Contains(html, `<p>from a <b>file</b></p>`) ||
+	if !strings.Contains(html, `<p style="margin:0 0 18px">from a <b>file</b></p>`) ||
 		!strings.Contains(html, `class="content"`) {
 		t.Errorf("html part missing fragment or template frame:\n%s", html)
 	}

@@ -475,24 +475,27 @@ See [the dashboard](https://example.com/dash).
 	}
 
 	// The HTML part is the rendered Markdown wrapped in the base
-	// template (FR-7).
+	// template (FR-7) with the template's CSS inlined into style
+	// attributes; the <style> block itself stays in place.
 	for _, want := range []string{
 		// template frame
 		`<html lang="en"`,
 		`<title>Backup report</title>`,
 		`<!--[if mso]>`,
 		`class="content"`,
-		// rendered markdown
-		"<h1>Report</h1>",
+		// the <style> block survives inlining (dark mode, small screens)
+		`@media (prefers-color-scheme: dark)`,
+		// rendered markdown, with inlined styles
+		`<h1 style="font-weight:bold;margin:0 0 20px;font-size:30px;line-height:37px;letter-spacing:-0.01em">Report</h1>`,
 		"<strong>finished</strong>",
-		"<code>files01</code>",
-		"<ul>\n<li>alpha ok</li>",
-		"<table>",
-		"<th>Host</th>",
-		"<td>beta</td>",
-		"<blockquote>",
-		`<pre><code>restic check`,
-		`<a href="https://example.com/dash">the dashboard</a>`,
+		`>files01</code>`,
+		"<ul style=\"margin:0 0 18px;padding:0 0 0 26px\">\n<li style=\"margin:0 0 6px\">alpha ok</li>",
+		"<table style=",
+		">Host</th>",
+		">beta</td>",
+		"<blockquote style=",
+		`>restic check`,
+		`<a href="https://example.com/dash" style="color:#b23b12;text-decoration:underline;text-underline-offset:2px">the dashboard</a>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("html part missing %q", want)
@@ -522,11 +525,10 @@ See [the dashboard](https://example.com/dash).
 }
 
 // TestSendMarkdownNoteGolden sends the README example with --md and
-// compares the html part byte-for-byte against the render package's
-// golden internal/render/testdata/note.html (a copy of the design preview
-// tmp/preview/note.html): the Markdown renderer produces exactly the
-// fragment that file carries. Sharing the file keeps the two tests from
-// drifting apart.
+// compares the html part byte-for-byte against testdata/note_inlined.html:
+// the render package's golden (internal/render/testdata/note.html, a copy
+// of the design preview tmp/preview/note.html) after CSS inlining. The
+// render golden stays untouched — rendering != inlining.
 func TestSendMarkdownNoteGolden(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
@@ -537,7 +539,24 @@ func TestSendMarkdownNoteGolden(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
 	}
-	testutil.GoldenString(t, "../../render/testdata/note.html", m.LastRequest(t).Field("html"))
+	html := m.LastRequest(t).Field("html")
+	testutil.GoldenString(t, "note_inlined.html", html)
+
+	// The golden's key properties, checked explicitly so the golden file
+	// itself cannot hide a regression: content elements carry inlined
+	// style attributes and the original <style> block survives with the
+	// dark-mode media query intact (FR-7).
+	for _, want := range []string{
+		`<h1 style="font-weight:bold;margin:0 0 20px;font-size:30px;line-height:37px;letter-spacing:-0.01em">`,
+		`<p style="margin:0 0 18px">`,
+		`<td class="content" style=`,
+		`  @media (prefers-color-scheme: dark) {`,
+		`    .content a { color: #ff8c5a !important; }`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("inlined html part missing %q", want)
+		}
+	}
 }
 
 // TestSendMarkdownFromFile checks that --md composes from --file input
@@ -560,9 +579,31 @@ func TestSendMarkdownFromFile(t *testing.T) {
 	if got := req.Field("text"); got != "From a file\n\nwith emphasis\n" {
 		t.Errorf("text = %q, want derived plain text", got)
 	}
-	if got := req.Field("html"); !strings.Contains(got, "<h1>From a file</h1>") ||
+	if got := req.Field("html"); !strings.Contains(got, ">From a file</h1>") ||
 		!strings.Contains(got, "<em>emphasis</em>") {
 		t.Errorf("html missing rendered markdown:\n%s", got)
+	}
+}
+
+// TestSendTxtNotInlined: --txt sends the body byte-identical as the text
+// part and never produces an html part, even if the body looks like HTML
+// with a <style> block.
+func TestSendTxtNotInlined(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	body := "<style>p { color: red; }</style>\n<p>not html, just text</p>\n"
+	code, _, stderr := runMock(t, m, body,
+		"-c", cfg, "--to", "a@example.com", "--subject", "s", "--txt")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	req := m.LastRequest(t)
+	if got := req.Field("text"); got != body {
+		t.Errorf("text = %q, want byte-identical %q", got, body)
+	}
+	if got := req.Field("html"); got != "" {
+		t.Errorf("html = %q, want empty for --txt", got)
 	}
 }
 

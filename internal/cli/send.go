@@ -11,6 +11,7 @@ import (
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/htmltext"
+	"github.com/thorstenkramm/mailfire/internal/inliner"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/markdown"
 	"github.com/thorstenkramm/mailfire/internal/render"
@@ -99,20 +100,31 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 	case "md":
 		// Multipart/alternative (FR-1): the Markdown rendered into the
 		// base template as the HTML part, plus a plain-text part derived
-		// from the same source.
-		msg.HTML = render.Base(render.Data{
+		// from the same source. The template's CSS is inlined after
+		// rendering (FR-7).
+		html, err := inliner.Inline(render.Base(render.Data{
 			Subject: opts.Subject,
 			Body:    render.HTML(markdown.HTML(body)),
-		})
+		}))
+		if err != nil {
+			return nil, err
+		}
+		msg.HTML = html
 		msg.Text = markdown.Text(body)
 	case "html":
 		// The fragment is trusted markup and goes into the base
 		// template as is — inline styles and colors survive (the
-		// template sets text color once on .content and inherits).
-		msg.HTML = render.Base(render.Data{
+		// template sets text color once on .content and inherits, and
+		// existing style attributes win over inlined rules). The
+		// template's CSS is inlined after rendering (FR-7).
+		html, err := inliner.Inline(render.Base(render.Data{
 			Subject: opts.Subject,
 			Body:    render.HTML(body),
-		})
+		}))
+		if err != nil {
+			return nil, err
+		}
+		msg.HTML = html
 		msg.Text = htmltext.Text(body)
 	case "html-raw":
 		// A complete document, sent byte-identical: no template, no

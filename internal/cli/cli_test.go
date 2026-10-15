@@ -11,18 +11,6 @@ import (
 
 var testInfo = BuildInfo{Version: "1.2.3", Commit: "abc1234", BuildDate: "2026-10-15"}
 
-// writeTestConfig writes a minimal valid config to a temp file and returns
-// its path.
-func writeTestConfig(t *testing.T) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "mailfire.conf")
-	content := []byte("[mailgun]\napi_key = \"test-key-not-real\"\nregion = \"us\"\n\n[sending]\ndomain = \"example.com\"\n")
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		t.Fatalf("writing test config: %v", err)
-	}
-	return path
-}
-
 // run executes Run with captured output and returns exit code, stdout, stderr.
 func run(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
