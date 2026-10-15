@@ -28,8 +28,10 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
 		return ExitUsage
 	}
-	// Attachment files stay open until the message is encoded.
+	// Attachment and inline-image files stay open until the message is
+	// encoded.
 	defer closeFiles(msg.Attachments)
+	defer closeFiles(msg.Inline)
 
 	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, rc.clientOpts...)
 	if err != nil {
@@ -106,16 +108,31 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		// Multipart/alternative (FR-1): the Markdown rendered into the
 		// base template as the HTML part, plus a plain-text part derived
 		// from the same source. The template's CSS is inlined after
-		// rendering (FR-7).
+		// rendering (FR-7). Local images become inline parts referenced
+		// via cid: (Decision Q4); the cid: rewrite happens on the
+		// Markdown fragment before inlining, and the inliner only
+		// touches style attributes, so the cid: srcs survive.
+		cids, inline, err := inlineImages(body, opts.File)
+		if err != nil {
+			return nil, err
+		}
+		fragment := markdown.HTML(body)
+		if cids != nil {
+			fragment = markdown.HTMLWithImages(body, func(dest string) string {
+				return cids[dest]
+			})
+		}
 		html, err := inliner.Inline(render.Base(render.Data{
 			Subject: opts.Subject,
-			Body:    render.HTML(markdown.HTML(body)),
+			Body:    render.HTML(fragment),
 		}))
 		if err != nil {
+			closeFiles(inline)
 			return nil, err
 		}
 		msg.HTML = html
 		msg.Text = markdown.Text(body)
+		msg.Inline = inline
 	case "html":
 		// The fragment is trusted markup and goes into the base
 		// template as is — inline styles and colors survive (the
@@ -139,6 +156,11 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 	default:
 		msg.Text = body
 	}
+	// Local image srcs in --html and --html-raw bodies are left
+	// untouched: cid: rewriting is scoped to --md (task 10). --html-raw
+	// must be sent byte-identical, so rewriting is impossible there by
+	// definition, and both formats are trusted markup whose author can
+	// attach files explicitly with --attach.
 
 	// Opened last, so no earlier failure has to close them; from here on
 	// the caller owns the handles.
@@ -185,26 +207,38 @@ func openAttachments(paths []string) ([]mailgun.File, error) {
 // the open handle is the authoritative check against the path changing
 // in between.
 func openAttachment(p string) (*os.File, error) {
+	return openRegular("attachment", p)
+}
+
+// openImage opens one inline image path; the rules are exactly those of
+// attachments, only the error prefix differs.
+func openImage(p string) (*os.File, error) {
+	return openRegular("image", p)
+}
+
+// openRegular opens path (~ expanded) for streaming and accepts only
+// regular files; kind ("attachment", "image") prefixes the errors.
+func openRegular(kind, p string) (*os.File, error) {
 	if p == "" {
-		return nil, errors.New("attachment: empty path")
+		return nil, fmt.Errorf("%s: empty path", kind)
 	}
 	path := config.ExpandPath(p)
 	fi, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("attachment %s: %v", path, err)
+		return nil, fmt.Errorf("%s %s: %v", kind, path, err)
 	}
-	if err := checkRegular(path, fi); err != nil {
+	if err := checkRegular(kind, path, fi); err != nil {
 		return nil, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("attachment %s: %v", path, err)
+		return nil, fmt.Errorf("%s %s: %v", kind, path, err)
 	}
 	fi, err = f.Stat()
 	if err == nil {
-		err = checkRegular(path, fi)
+		err = checkRegular(kind, path, fi)
 	} else {
-		err = fmt.Errorf("attachment %s: %v", path, err)
+		err = fmt.Errorf("%s %s: %v", kind, path, err)
 	}
 	if err != nil {
 		f.Close()
@@ -214,12 +248,12 @@ func openAttachment(p string) (*os.File, error) {
 }
 
 // checkRegular refuses directories, devices, FIFOs and sockets.
-func checkRegular(path string, fi os.FileInfo) error {
+func checkRegular(kind, path string, fi os.FileInfo) error {
 	switch {
 	case fi.IsDir():
-		return fmt.Errorf("attachment %s: is a directory, not a file", path)
+		return fmt.Errorf("%s %s: is a directory, not a file", kind, path)
 	case !fi.Mode().IsRegular():
-		return fmt.Errorf("attachment %s: not a regular file", path)
+		return fmt.Errorf("%s %s: not a regular file", kind, path)
 	}
 	return nil
 }

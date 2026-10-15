@@ -236,8 +236,8 @@ func (w *writer) inline(n ast.Node) {
 			// Autolinks display as the URL itself; keep it bare.
 			w.buf.Write(c.Label(w.src))
 		case *ast.Image:
-			// The alt text is the readable description. (Inline image
-			// attachments via cid: are task 10.)
+			// The alt text is the readable description; the image file
+			// itself goes into the HTML part as an inline cid: part.
 			w.inline(c)
 		default:
 			// Emphasis, strikethrough, code spans and friends: recurse
