@@ -8,13 +8,16 @@ import (
 	"testing"
 )
 
-// updateGolden is registered for every test binary importing testutil:
-// `go test -update` rewrites golden files with the actual output.
+// updateGolden is registered only in test binaries importing testutil:
+// `go test ./internal/<pkg> -update` rewrites that package's goldens.
+// Do not pass -update to `go test ./...`: packages that do not import
+// testutil reject the unknown flag.
 var updateGolden = flag.Bool("update", false, "rewrite golden files with actual output")
 
 // Golden compares got with the golden file testdata/<name> (relative to
 // the calling test's package directory). With -update the file is
-// rewritten first, so `go test ./... -update` refreshes all goldens.
+// rewritten first. Goldens are compared byte-for-byte; .gitattributes
+// marks *.golden -text so Windows checkouts keep their line endings.
 func Golden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", name)

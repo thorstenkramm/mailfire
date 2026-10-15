@@ -142,6 +142,55 @@ func TestMockMailgun(t *testing.T) {
 		}
 	})
 
+	t.Run("request parsing edge cases", func(t *testing.T) {
+		cases := []struct {
+			name        string
+			contentType string
+			body        string
+			wantFields  bool
+			wantErr     bool
+		}{
+			{"no content type", "", "raw", false, false},
+			{"non-multipart", "application/json", `{"a":1}`, false, false},
+			{"missing boundary", "multipart/form-data", "--x\r\n", true, true},
+			{"truncated multipart", "multipart/form-data; boundary=x",
+				"--x\r\nContent-Disposition: form-data; name=\"subject\"\r\n\r\nhi", true, true},
+			{"valid multipart", "multipart/form-data; boundary=x",
+				"--x\r\nContent-Disposition: form-data; name=\"subject\"\r\n\r\nhi\r\n--x--\r\n", true, false},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				m := testutil.NewMockMailgun(t)
+				req, err := http.NewRequest(http.MethodPost, m.URL()+"/v3/"+m.Domain+"/messages",
+					strings.NewReader(tc.body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.contentType != "" {
+					req.Header.Set("Content-Type", tc.contentType)
+				}
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_ = resp.Body.Close()
+				rec := m.LastRequest(t)
+				if string(rec.Body) != tc.body {
+					t.Errorf("Body = %q, want %q", rec.Body, tc.body)
+				}
+				if (rec.Fields != nil) != tc.wantFields {
+					t.Errorf("Fields = %v, want parsed=%v", rec.Fields, tc.wantFields)
+				}
+				if (rec.ParseErr != nil) != tc.wantErr {
+					t.Errorf("ParseErr = %v, want error=%v", rec.ParseErr, tc.wantErr)
+				}
+				if tc.name == "valid multipart" && rec.Field("subject") != "hi" {
+					t.Errorf("subject = %q, want hi", rec.Field("subject"))
+				}
+			})
+		}
+	})
+
 	t.Run("custom handler still records", func(t *testing.T) {
 		m := testutil.NewMockMailgun(t)
 		m.SendHandler = func(w http.ResponseWriter, r *http.Request) {

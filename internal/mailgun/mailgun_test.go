@@ -22,12 +22,18 @@ const (
 )
 
 // newTestClient returns a client pointed at a server running handler.
-// A *testutil.MockMailgun works as handler and records the requests.
+// A *testutil.MockMailgun is used via its own server (m.URL()).
 func newTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(srv.URL))
+	var baseURL string
+	if m, ok := handler.(*testutil.MockMailgun); ok {
+		baseURL = m.URL()
+	} else {
+		srv := httptest.NewServer(handler)
+		t.Cleanup(srv.Close)
+		baseURL = srv.URL
+	}
+	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(baseURL))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -149,6 +155,9 @@ func TestSendMessageSuccess(t *testing.T) {
 	}
 
 	captured := m.LastRequest(t)
+	if captured.ParseErr != nil {
+		t.Fatalf("mock could not parse the multipart body: %v", captured.ParseErr)
+	}
 	if captured.Method != http.MethodPost {
 		t.Errorf("method = %q, want POST", captured.Method)
 	}
@@ -702,6 +711,9 @@ func TestLargeAttachmentStreamedAndSniffed(t *testing.T) {
 		t.Fatalf("SendMessage: %v", err)
 	}
 	got := m.LastRequest(t)
+	if got.ParseErr != nil {
+		t.Fatalf("mock could not parse the multipart body: %v", got.ParseErr)
+	}
 	if len(got.Files) != 3 {
 		t.Fatalf("got %d files, want 3", len(got.Files))
 	}

@@ -1,5 +1,5 @@
 // Package testutil provides shared test infrastructure for mailfire: a
-// programmable mock of the Mailgun v3 API (mock.go) and golden-file
+// programmable mock of the Mailgun v3 API (mailgun.go) and golden-file
 // helpers (golden.go).
 //
 // The package is imported by tests only; none of it ships in the binary.
@@ -7,6 +7,7 @@ package testutil
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -29,7 +30,9 @@ type RecordedFile struct {
 
 // RecordedRequest captures one HTTP request received by a MockMailgun.
 // Multipart/form-data bodies (message sends) are parsed into Fields and
-// Files; Body always holds the raw request body.
+// Files; Body always holds the raw request body. ParseErr is set when a
+// multipart body could not be parsed completely, so a test can tell a
+// client encoding bug from a missing field.
 type RecordedRequest struct {
 	Method   string
 	Path     string
@@ -39,6 +42,7 @@ type RecordedRequest struct {
 	Body     []byte
 	Fields   map[string][]string // multipart form fields, in order per name
 	Files    []RecordedFile      // multipart file parts, in order
+	ParseErr error               // body read or multipart parse failure
 }
 
 // Field returns the first value of multipart form field name, or "".
@@ -167,9 +171,6 @@ func (m *MockMailgun) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rec := recordRequest(r)
 	m.mu.Lock()
 	m.requests = append(m.requests, rec)
-	m.mu.Unlock()
-
-	m.mu.Lock()
 	sendResp, domainResp := m.SendResponse, m.DomainResponse
 	sendH, domainH := m.SendHandler, m.DomainHandler
 	m.mu.Unlock()
@@ -193,8 +194,9 @@ func (m *MockMailgun) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordRequest reads the whole body, parsing multipart/form-data into
-// fields and files. Parse failures leave Fields/Files empty; Body always
-// holds the raw bytes.
+// fields and files. Bodies without a multipart Content-Type are recorded
+// raw only. On a parse failure the parts read so far are kept and
+// ParseErr is set; Body always holds the raw bytes received.
 func recordRequest(r *http.Request) RecordedRequest {
 	rec := RecordedRequest{
 		Method: r.Method,
@@ -203,25 +205,34 @@ func recordRequest(r *http.Request) RecordedRequest {
 	}
 	rec.User, rec.Password, _ = r.BasicAuth()
 	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		body = nil
-	}
 	rec.Body = body
+	if err != nil {
+		rec.ParseErr = fmt.Errorf("reading body: %w", err)
+		return rec
+	}
 
-	ct := r.Header.Get("Content-Type")
-	mediaType, params, err := mime.ParseMediaType(ct)
-	if err != nil || !strings.HasPrefix(mediaType, "multipart/form-data") {
+	mediaType, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "multipart/form-data" {
 		return rec
 	}
 	rec.Fields = map[string][]string{}
+	if params["boundary"] == "" {
+		rec.ParseErr = errors.New("multipart/form-data without boundary")
+		return rec
+	}
 	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
 	for {
 		part, err := mr.NextPart()
-		if err != nil { // io.EOF or a malformed body: stop either way
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			rec.ParseErr = fmt.Errorf("multipart: %w", err)
 			break
 		}
 		data, err := io.ReadAll(part)
 		if err != nil {
+			rec.ParseErr = fmt.Errorf("multipart part %q: %w", part.FormName(), err)
 			break
 		}
 		if fn := part.FileName(); fn != "" {

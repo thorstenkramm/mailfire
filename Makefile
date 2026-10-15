@@ -20,7 +20,7 @@ lint:
 	go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
 
 coverage:
-	go test -coverprofile=coverage.out ./...
+	go test -coverprofile=coverage.out $$(go list ./... | grep -v /internal/testutil)
 	go tool cover -func=coverage.out
 	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%", "", $$3); print $$3}'); \
 	echo "total coverage: $$total% (minimum $(COVERAGE_MIN)%)"; \
