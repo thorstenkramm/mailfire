@@ -7,9 +7,17 @@
 // strikethrough and autolinks (extension.Linkify), and the typographer
 // extension for smart punctuation — the design preview
 // (tmp/preview/note.html) renders the README example with “It&rsquo;s”.
+//
+// goldmark runs in its default safe mode (no html.WithUnsafe): raw HTML in
+// the Markdown source is replaced by "<!-- raw HTML omitted -->" and links
+// with dangerous schemes (javascript:, vbscript:, file:, non-image data:)
+// lose their href. Markdown input therefore never injects markup into the
+// base template; callers wanting raw HTML use --html or --html-raw.
+// Input is normalized to LF line endings before parsing.
 package markdown
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"html"
@@ -19,6 +27,7 @@ import (
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
 	extast "github.com/yuin/goldmark/extension/ast"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/text"
 )
 
@@ -38,7 +47,7 @@ var md = goldmark.New(goldmark.WithExtensions(
 // cannot fail (same reasoning as render.Base).
 func HTML(src string) string {
 	var buf bytes.Buffer
-	_ = md.Convert([]byte(src), &buf)
+	_ = md.Convert([]byte(normalize(src)), &buf)
 	return buf.String()
 }
 
@@ -47,10 +56,28 @@ func HTML(src string) string {
 // and lists, quotes and tables keep a simple text layout. The result
 // ends with exactly one newline.
 func Text(src string) string {
+	src = normalize(src)
 	doc := md.Parser().Parse(text.NewReader([]byte(src)))
 	w := &writer{src: []byte(src)}
 	w.blocks(doc)
 	return strings.TrimRight(w.buf.String(), "\n") + "\n"
+}
+
+// normalize converts CRLF line endings to LF. goldmark keeps the \r in
+// raw segments (code blocks), which would leak into both parts.
+func normalize(src string) string {
+	return strings.ReplaceAll(src, "\r\n", "\n")
+}
+
+// unescape resolves backslash escapes and entity references in a source
+// segment exactly as goldmark's HTML writer does, then decodes the
+// resulting HTML back to plain text.
+func unescape(b []byte) string {
+	var buf bytes.Buffer
+	bw := bufio.NewWriter(&buf)
+	gmhtml.DefaultWriter.Write(bw, b)
+	_ = bw.Flush()
+	return html.UnescapeString(buf.String())
 }
 
 // writer renders an AST as plain text into buf. In compact mode (tight
@@ -188,7 +215,13 @@ func (w *writer) inline(n ast.Node) {
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
 		switch c := c.(type) {
 		case *ast.Text:
-			w.buf.Write(c.Segment.Value(w.src))
+			// Raw text (code spans) is literal; everything else may
+			// carry backslash escapes and entity references.
+			if c.IsRaw() {
+				w.buf.Write(c.Segment.Value(w.src))
+			} else {
+				w.buf.WriteString(unescape(c.Segment.Value(w.src)))
+			}
 			if c.HardLineBreak() || c.SoftLineBreak() {
 				w.buf.WriteByte('\n')
 			}
@@ -216,12 +249,17 @@ func (w *writer) inline(n ast.Node) {
 }
 
 // link writes "text <url>" so the target survives without Markdown
-// syntax. Links whose text already is the URL stay bare.
+// syntax. Links whose text already is the URL stay bare. Dangerous
+// targets (javascript: and friends) are dropped, matching the HTML part.
 func (w *writer) link(n *ast.Link) {
 	inner := &writer{src: w.src}
 	inner.inline(n)
 	label := inner.buf.String()
-	dest := string(n.Destination)
+	if gmhtml.IsDangerousURL(n.Destination) {
+		w.buf.WriteString(label)
+		return
+	}
+	dest := unescape(n.Destination)
 	if label == "" || label == dest {
 		w.buf.WriteString(dest)
 		return

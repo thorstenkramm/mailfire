@@ -524,10 +524,11 @@ See [the dashboard](https://example.com/dash).
 }
 
 // TestSendMarkdownNoteGolden sends the README example with --md and
-// compares the html part byte-for-byte against the golden. The golden is
-// a copy of internal/render/testdata/note.html (itself a copy of the
-// design preview tmp/preview/note.html): the Markdown renderer produces
-// exactly the fragment that file carries.
+// compares the html part byte-for-byte against the render package's
+// golden internal/render/testdata/note.html (a copy of the design preview
+// tmp/preview/note.html): the Markdown renderer produces exactly the
+// fragment that file carries. Sharing the file keeps the two tests from
+// drifting apart.
 func TestSendMarkdownNoteGolden(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
@@ -538,7 +539,7 @@ func TestSendMarkdownNoteGolden(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
 	}
-	testutil.GoldenString(t, "note.html", m.LastRequest(t).Field("html"))
+	testutil.GoldenString(t, "../../render/testdata/note.html", m.LastRequest(t).Field("html"))
 }
 
 // TestSendMarkdownFromFile checks that --md composes from --file input

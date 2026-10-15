@@ -208,6 +208,43 @@ func TestTextLinks(t *testing.T) {
 	}
 }
 
+// TestTextEscapes covers backslash escapes and entity references, which
+// must be resolved in the text part except inside code spans, where they
+// are literal.
+func TestTextEscapes(t *testing.T) {
+	src := "a \\*b\\* &amp; &copy; &#169; `x &lt; y` [l](https://e.example/?a=1&amp;b=2)\n"
+	want := "a *b* & © © x &lt; y l <https://e.example/?a=1&b=2>\n"
+	if got := Text(src); got != want {
+		t.Errorf("Text = %q, want %q", got, want)
+	}
+}
+
+// TestCRLF verifies CRLF input yields LF-only output in both parts.
+func TestCRLF(t *testing.T) {
+	src := "# H\r\n\r\ntext\r\n\r\n```\r\ncode\r\n```\r\n"
+	if got := HTML(src); strings.Contains(got, "\r") {
+		t.Errorf("HTML contains CR: %q", got)
+	}
+	if got, want := Text(src), "H\n\ntext\n\ncode\n"; got != want {
+		t.Errorf("Text = %q, want %q", got, want)
+	}
+}
+
+// TestUnsafeInput pins goldmark's safe mode: raw HTML is omitted from the
+// HTML part and javascript: links lose their target in both parts.
+func TestUnsafeInput(t *testing.T) {
+	src := "<script>alert(1)</script>\n\nhi <img src=x onerror=alert(1)> [x](javascript:alert(1))\n"
+	got := HTML(src)
+	for _, bad := range []string{"<script", "onerror", "javascript:"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("HTML contains %q: %s", bad, got)
+		}
+	}
+	if got, want := Text(src), "hi  x\n"; got != want {
+		t.Errorf("Text = %q, want %q", got, want)
+	}
+}
+
 // TestTextEmpty keeps even degenerate input well-formed: one newline,
 // no crash.
 func TestTextEmpty(t *testing.T) {

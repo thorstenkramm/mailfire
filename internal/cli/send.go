@@ -15,9 +15,9 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
-// send composes a plain-text message from the parsed flags and the body
-// read from stdin or --file, posts it via the Mailgun client, and maps the
-// outcome to an exit code per PRD §8.
+// send composes a message (plain text, or multipart/alternative for --md)
+// from the parsed flags and the body read from stdin or --file, posts it
+// via the Mailgun client, and maps the outcome to an exit code per PRD §8.
 func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr io.Writer) int {
 	msg, err := compose(cfg, opts, rc.stdin)
 	if err != nil {
