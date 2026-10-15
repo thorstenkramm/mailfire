@@ -414,7 +414,6 @@ func TestSendNotImplementedFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"md", []string{"--md"}, "--md: not implemented yet"},
 		{"html", []string{"--html"}, "--html: not implemented yet"},
 		{"html-raw", []string{"--html-raw"}, "--html-raw: not implemented yet"},
 		{"attach", []string{"--attach", "x.pdf"}, "--attach: not implemented yet"},
@@ -433,6 +432,138 @@ func TestSendNotImplementedFlags(t *testing.T) {
 				t.Errorf("stderr missing %q:\n%s", tc.want, stderr)
 			}
 		})
+	}
+}
+
+func TestSendMarkdown(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	body := `# Report
+
+Backup **finished** for ` + "`files01`" + `.
+
+- alpha ok
+- beta retried
+
+| Host | Files |
+|------|-------|
+| alpha | 12 |
+| beta | 7 |
+
+> All good.
+
+` + "```" + `
+restic check
+` + "```" + `
+
+See [the dashboard](https://example.com/dash).
+`
+	code, stdout, stderr := runMock(t, m, body,
+		"-c", cfg, "--to", "a@example.com", "--subject", "Backup report", "--md")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	if !strings.HasPrefix(stdout, "<abc123@") {
+		t.Errorf("stdout = %q, want message ID", stdout)
+	}
+
+	req := m.LastRequest(t)
+	text, html := req.Field("text"), req.Field("html")
+
+	// Multipart/alternative: both parts present (FR-1).
+	if text == "" || html == "" {
+		t.Fatalf("multipart parts missing: text=%q html=%q", text, html)
+	}
+
+	// The HTML part is the rendered Markdown wrapped in the base
+	// template (FR-7).
+	for _, want := range []string{
+		// template frame
+		`<html lang="en"`,
+		`<title>Backup report</title>`,
+		`<!--[if mso]>`,
+		`class="content"`,
+		// rendered markdown
+		"<h1>Report</h1>",
+		"<strong>finished</strong>",
+		"<code>files01</code>",
+		"<ul>\n<li>alpha ok</li>",
+		"<table>",
+		"<th>Host</th>",
+		"<td>beta</td>",
+		"<blockquote>",
+		`<pre><code>restic check`,
+		`<a href="https://example.com/dash">the dashboard</a>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("html part missing %q", want)
+		}
+	}
+
+	// The text part is derived from the Markdown source: content kept,
+	// formatting markers stripped, links readable as "text <url>".
+	for _, want := range []string{
+		"Report",
+		"Backup finished for files01.",
+		"- alpha ok\n- beta retried",
+		"Host\tFiles",
+		"> All good.",
+		"restic check",
+		"the dashboard <https://example.com/dash>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text part missing %q:\n%s", want, text)
+		}
+	}
+	for _, marker := range []string{"#", "**", "`", "](", "| ---", "<h1>", "<table", "```"} {
+		if strings.Contains(text, marker) {
+			t.Errorf("text part contains Markdown/HTML marker %q:\n%s", marker, text)
+		}
+	}
+}
+
+// TestSendMarkdownNoteGolden sends the README example with --md and
+// compares the html part byte-for-byte against the golden. The golden is
+// a copy of internal/render/testdata/note.html (itself a copy of the
+// design preview tmp/preview/note.html): the Markdown renderer produces
+// exactly the fragment that file carries.
+func TestSendMarkdownNoteGolden(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	body := "# This is an Email\n\nIt is written in markdown. It's delivered as HTML.\n\n[mailfire](https://github.com/thorstenkramm/mailfire)\n"
+	code, _, stderr := runMock(t, m, body,
+		"-c", cfg, "--to", "user@example.com", "--subject", "Have a nice day", "--md")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	testutil.GoldenString(t, "note.html", m.LastRequest(t).Field("html"))
+}
+
+// TestSendMarkdownFromFile checks that --md composes from --file input
+// and that the text part is derived, not the raw Markdown.
+func TestSendMarkdownFromFile(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	bodyFile := filepath.Join(t.TempDir(), "body.md")
+	if err := os.WriteFile(bodyFile, []byte("# From a file\n\nwith *emphasis*\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _, stderr := runMock(t, m, "stdin is ignored",
+		"-c", cfg, "--to", "a@example.com", "--subject", "s", "--md", "--file", bodyFile)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	req := m.LastRequest(t)
+	if got := req.Field("text"); got != "From a file\n\nwith emphasis\n" {
+		t.Errorf("text = %q, want derived plain text", got)
+	}
+	if got := req.Field("html"); !strings.Contains(got, "<h1>From a file</h1>") ||
+		!strings.Contains(got, "<em>emphasis</em>") {
+		t.Errorf("html missing rendered markdown:\n%s", got)
 	}
 }
 

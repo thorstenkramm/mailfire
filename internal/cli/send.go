@@ -11,6 +11,8 @@ import (
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/markdown"
+	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
 // send composes a plain-text message from the parsed flags and the body
@@ -83,15 +85,27 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
 	}
 
-	return &mailgun.Message{
+	msg := &mailgun.Message{
 		From:     fromAddr,
 		To:       to,
 		Cc:       cc,
 		Bcc:      bcc,
 		Subject:  opts.Subject,
-		Text:     body,
 		TestMode: opts.Test,
-	}, nil
+	}
+	if opts.Format == "md" {
+		// Multipart/alternative (FR-1): the Markdown rendered into the
+		// base template as the HTML part, plus a plain-text part derived
+		// from the same source.
+		msg.HTML = render.Base(render.Data{
+			Subject: opts.Subject,
+			Body:    render.HTML(markdown.HTML(body)),
+		})
+		msg.Text = markdown.Text(body)
+	} else {
+		msg.Text = body
+	}
+	return msg, nil
 }
 
 // parseAddress validates one address and returns its normalized form:
