@@ -153,7 +153,7 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usageText)
 		return ExitUsage
 	}
-	if err := checkImplemented(&opts); err != nil {
+	if err := checkFlags(&opts); err != nil {
 		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
 		return ExitUsage
 	}
@@ -165,14 +165,20 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	return send(cfg, &opts, rc, stdout, stderr)
 }
 
-// checkImplemented rejects flags whose features land in later milestones,
-// so they fail loudly instead of being silently ignored.
-func checkImplemented(opts *SendOptions) error {
+// checkFlags rejects flag combinations that are usage errors (exit 1),
+// before any config is loaded or body read. --preheader and --footer
+// only take effect when the body is wrapped in the base template, i.e.
+// with --md or --html (FR-1); with --txt or --html-raw they would be
+// silently ignored, so they fail loudly instead.
+func checkFlags(opts *SendOptions) error {
+	if opts.Format == "md" || opts.Format == "html" {
+		return nil
+	}
 	if opts.Preheader != "" {
-		return fmt.Errorf("--preheader: not implemented yet")
+		return fmt.Errorf("--preheader requires --md or --html")
 	}
 	if opts.Footer != "" {
-		return fmt.Errorf("--footer: not implemented yet")
+		return fmt.Errorf("--footer requires --md or --html")
 	}
 	return nil
 }

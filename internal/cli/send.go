@@ -95,6 +95,17 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
 	}
 
+	// --preheader and --footer only reach here with --md or --html
+	// (checkFlags). The footer is trusted HTML read from a file and
+	// inserted into the template as is (FR-1, FR-7).
+	var footer render.HTML
+	if opts.Footer != "" {
+		footer, err = readFooter(opts.Footer)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	msg := &mailgun.Message{
 		From:     fromAddr,
 		To:       to,
@@ -123,8 +134,10 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			})
 		}
 		html, err := inliner.Inline(render.Base(render.Data{
-			Subject: opts.Subject,
-			Body:    render.HTML(fragment),
+			Subject:   opts.Subject,
+			Preheader: opts.Preheader,
+			Body:      render.HTML(fragment),
+			Footer:    footer,
 		}))
 		if err != nil {
 			closeFiles(inline)
@@ -140,8 +153,10 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		// existing style attributes win over inlined rules). The
 		// template's CSS is inlined after rendering (FR-7).
 		html, err := inliner.Inline(render.Base(render.Data{
-			Subject: opts.Subject,
-			Body:    render.HTML(body),
+			Subject:   opts.Subject,
+			Preheader: opts.Preheader,
+			Body:      render.HTML(body),
+			Footer:    footer,
 		}))
 		if err != nil {
 			return nil, err
@@ -317,6 +332,19 @@ func readBody(file string, stdin io.Reader) (string, error) {
 		return "", fmt.Errorf("reading body file %s: %v", path, err)
 	}
 	return string(data), nil
+}
+
+// readFooter reads the --footer HTML fragment (~ expanded). The content
+// is trusted markup: it is inserted into the base template as is
+// (render.HTML), never escaped. A missing or unreadable file — including
+// a directory — fails the send with the resolved path in the message.
+func readFooter(p string) (render.HTML, error) {
+	path := config.ExpandPath(p)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("reading footer file %s: %v", path, err)
+	}
+	return render.HTML(data), nil
 }
 
 // reportSendError maps a client failure to an exit code per PRD §8.

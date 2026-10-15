@@ -408,30 +408,6 @@ func TestSendClientConstructionError(t *testing.T) {
 	}
 }
 
-func TestSendNotImplementedFlags(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{"preheader", []string{"--preheader", "preview"}, "--preheader: not implemented yet"},
-		{"footer", []string{"--footer", "f.html"}, "--footer: not implemented yet"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			// No config at all: the not-implemented check must fire before
-			// config loading, as it is a usage error.
-			args := append([]string{"--to", "a@example.com", "--subject", "s"}, tc.args...)
-			code, _, stderr := run(t, args...)
-			if code != ExitUsage {
-				t.Errorf("exit = %d, want %d", code, ExitUsage)
-			}
-			if !strings.Contains(stderr, tc.want) {
-				t.Errorf("stderr missing %q:\n%s", tc.want, stderr)
-			}
-		})
-	}
-}
-
 func TestSendMarkdown(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
