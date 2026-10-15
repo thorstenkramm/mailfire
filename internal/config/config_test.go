@@ -434,3 +434,147 @@ func TestParseSize(t *testing.T) {
 		}
 	}
 }
+
+func TestParseErrorWithholdsAPIKeyDetails(t *testing.T) {
+	// go-toml quotes single characters of malformed values; none of these
+	// may reach the error for the api_key line.
+	cases := map[string]string{
+		"unquoted":          "[mailgun]\napi_key = " + testAPIKey + "\n",
+		"invalid escape":    "[mailgun]\napi_key = \"TEST\\qSECRET\"\n",
+		"trailing junk":     "[mailgun]\napi_key = \"" + testAPIKey + "\" junk\n",
+		"unterminated":      "[mailgun]\napi_key = \"" + testAPIKey + "\n",
+		"multi-line string": "[mailgun]\napi_key = \"\"\"\nTEST\\qSECRET\"\"\"\n",
+		"dotted key":        "mailgun.api_key = " + testAPIKey + "\n",
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, t.TempDir(), content)
+			err := loadErr(t, path)
+			if !strings.Contains(err, "mailgun.api_key") || !strings.Contains(err, "withheld") {
+				t.Errorf("error should name key and withhold details: %q", err)
+			}
+			if strings.Contains(err, "U+") || strings.Contains(err, "'q'") {
+				t.Errorf("error leaks a character of the value: %q", err)
+			}
+			if !strings.Contains(err, "line ") {
+				t.Errorf("error missing line number: %q", err)
+			}
+		})
+	}
+}
+
+func TestParseErrorMessages(t *testing.T) {
+	t.Run("unquoted string hints at quoting", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), "[mailgun]\napi_key = \"k\"\nregion = eu\n")
+		err := loadErr(t, path)
+		if !strings.Contains(err, "line 3") || !strings.Contains(err, "must be quoted") {
+			t.Errorf("error = %q, want line 3 and quoting hint", err)
+		}
+	})
+	t.Run("type mismatch names key and types", func(t *testing.T) {
+		path := writeConfig(t, t.TempDir(), minimalTOML+"\n[defer]\ndefer = \"no\"\n")
+		err := loadErr(t, path)
+		for _, want := range []string{"defer.defer", "wrong value type", "got TOML string", "want bool"} {
+			if !strings.Contains(err, want) {
+				t.Errorf("error = %q, missing %q", err, want)
+			}
+		}
+		if strings.Contains(err, "struct") {
+			t.Errorf("error exposes Go internals: %q", err)
+		}
+	})
+}
+
+func TestValidationErrorLineNumbers(t *testing.T) {
+	content := "[mailgun]\napi_key = \"k\"\n\n  region = \"uk\"  # wrong\n[sending]\ndomain = \"d.example.com\"\n"
+	path := writeConfig(t, t.TempDir(), content)
+	err := loadErr(t, path)
+	if !strings.Contains(err, "line 4: mailgun.region") {
+		t.Errorf("error = %q, want line 4 and key", err)
+	}
+	// A missing key has no line.
+	path = writeConfig(t, t.TempDir(), "[mailgun]\nregion = \"us\"\n")
+	if err := loadErr(t, path); strings.Contains(err, "line") {
+		t.Errorf("missing key should not report a line: %q", err)
+	}
+}
+
+func TestKeyLine(t *testing.T) {
+	data := []byte("# api_key = \"x\"\nmailgun.region = \"us\"\n[ sending ] # c\n\"from\" = \"a = b\"\n[defer]\nmax_size = \"1M\"\n")
+	for _, tc := range []struct {
+		section, key string
+		want         int
+	}{
+		{"mailgun", "api_key", 0},
+		{"mailgun", "region", 2},
+		{"sending", "from", 4},
+		{"defer", "max_size", 6},
+		{"logging", "max_size", 0},
+	} {
+		if got := keyLine(data, tc.section, tc.key); got != tc.want {
+			t.Errorf("keyLine(%s.%s) = %d, want %d", tc.section, tc.key, got, tc.want)
+		}
+	}
+}
+
+func TestLoadEmptyFile(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), "")
+	if err := loadErr(t, path); !strings.Contains(err, "mailgun.api_key") {
+		t.Errorf("error = %q, want missing api_key", err)
+	}
+}
+
+func TestLoadIgnoresUnknownKeys(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), minimalTOML+"colour = \"blue\"\n[extra]\nx = 1\n")
+	loadOK(t, path)
+}
+
+func TestLoadNormalizesLogLevel(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), minimalTOML+"\n[logging]\nloglevel = \" Debug \"\n")
+	if cfg := loadOK(t, path); cfg.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+}
+
+func TestLoadExplicitPathIsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	if err := loadErr(t, dir); !strings.Contains(err, "not a regular file") {
+		t.Errorf("error = %q, want 'not a regular file'", err)
+	}
+}
+
+func TestLoadNoHomeDeferDir(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), minimalTOML)
+	noEnv := func(string) string { return "" }
+	_, err := load(path, nil, "linux", noEnv)
+	if err == nil || !strings.Contains(err.Error(), "defer.defer_dir") {
+		t.Errorf("err = %v, want defer.defer_dir error", err)
+	}
+	// With defer disabled the missing default does not matter.
+	path = writeConfig(t, t.TempDir(), minimalTOML+"\n[defer]\ndefer = false\n")
+	if _, err := load(path, nil, "linux", noEnv); err != nil {
+		t.Errorf("defer = false: unexpected error %v", err)
+	}
+}
+
+func TestSearchPathsSkipUnsetEnv(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	if got := searchPaths("linux", noEnv); strings.Join(got, "|") != ".mailfire.conf|/etc/mailfire/mailfire.conf" {
+		t.Errorf("unix searchPaths without HOME = %v", got)
+	}
+	if got := searchPaths("windows", noEnv); strings.Join(got, "|") != ".mailfire.conf" {
+		t.Errorf("windows searchPaths without env = %v", got)
+	}
+	if got := defaultDeferDir("linux", noEnv); got != "" {
+		t.Errorf("unix defaultDeferDir without HOME = %q, want empty", got)
+	}
+	if got := defaultDeferDir("windows", noEnv); got != "" {
+		t.Errorf("windows defaultDeferDir without env = %q, want empty", got)
+	}
+}
+
+func TestParseSizeOverflow(t *testing.T) {
+	if _, err := parseSize("9999999999999G"); err == nil {
+		t.Error("parseSize overflow: want error, got nil")
+	}
+}

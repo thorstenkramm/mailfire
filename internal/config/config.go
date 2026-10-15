@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/mail"
 	"os"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -55,7 +57,8 @@ type Config struct {
 }
 
 // rawConfig mirrors the TOML schema. Everything is optional at parse time;
-// presence and validity are enforced in build.
+// presence and validity are enforced in build. Unknown keys and sections
+// are silently ignored (the PRD does not ask for strict decoding).
 type rawConfig struct {
 	Mailgun struct {
 		APIKey string `toml:"api_key"`
@@ -99,17 +102,21 @@ func load(flagPath string, stderr io.Writer, goos string, getenv func(string) st
 	}
 	var raw rawConfig
 	if err := toml.Unmarshal(data, &raw); err != nil {
-		return nil, parseError(path, err)
+		return nil, parseError(path, data, err)
 	}
-	return build(path, &raw, goos, getenv)
+	return build(path, data, &raw, goos, getenv)
 }
 
 // find resolves which config file to use.
 func find(flagPath, goos string, getenv func(string) string) (string, error) {
 	if flagPath != "" {
 		p := expandPath(flagPath, getenv)
-		if !fileExists(p) {
+		fi, err := os.Stat(p)
+		switch {
+		case err != nil:
 			return "", fmt.Errorf("config: %s: no such file", p)
+		case !fi.Mode().IsRegular():
+			return "", fmt.Errorf("config: %s: not a regular file", p)
 		}
 		return p, nil
 	}
@@ -127,60 +134,153 @@ func fileExists(p string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-// parseError formats a TOML decode error with the file name and, when
-// available, the line number.
-func parseError(path string, err error) error {
+var (
+	reTypeMismatch = regexp.MustCompile(`cannot decode TOML (\w+) into .* of type (\S+)$`)
+	reAssignment   = regexp.MustCompile(`^\s*([A-Za-z0-9_.\-"' ]+?)\s*=`)
+)
+
+// parseError formats a TOML decode error with the file name, the line
+// number and, when known, the key. go-toml's messages may quote a character
+// of the offending value (e.g. "unexpected character U+0053 'S'"), so when
+// the error lies within the api_key assignment the detail is withheld.
+func parseError(path string, data []byte, err error) error {
 	var derr *toml.DecodeError
-	if errors.As(err, &derr) {
-		row, _ := derr.Position()
-		return fmt.Errorf("config: parsing %s: line %d: %s", path, row, derr.Error())
+	if !errors.As(err, &derr) {
+		return fmt.Errorf("config: parsing %s: %w", path, err)
 	}
-	return fmt.Errorf("config: parsing %s: %w", path, err)
+	row, _ := derr.Position()
+	key := strings.Join(derr.Key(), ".")
+	msg := strings.TrimPrefix(derr.Error(), "toml: ")
+
+	if m := reTypeMismatch.FindStringSubmatch(msg); m != nil {
+		msg = fmt.Sprintf("wrong value type: got TOML %s, want %s", m[1], m[2])
+	} else if strings.Contains(msg, "at start of value") {
+		msg += ` (strings must be quoted, e.g. region = "eu")`
+	}
+	if strings.HasSuffix(key, "api_key") || assignedKeyAt(data, row) == "api_key" {
+		key = "mailgun.api_key"
+		msg = "invalid value (details withheld: the line contains the API key)"
+	}
+	if key != "" {
+		return fmt.Errorf("config: parsing %s: line %d: %s: %s", path, row, key, msg)
+	}
+	return fmt.Errorf("config: parsing %s: line %d: %s", path, row, msg)
+}
+
+// assignedKeyAt returns the last path component of the key assigned on, or
+// most recently before, the 1-based line row. This attributes errors inside
+// multi-line values to the key that owns them. Returns "" when unknown.
+func assignedKeyAt(data []byte, row int) string {
+	lines := strings.Split(string(data), "\n")
+	if row > len(lines) {
+		row = len(lines)
+	}
+	for i := row - 1; i >= 0; i-- {
+		l := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(l, "[") {
+			return ""
+		}
+		if m := reAssignment.FindStringSubmatch(l); m != nil {
+			k := m[1]
+			if j := strings.LastIndex(k, "."); j >= 0 {
+				k = k[j+1:]
+			}
+			return strings.Trim(strings.TrimSpace(k), `"'`)
+		}
+	}
+	return ""
+}
+
+// keyLine returns the 1-based line on which section.key is assigned, or 0
+// if it cannot be found (e.g. the key is missing). It understands
+// [section] headers and dotted keys, which covers the documented schema.
+func keyLine(data []byte, section, key string) int {
+	current := ""
+	for i, raw := range strings.Split(string(data), "\n") {
+		l := strings.TrimSpace(raw)
+		if strings.HasPrefix(l, "[") {
+			current = strings.TrimSpace(strings.Trim(l, "[] \t"))
+			if j := strings.Index(current, "]"); j >= 0 {
+				current = strings.TrimSpace(current[:j])
+			}
+			continue
+		}
+		m := reAssignment.FindStringSubmatch(l)
+		if m == nil {
+			continue
+		}
+		parts := strings.Split(m[1], ".")
+		for j := range parts {
+			parts[j] = strings.Trim(strings.TrimSpace(parts[j]), `"'`)
+		}
+		full := strings.Join(parts, ".")
+		if current != "" {
+			full = current + "." + full
+		}
+		if full == section+"."+key {
+			return i + 1
+		}
+	}
+	return 0
 }
 
 // build validates the raw config and applies defaults.
-func build(path string, raw *rawConfig, goos string, getenv func(string) string) (*Config, error) {
+func build(path string, data []byte, raw *rawConfig, goos string, getenv func(string) string) (*Config, error) {
 	cfg := &Config{Path: path}
+	keyErr := func(key, msg string) error {
+		section, name, _ := strings.Cut(key, ".")
+		return keyError(path, keyLine(data, section, name), key, msg)
+	}
+	sizeOrDefault := func(key, s string) (int64, error) {
+		if strings.TrimSpace(s) == "" {
+			return DefaultMaxSize, nil
+		}
+		n, err := parseSize(s)
+		if err != nil {
+			return 0, keyErr(key, fmt.Sprintf("invalid size %q: use bytes or a K, M, or G suffix, e.g. \"50M\"", s))
+		}
+		return n, nil
+	}
 
 	cfg.APIKey = strings.TrimSpace(raw.Mailgun.APIKey)
 	if cfg.APIKey == "" {
-		return nil, keyErr(path, "mailgun.api_key", "is required and must not be empty")
+		return nil, keyErr("mailgun.api_key", "is required and must not be empty")
 	}
 
 	cfg.Region = strings.ToLower(strings.TrimSpace(raw.Mailgun.Region))
 	switch cfg.Region {
 	case "":
-		return nil, keyErr(path, "mailgun.region", `is required: must be "us" or "eu"`)
+		return nil, keyErr("mailgun.region", `is required: must be "us" or "eu"`)
 	case "us", "eu":
 	default:
-		return nil, keyErr(path, "mailgun.region", fmt.Sprintf("invalid value %q: must be \"us\" or \"eu\"", cfg.Region))
+		return nil, keyErr("mailgun.region", fmt.Sprintf("invalid value %q: must be \"us\" or \"eu\"", cfg.Region))
 	}
 
 	cfg.Domain = strings.TrimSpace(raw.Sending.Domain)
 	if cfg.Domain == "" {
-		return nil, keyErr(path, "sending.domain", "is required and must not be empty")
+		return nil, keyErr("sending.domain", "is required and must not be empty")
 	}
 
 	cfg.From = strings.TrimSpace(raw.Sending.From)
 	if cfg.From != "" {
 		if _, err := mail.ParseAddress(cfg.From); err != nil {
-			return nil, keyErr(path, "sending.from", fmt.Sprintf("invalid address %q: expected \"user@example.com\" or \"Name <user@example.com>\"", cfg.From))
+			return nil, keyErr("sending.from", fmt.Sprintf("invalid address %q: expected \"user@example.com\" or \"Name <user@example.com>\"", cfg.From))
 		}
 	}
 
 	cfg.Logfile = expandPath(strings.TrimSpace(raw.Logging.Logfile), getenv)
-	cfg.LogLevel = raw.Logging.Level
+	cfg.LogLevel = strings.ToLower(strings.TrimSpace(raw.Logging.Level))
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = DefaultLogLevel
 	}
 	switch cfg.LogLevel {
 	case "error", "information", "debug":
 	default:
-		return nil, keyErr(path, "logging.loglevel", fmt.Sprintf("invalid value %q: must be \"error\", \"information\", or \"debug\"", cfg.LogLevel))
+		return nil, keyErr("logging.loglevel", fmt.Sprintf("invalid value %q: must be \"error\", \"information\", or \"debug\"", cfg.LogLevel))
 	}
 
 	var err error
-	if cfg.LogMaxSize, err = sizeOrDefault(path, "logging.max_size", raw.Logging.MaxSize); err != nil {
+	if cfg.LogMaxSize, err = sizeOrDefault("logging.max_size", raw.Logging.MaxSize); err != nil {
 		return nil, err
 	}
 
@@ -192,37 +292,31 @@ func build(path string, raw *rawConfig, goos string, getenv func(string) string)
 	if cfg.DeferDir == "" {
 		cfg.DeferDir = defaultDeferDir(goos, getenv)
 	}
-	if cfg.DeferMaxSize, err = sizeOrDefault(path, "defer.max_size", raw.Defer.MaxSize); err != nil {
+	if cfg.DeferDir == "" && cfg.Defer {
+		return nil, keyErr("defer.defer_dir", "no default available (home directory unknown): set defer_dir or defer = false")
+	}
+	if cfg.DeferMaxSize, err = sizeOrDefault("defer.max_size", raw.Defer.MaxSize); err != nil {
 		return nil, err
 	}
 	cfg.ResendCooldown = DefaultCooldown
 	if s := strings.TrimSpace(raw.Defer.ResendCooldown); s != "" {
 		d, derr := time.ParseDuration(s)
 		if derr != nil || d <= 0 {
-			return nil, keyErr(path, "defer.resend_cooldown", fmt.Sprintf("invalid duration %q: use e.g. \"30s\", \"5m\", \"1h\"", s))
+			return nil, keyErr("defer.resend_cooldown", fmt.Sprintf("invalid duration %q: use e.g. \"30s\", \"5m\", \"1h\"", s))
 		}
 		cfg.ResendCooldown = d
 	}
 	return cfg, nil
 }
 
-// keyErr formats a validation error naming the config file and key. It
-// never includes the key's value when the key is mailgun.api_key.
-func keyErr(path, key, msg string) error {
+// keyError formats a validation error naming the config file, the line
+// (when known), and the key. Callers must never pass the value of
+// mailgun.api_key in msg.
+func keyError(path string, line int, key, msg string) error {
+	if line > 0 {
+		return fmt.Errorf("config: %s: line %d: %s: %s", path, line, key, msg)
+	}
 	return fmt.Errorf("config: %s: %s: %s", path, key, msg)
-}
-
-// sizeOrDefault parses a size string like "50M", returning DefaultMaxSize
-// when empty.
-func sizeOrDefault(path, key, s string) (int64, error) {
-	if strings.TrimSpace(s) == "" {
-		return DefaultMaxSize, nil
-	}
-	n, err := parseSize(s)
-	if err != nil {
-		return 0, keyErr(path, key, fmt.Sprintf("invalid size %q: use bytes or a K, M, or G suffix, e.g. \"50M\"", s))
-	}
-	return n, nil
 }
 
 // parseSize parses a byte size: a positive integer with an optional
@@ -249,7 +343,7 @@ func parseSize(s string) (int64, error) {
 		}
 	}
 	n, err := strconv.ParseInt(t, 10, 64)
-	if err != nil || n <= 0 {
+	if err != nil || n <= 0 || n > math.MaxInt64/mult {
 		return 0, fmt.Errorf("invalid size %q", s)
 	}
 	return n * mult, nil

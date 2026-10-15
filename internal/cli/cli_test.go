@@ -153,6 +153,9 @@ func TestRunSendConfigErrors(t *testing.T) {
 	t.Run("no config found", func(t *testing.T) {
 		// Isolate from any config on the host: empty HOME and an empty
 		// working directory.
+		if _, err := os.Stat("/etc/mailfire/mailfire.conf"); err == nil {
+			t.Skip("/etc/mailfire/mailfire.conf exists; cannot test not-found")
+		}
 		t.Setenv("HOME", t.TempDir())
 		t.Chdir(t.TempDir())
 		code, _, stderr := run(t, base...)
