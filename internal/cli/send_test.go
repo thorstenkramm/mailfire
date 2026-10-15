@@ -206,6 +206,10 @@ func TestSendInvalidAddresses(t *testing.T) {
 		{"to", []string{"--to", "not-an-address"}, `invalid --to address "not-an-address"`},
 		{"cc", []string{"--to", "a@example.com", "--cc", "@@@"}, `invalid --cc address "@@@"`},
 		{"bcc", []string{"--to", "a@example.com", "--bcc", ""}, `invalid --bcc address ""`},
+		// Decision Q1: one address per flag value, no comma lists.
+		{"comma list", []string{"--to", "a@example.com, b@example.com"}, "expected single address"},
+		{"group of two", []string{"--to", "grp: a@example.com, b@example.com;"}, "invalid --to address"},
+		{"header injection", []string{"--to", "a@example.com\nBcc: evil@example.com"}, "invalid --to address"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			args := append([]string{"-c", cfg, "--subject", "s"}, tc.args...)
@@ -217,6 +221,75 @@ func TestSendInvalidAddresses(t *testing.T) {
 				t.Errorf("stderr missing %q:\n%s", tc.want, stderr)
 			}
 		})
+	}
+	if len(m.Requests()) != 0 {
+		t.Errorf("mock received %d requests, want 0", len(m.Requests()))
+	}
+}
+
+func TestSendInternationalAddresses(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	code, _, stderr := runMock(t, m, "body",
+		"-c", cfg, "--subject", "s",
+		"--to", "Jörg <joerg@example.com>",
+		"--to", "=?utf-8?q?J=C3=B6rg?= <j2@example.com>",
+		"--to", "jörg@exämple.com")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	want := []string{
+		"=?utf-8?q?J=C3=B6rg?= <joerg@example.com>",
+		"=?utf-8?q?J=C3=B6rg?= <j2@example.com>",
+		"jörg@exämple.com",
+	}
+	if got := m.LastRequest(t).Fields["to"]; !equalStrings(got, want) {
+		t.Errorf("to = %q, want %q", got, want)
+	}
+}
+
+func TestSendEmptyBody(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+	emptyFile := filepath.Join(t.TempDir(), "empty.txt")
+	if err := os.WriteFile(emptyFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, extra := range map[string][]string{
+		"stdin": nil,
+		"file":  {"--file", emptyFile},
+	} {
+		t.Run(name, func(t *testing.T) {
+			args := append([]string{"-c", cfg, "--to", "a@example.com", "--subject", "s"}, extra...)
+			code, _, stderr := runMock(t, m, "", args...)
+			if code != ExitUsage {
+				t.Errorf("exit = %d, want %d", code, ExitUsage)
+			}
+			if !strings.Contains(stderr, "empty message body") {
+				t.Errorf("stderr missing empty-body message:\n%s", stderr)
+			}
+		})
+	}
+	if len(m.Requests()) != 0 {
+		t.Errorf("mock received %d requests, want 0", len(m.Requests()))
+	}
+}
+
+func TestSendSubjectLineBreak(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	for _, subject := range []string{"hi\nBcc: evil@example.com", "hi\r"} {
+		code, _, stderr := runMock(t, m, "body",
+			"-c", cfg, "--to", "a@example.com", "--subject", subject)
+		if code != ExitUsage {
+			t.Errorf("subject %q: exit = %d, want %d", subject, code, ExitUsage)
+		}
+		if !strings.Contains(stderr, "must not contain line breaks") {
+			t.Errorf("subject %q: stderr missing message:\n%s", subject, stderr)
+		}
 	}
 	if len(m.Requests()) != 0 {
 		t.Errorf("mock received %d requests, want 0", len(m.Requests()))
@@ -253,6 +326,9 @@ func TestSendErrorExitCodes(t *testing.T) {
 		}
 		if stdout != "" {
 			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		if strings.Contains(stderr, "test-key-not-real") {
+			t.Errorf("stderr leaks the API key:\n%s", stderr)
 		}
 	})
 

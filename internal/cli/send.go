@@ -2,10 +2,12 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/mail"
 	"os"
+	"strings"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
@@ -65,9 +67,20 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, err
 	}
 
+	// A line break in a header value is never legitimate and could be
+	// used for header injection; refuse it rather than rely on Mailgun.
+	if strings.ContainsAny(opts.Subject, "\r\n") {
+		return nil, errors.New("invalid --subject: must not contain line breaks")
+	}
+
 	body, err := readBody(opts.File, stdin)
 	if err != nil {
 		return nil, err
+	}
+	// Mailgun requires a text or html part and answers an empty body with
+	// a 400; fail locally with a clear message instead.
+	if body == "" {
+		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
 	}
 
 	return &mailgun.Message{
@@ -111,7 +124,11 @@ func parseAddresses(flagName string, values []string) ([]string, error) {
 }
 
 // readBody reads the message body from file (~ is expanded) or, when file
-// is empty, from stdin.
+// is empty, from stdin. --file wins: stdin is not read at all then.
+//
+// TODO(review 04): when stdin is an interactive terminal, ReadAll waits
+// for Ctrl-D without a prompt. Detecting a TTY (and erroring or hinting)
+// is a UX decision beyond this task's scope.
 func readBody(file string, stdin io.Reader) (string, error) {
 	if file == "" {
 		data, err := io.ReadAll(stdin)
