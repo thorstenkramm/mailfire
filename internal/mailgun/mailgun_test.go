@@ -5,8 +5,6 @@ import (
 	"context"
 	"encoding/base64"
 	"io"
-	"mime"
-	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +12,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
 
 const (
@@ -22,6 +22,7 @@ const (
 )
 
 // newTestClient returns a client pointed at a server running handler.
+// A *testutil.MockMailgun works as handler and records the requests.
 func newTestClient(t *testing.T, handler http.Handler) *Client {
 	t.Helper()
 	srv := httptest.NewServer(handler)
@@ -31,63 +32,6 @@ func newTestClient(t *testing.T, handler http.Handler) *Client {
 		t.Fatalf("New: %v", err)
 	}
 	return c
-}
-
-// multipartRequest captures a parsed multipart/form-data request.
-type multipartRequest struct {
-	fields map[string][]string
-	files  []capturedFile
-}
-
-type capturedFile struct {
-	fieldName   string
-	filename    string
-	contentType string
-	content     []byte
-}
-
-// parseMultipart reads the whole multipart body and records fields and
-// file parts in order.
-func parseMultipart(t *testing.T, r *http.Request) multipartRequest {
-	t.Helper()
-	ct := r.Header.Get("Content-Type")
-	mediaType, params, err := mime.ParseMediaType(ct)
-	if err != nil || !strings.HasPrefix(mediaType, "multipart/form-data") {
-		t.Fatalf("Content-Type = %q, want multipart/form-data", ct)
-	}
-	mr := multipart.NewReader(r.Body, params["boundary"])
-	got := multipartRequest{fields: map[string][]string{}}
-	for {
-		part, err := mr.NextPart()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			t.Fatalf("reading multipart body: %v", err)
-		}
-		data, err := io.ReadAll(part)
-		if err != nil {
-			t.Fatalf("reading part %q: %v", part.FormName(), err)
-		}
-		if fn := part.FileName(); fn != "" {
-			got.files = append(got.files, capturedFile{
-				fieldName:   part.FormName(),
-				filename:    fn,
-				contentType: part.Header.Get("Content-Type"),
-				content:     data,
-			})
-		} else {
-			got.fields[part.FormName()] = append(got.fields[part.FormName()], string(data))
-		}
-	}
-	return got
-}
-
-func okHandler(t *testing.T) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"<abc123@mg.example.com>","message":"Queued. Thank you."}`))
-	})
 }
 
 func TestNew(t *testing.T) {
@@ -162,26 +106,17 @@ func TestNew(t *testing.T) {
 }
 
 func TestClientStringOmitsKey(t *testing.T) {
-	c := newTestClient(t, okHandler(t))
+	m := testutil.NewMockMailgun(t)
+	c := newTestClient(t, m)
 	if s := c.String(); strings.Contains(s, testAPIKey) {
 		t.Errorf("String() leaks the API key: %q", s)
 	}
 }
 
 func TestSendMessageSuccess(t *testing.T) {
-	var captured multipartRequest
-	var gotAuth, gotMethod, gotPath string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotMethod, gotPath = r.Method, r.URL.Path
-		user, pass, _ := r.BasicAuth()
-		gotAuth = user + ":" + pass
-		captured = parseMultipart(t, r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"<abc123@mg.example.com>","message":"Queued. Thank you."}`))
-	}))
-	defer srv.Close()
-
-	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(srv.URL))
+	m := testutil.NewMockMailgun(t)
+	m.SendResponse = testutil.Queued("<abc123@mg.example.com>")
+	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(m.URL()))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -213,17 +148,18 @@ func TestSendMessageSuccess(t *testing.T) {
 		t.Errorf("Message = %q", resp.Message)
 	}
 
-	if gotMethod != http.MethodPost {
-		t.Errorf("method = %q, want POST", gotMethod)
+	captured := m.LastRequest(t)
+	if captured.Method != http.MethodPost {
+		t.Errorf("method = %q, want POST", captured.Method)
 	}
-	if gotPath != "/v3/"+testDomain+"/messages" {
-		t.Errorf("path = %q, want /v3/%s/messages", gotPath, testDomain)
+	if captured.Path != "/v3/"+testDomain+"/messages" {
+		t.Errorf("path = %q, want /v3/%s/messages", captured.Path, testDomain)
 	}
-	if gotAuth != "api:"+testAPIKey {
-		t.Errorf("basic auth = user %q", strings.SplitN(gotAuth, ":", 2)[0])
-		if !strings.HasPrefix(gotAuth, "api:") {
-			t.Error("basic auth user is not \"api\"")
-		}
+	if captured.User != "api" {
+		t.Errorf("basic auth user = %q, want \"api\"", captured.User)
+	}
+	if captured.Password != testAPIKey {
+		t.Error("basic auth password is not the API key")
 	}
 
 	wantFields := map[string][]string{
@@ -236,51 +172,45 @@ func TestSendMessageSuccess(t *testing.T) {
 		"html":    {"<p>html body</p>"},
 	}
 	for name, want := range wantFields {
-		got := captured.fields[name]
+		got := captured.Fields[name]
 		if strings.Join(got, "|") != strings.Join(want, "|") {
 			t.Errorf("field %q = %v, want %v", name, got, want)
 		}
 	}
-	if _, ok := captured.fields["o:testmode"]; ok {
+	if _, ok := captured.Fields["o:testmode"]; ok {
 		t.Error("o:testmode sent although TestMode is false")
 	}
 
-	wantFiles := []capturedFile{
-		{fieldName: "attachment", filename: "report.txt", content: []byte("report-bytes")},
-		{fieldName: "attachment", filename: "log.bin", content: []byte("\x00\x01log-bytes")},
-		{fieldName: "inline", filename: "logo.png", content: []byte("png-bytes")},
+	wantFiles := []testutil.RecordedFile{
+		{FieldName: "attachment", Filename: "report.txt", Content: []byte("report-bytes")},
+		{FieldName: "attachment", Filename: "log.bin", Content: []byte("\x00\x01log-bytes")},
+		{FieldName: "inline", Filename: "logo.png", Content: []byte("png-bytes")},
 	}
-	if len(captured.files) != len(wantFiles) {
-		t.Fatalf("got %d file parts, want %d", len(captured.files), len(wantFiles))
+	if len(captured.Files) != len(wantFiles) {
+		t.Fatalf("got %d file parts, want %d", len(captured.Files), len(wantFiles))
 	}
 	for i, want := range wantFiles {
-		got := captured.files[i]
-		if got.fieldName != want.fieldName || got.filename != want.filename {
-			t.Errorf("file %d: %s/%s, want %s/%s", i, got.fieldName, got.filename, want.fieldName, want.filename)
+		got := captured.Files[i]
+		if got.FieldName != want.FieldName || got.Filename != want.Filename {
+			t.Errorf("file %d: %s/%s, want %s/%s", i, got.FieldName, got.Filename, want.FieldName, want.Filename)
 		}
-		if string(got.content) != string(want.content) {
-			t.Errorf("file %d (%s): content = %q, want %q", i, got.filename, got.content, want.content)
+		if string(got.Content) != string(want.Content) {
+			t.Errorf("file %d (%s): content = %q, want %q", i, got.Filename, got.Content, want.Content)
 		}
 	}
 	// Explicit content type is honored; sniffed type is set when omitted.
-	if captured.files[1].contentType != "application/x-log" {
-		t.Errorf("explicit Content-Type = %q, want application/x-log", captured.files[1].contentType)
+	if captured.Files[1].ContentType != "application/x-log" {
+		t.Errorf("explicit Content-Type = %q, want application/x-log", captured.Files[1].ContentType)
 	}
-	if captured.files[0].contentType == "" {
+	if captured.Files[0].ContentType == "" {
 		t.Error("sniffed Content-Type missing for report.txt")
 	}
 }
 
 func TestSendMessageTestMode(t *testing.T) {
-	var captured multipartRequest
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		captured = parseMultipart(t, r)
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"<t@mg.example.com>","message":"Queued."}`))
-	}))
-	defer srv.Close()
-
-	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(srv.URL))
+	m := testutil.NewMockMailgun(t)
+	m.SendResponse = testutil.Queued("<t@mg.example.com>")
+	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(m.URL()))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -289,7 +219,7 @@ func TestSendMessageTestMode(t *testing.T) {
 	if _, err := c.SendMessage(context.Background(), msg); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	got := captured.fields["o:testmode"]
+	got := m.LastRequest(t).Fields["o:testmode"]
 	if len(got) != 1 || got[0] != "yes" {
 		t.Errorf("o:testmode = %v, want [yes]", got)
 	}
@@ -316,10 +246,9 @@ func TestSendMessageErrorClassification(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(tc.body))
-			}))
+			m := testutil.NewMockMailgun(t)
+			m.SendResponse = testutil.Response{Status: tc.status, Body: tc.body}
+			c := newTestClient(t, m)
 			msg := &Message{From: "ops@example.com", To: []string{"a@example.com"},
 				Subject: "s", Text: "b"}
 			_, err := c.SendMessage(context.Background(), msg)
@@ -393,9 +322,9 @@ func TestSendMessageMalformedSuccessJSON(t *testing.T) {
 		"JSON without id": `{"message":"Queued."}`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				_, _ = w.Write([]byte(body))
-			}))
+			m := testutil.NewMockMailgun(t)
+			m.SendResponse = testutil.Response{Status: http.StatusOK, Body: body}
+			c := newTestClient(t, m)
 			msg := &Message{From: "ops@example.com", To: []string{"a@example.com"},
 				Subject: "s", Text: "b"}
 			_, err := c.SendMessage(context.Background(), msg)
@@ -413,14 +342,10 @@ func TestSendMessageMalformedSuccessJSON(t *testing.T) {
 }
 
 func TestSendMessageTimeout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(300 * time.Millisecond)
-		_, _ = w.Write([]byte(`{"id":"<x>","message":"ok"}`))
-	}))
-	defer srv.Close()
-
+	m := testutil.NewMockMailgun(t)
+	m.SendResponse = testutil.Timeout(300 * time.Millisecond)
 	c, err := New(testAPIKey, testDomain, "us",
-		WithBaseURL(srv.URL), WithTimeout(50*time.Millisecond))
+		WithBaseURL(m.URL()), WithTimeout(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -466,15 +391,8 @@ func TestSendMessageNetworkError(t *testing.T) {
 
 func TestValidateDomain(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
-		var gotPath, gotMethod string
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			gotMethod, gotPath = r.Method, r.URL.Path
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"domain":{"name":"mg.example.com","state":"active","spam_action":"disabled"}}`))
-		}))
-		defer srv.Close()
-
-		c, err := New(testAPIKey, testDomain, "eu", WithBaseURL(srv.URL))
+		m := testutil.NewMockMailgun(t)
+		c, err := New(testAPIKey, testDomain, "eu", WithBaseURL(m.URL()))
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
@@ -482,11 +400,12 @@ func TestValidateDomain(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ValidateDomain: %v", err)
 		}
-		if gotMethod != http.MethodGet {
-			t.Errorf("method = %q, want GET", gotMethod)
+		captured := m.LastRequest(t)
+		if captured.Method != http.MethodGet {
+			t.Errorf("method = %q, want GET", captured.Method)
 		}
-		if gotPath != "/v3/domains/"+testDomain {
-			t.Errorf("path = %q, want /v3/domains/%s", gotPath, testDomain)
+		if captured.Path != "/v3/domains/"+testDomain {
+			t.Errorf("path = %q, want /v3/domains/%s", captured.Path, testDomain)
 		}
 		if info.Name != testDomain || info.State != "active" {
 			t.Errorf("info = %+v, want {%s active}", info, testDomain)
@@ -494,10 +413,9 @@ func TestValidateDomain(t *testing.T) {
 	})
 
 	t.Run("auth error", func(t *testing.T) {
-		c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
-		}))
+		m := testutil.NewMockMailgun(t)
+		m.DomainResponse = testutil.Unauthorized()
+		c := newTestClient(t, m)
 		_, err := c.ValidateDomain(context.Background())
 		if err == nil || !IsAuth(err) {
 			t.Fatalf("ValidateDomain: %v, want auth error", err)
@@ -505,9 +423,9 @@ func TestValidateDomain(t *testing.T) {
 	})
 
 	t.Run("malformed JSON", func(t *testing.T) {
-		c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write([]byte(`{oops`))
-		}))
+		m := testutil.NewMockMailgun(t)
+		m.DomainResponse = testutil.Response{Status: http.StatusOK, Body: `{oops`}
+		c := newTestClient(t, m)
 		_, err := c.ValidateDomain(context.Background())
 		if err == nil || !IsDeferrable(err) {
 			t.Fatalf("ValidateDomain: %v, want deferrable invalid-response error", err)
@@ -521,7 +439,8 @@ type errReader struct{}
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 func TestSendMessageUnreadableAttachment(t *testing.T) {
-	c := newTestClient(t, okHandler(t))
+	m := testutil.NewMockMailgun(t)
+	c := newTestClient(t, m)
 	msg := &Message{From: "ops@example.com", To: []string{"a@example.com"},
 		Subject: "s", Text: "b",
 		Attachments: []File{{Name: "broken.pdf", Reader: errReader{}}}}
@@ -564,14 +483,9 @@ func TestKindString(t *testing.T) {
 
 func TestBasicAuthHeaderValue(t *testing.T) {
 	// The password must be exactly the API key, sent as Basic Auth.
-	var gotHeader string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get("Authorization")
-		_, _ = w.Write([]byte(`{"id":"<x>","message":"ok"}`))
-	}))
-	defer srv.Close()
-
-	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(srv.URL))
+	m := testutil.NewMockMailgun(t)
+	m.SendResponse = testutil.Queued("<x>")
+	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(m.URL()))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -580,6 +494,7 @@ func TestBasicAuthHeaderValue(t *testing.T) {
 	if _, err := c.SendMessage(context.Background(), msg); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
+	gotHeader := m.LastRequest(t).Header.Get("Authorization")
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("api:"+testAPIKey))
 	if gotHeader != want {
 		t.Errorf("Authorization header wrong (user or encoding); starts with %q",
@@ -761,7 +676,8 @@ func (timeoutErr) Timeout() bool   { return true }
 func (timeoutErr) Temporary() bool { return true }
 
 func TestSendMessageNilAttachmentReader(t *testing.T) {
-	c := newTestClient(t, okHandler(t))
+	m := testutil.NewMockMailgun(t)
+	c := newTestClient(t, m)
 	msg := simpleMessage()
 	msg.Attachments = []File{{Name: "empty.bin"}}
 	_, err := c.SendMessage(context.Background(), msg)
@@ -773,11 +689,9 @@ func TestSendMessageNilAttachmentReader(t *testing.T) {
 func TestLargeAttachmentStreamedAndSniffed(t *testing.T) {
 	content := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte("0123456789"), 100_000)...)
 	small := []byte("hi")
-	var got multipartRequest
-	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = parseMultipart(t, r)
-		_, _ = w.Write([]byte(`{"id":"<x>","message":"ok"}`))
-	}))
+	m := testutil.NewMockMailgun(t)
+	m.SendResponse = testutil.Queued("<x>")
+	c := newTestClient(t, m)
 	msg := simpleMessage()
 	msg.Attachments = []File{
 		{Name: "big.pdf", Reader: bytes.NewReader(content)},
@@ -787,19 +701,20 @@ func TestLargeAttachmentStreamedAndSniffed(t *testing.T) {
 	if _, err := c.SendMessage(context.Background(), msg); err != nil {
 		t.Fatalf("SendMessage: %v", err)
 	}
-	if len(got.files) != 3 {
-		t.Fatalf("got %d files, want 3", len(got.files))
+	got := m.LastRequest(t)
+	if len(got.Files) != 3 {
+		t.Fatalf("got %d files, want 3", len(got.Files))
 	}
-	if !bytes.Equal(got.files[0].content, content) {
-		t.Errorf("big attachment corrupted: %d bytes, want %d", len(got.files[0].content), len(content))
+	if !bytes.Equal(got.Files[0].Content, content) {
+		t.Errorf("big attachment corrupted: %d bytes, want %d", len(got.Files[0].Content), len(content))
 	}
-	if got.files[0].contentType != "application/pdf" {
-		t.Errorf("big content type = %q, want application/pdf", got.files[0].contentType)
+	if got.Files[0].ContentType != "application/pdf" {
+		t.Errorf("big content type = %q, want application/pdf", got.Files[0].ContentType)
 	}
-	if !bytes.Equal(got.files[1].content, small) {
-		t.Errorf("small attachment = %q, want %q", got.files[1].content, small)
+	if !bytes.Equal(got.Files[1].Content, small) {
+		t.Errorf("small attachment = %q, want %q", got.Files[1].Content, small)
 	}
-	if len(got.files[2].content) != 0 {
-		t.Errorf("empty attachment has %d bytes", len(got.files[2].content))
+	if len(got.Files[2].Content) != 0 {
+		t.Errorf("empty attachment has %d bytes", len(got.Files[2].Content))
 	}
 }

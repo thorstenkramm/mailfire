@@ -4,5 +4,6 @@
 mailfire.conf
 .mailfire.conf
 /mailfire
+coverage.out
 mailfire.log
 /deferred/
