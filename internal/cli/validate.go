@@ -103,7 +103,7 @@ func validate(flagPath string, rc *runContext, stdout, stderr io.Writer) int {
 		switch {
 		case mailgun.IsAuth(err):
 			return validateFail(stdout, stderr, "API key and domain",
-				fmt.Errorf("Mailgun rejected the API key: %w", err), ExitAuth)
+				fmt.Errorf("mailgun rejected the API key: %w", err), ExitAuth)
 		case mailgun.IsDeferrable(err):
 			return validateFail(stdout, stderr, "API key and domain",
 				fmt.Errorf("could not reach Mailgun reliably (retry later): %w", err), ExitDeferred)

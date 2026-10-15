@@ -42,7 +42,7 @@ On Windows:
 > Using a system-wide configuration is usually insecure. Anyone can take the API key and use it anywhere.
 > Use only with the utmost care!
 
-On Linux and macOS, `mailfire` warns on startup when the config file is readable by group or
+On Linux and macOS, `mailfire` warns on startup when the config file is accessible by group or
 others (permissions more permissive than `0600`); fix it with `chmod 600 <path>`. On Windows
 this check is skipped — file access is governed by NTFS ACLs, not POSIX permission bits.
 

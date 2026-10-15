@@ -167,7 +167,7 @@ func TestValidateAuthFailure(t *testing.T) {
 		if !strings.Contains(stdout, "ok   mandatory keys") {
 			t.Errorf("status %d: steps 1-2 should have passed:\n%s", resp.Status, stdout)
 		}
-		if !strings.Contains(stdout, "FAIL API key and domain: Mailgun rejected the API key") {
+		if !strings.Contains(stdout, "FAIL API key and domain: mailgun rejected the API key") {
 			t.Errorf("status %d: stdout should report the auth failure:\n%s", resp.Status, stdout)
 		}
 		if !strings.Contains(stderr, "mailfire: validate:") {
