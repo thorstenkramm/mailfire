@@ -32,6 +32,31 @@ func TestRunHelp(t *testing.T) {
 	}
 }
 
+func TestRunSubcommandHelp(t *testing.T) {
+	for _, args := range [][]string{
+		{"validate", "--help"},
+		{"resend", "-h"},
+		{"resend", "--list", "--help"},
+		{"version", "-help"},
+	} {
+		code, stdout, stderr := run(t, args...)
+		if code != ExitOK {
+			t.Errorf("Run(%v) = exit %d, want %d", args, code, ExitOK)
+		}
+		if !strings.Contains(stdout, "Usage:") {
+			t.Errorf("Run(%v): stdout does not contain usage text:\n%s", args, stdout)
+		}
+		if stderr != "" {
+			t.Errorf("Run(%v): stderr = %q, want empty", args, stderr)
+		}
+	}
+
+	// After "--", -h is an operand, not a help request.
+	if code, _, _ := run(t, "resend", "--", "-h"); code == ExitOK {
+		t.Errorf("Run(resend -- -h) = exit 0, want non-zero")
+	}
+}
+
 func TestRunUnknownSubcommand(t *testing.T) {
 	code, stdout, stderr := run(t, "frobnicate")
 	if code != ExitUsage {

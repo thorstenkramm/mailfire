@@ -71,6 +71,10 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo) int {
 		case "send":
 			return runSend(args[1:], stdout, stderr)
 		case "validate", "resend", "version":
+			if wantsHelp(args[1:]) {
+				fmt.Fprint(stdout, usageText)
+				return ExitOK
+			}
 			return notImplemented(stderr, args[0])
 		default:
 			if !strings.HasPrefix(args[0], "-") {
@@ -82,6 +86,20 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo) int {
 		}
 	}
 	return runSend(nil, stdout, stderr)
+}
+
+// wantsHelp reports whether args request help before any "--" terminator,
+// matching the spellings the flag package accepts.
+func wantsHelp(args []string) bool {
+	for _, a := range args {
+		switch a {
+		case "--":
+			return false
+		case "-h", "--help", "-help", "--h":
+			return true
+		}
+	}
+	return false
 }
 
 // notImplemented reports a recognized but not yet implemented subcommand.
