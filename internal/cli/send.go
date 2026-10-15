@@ -93,19 +93,13 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
 	}
 
-	attachments, err := openAttachments(opts.Attach)
-	if err != nil {
-		return nil, err
-	}
-
 	msg := &mailgun.Message{
-		From:        fromAddr,
-		To:          to,
-		Cc:          cc,
-		Bcc:         bcc,
-		Subject:     opts.Subject,
-		TestMode:    opts.Test,
-		Attachments: attachments,
+		From:     fromAddr,
+		To:       to,
+		Cc:       cc,
+		Bcc:      bcc,
+		Subject:  opts.Subject,
+		TestMode: opts.Test,
 	}
 	switch opts.Format {
 	case "md":
@@ -118,7 +112,6 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			Body:    render.HTML(markdown.HTML(body)),
 		}))
 		if err != nil {
-			closeFiles(msg.Attachments)
 			return nil, err
 		}
 		msg.HTML = html
@@ -134,7 +127,6 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			Body:    render.HTML(body),
 		}))
 		if err != nil {
-			closeFiles(msg.Attachments)
 			return nil, err
 		}
 		msg.HTML = html
@@ -147,6 +139,14 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 	default:
 		msg.Text = body
 	}
+
+	// Opened last, so no earlier failure has to close them; from here on
+	// the caller owns the handles.
+	attachments, err := openAttachments(opts.Attach)
+	if err != nil {
+		return nil, err
+	}
+	msg.Attachments = attachments
 	return msg, nil
 }
 
@@ -157,27 +157,71 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 // client io.Copies them into the request) and must be closed by the
 // caller via closeFiles once the message is encoded. On error, any
 // files opened so far are closed.
+//
+// All files are open at once, so the number of --attach flags is bounded
+// by the open-file limit (ulimit -n, 256 by default on macOS); exceeding
+// it fails with "too many open files" naming the path. Mailgun's 25 MB
+// message limit makes that far beyond any realistic use.
+//
+// TODO(review 09): File.Reader is consumed once and holds an *os.File.
+// Deferral (task 14) must persist the attachment bytes (or paths, if
+// re-reading them on resend is acceptable), not the Message itself.
 func openAttachments(paths []string) ([]mailgun.File, error) {
 	files := make([]mailgun.File, 0, len(paths))
 	for _, p := range paths {
-		path := config.ExpandPath(p)
-		fi, err := os.Stat(path)
+		f, err := openAttachment(p)
 		if err != nil {
 			closeFiles(files)
-			return nil, fmt.Errorf("attachment %s: %v", path, err)
+			return nil, err
 		}
-		if fi.IsDir() {
-			closeFiles(files)
-			return nil, fmt.Errorf("attachment %s: is a directory, not a file", path)
-		}
-		f, err := os.Open(path)
-		if err != nil {
-			closeFiles(files)
-			return nil, fmt.Errorf("attachment %s: %v", path, err)
-		}
-		files = append(files, mailgun.File{Name: filepath.Base(path), Reader: f})
+		files = append(files, mailgun.File{Name: filepath.Base(f.Name()), Reader: f})
 	}
 	return files, nil
+}
+
+// openAttachment opens one --attach path (~ expanded, symlinks followed)
+// and accepts only regular files. The Stat before Open refuses FIFOs
+// early, because opening one blocks until a writer appears; the Stat on
+// the open handle is the authoritative check against the path changing
+// in between.
+func openAttachment(p string) (*os.File, error) {
+	if p == "" {
+		return nil, errors.New("attachment: empty path")
+	}
+	path := config.ExpandPath(p)
+	fi, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("attachment %s: %v", path, err)
+	}
+	if err := checkRegular(path, fi); err != nil {
+		return nil, err
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("attachment %s: %v", path, err)
+	}
+	fi, err = f.Stat()
+	if err == nil {
+		err = checkRegular(path, fi)
+	} else {
+		err = fmt.Errorf("attachment %s: %v", path, err)
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
+}
+
+// checkRegular refuses directories, devices, FIFOs and sockets.
+func checkRegular(path string, fi os.FileInfo) error {
+	switch {
+	case fi.IsDir():
+		return fmt.Errorf("attachment %s: is a directory, not a file", path)
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("attachment %s: not a regular file", path)
+	}
+	return nil
 }
 
 // closeFiles closes every attachment reader that is an io.Closer. The

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,4 +230,97 @@ func TestSendAttachmentErrors(t *testing.T) {
 	if len(m.Requests()) != 0 {
 		t.Errorf("mock received %d requests, want 0", len(m.Requests()))
 	}
+}
+
+// TestSendAttachmentSpecialPaths: symlinks are followed (a link to a
+// directory is refused as a directory, a link to a file sends the file
+// under the link's name); devices and empty paths are refused; a failing
+// later --attach closes files opened for earlier ones.
+func TestSendAttachmentSpecialPaths(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := writeAttachment(t, dir, "target.txt", txtBytes)
+	dirLink := filepath.Join(dir, "dirlink")
+	fileLink := filepath.Join(dir, "filelink.txt")
+	if err := os.Symlink(sub, dirLink); err != nil {
+		t.Skipf("symlinks unsupported: %v", err)
+	}
+	if err := os.Symlink(target, fileLink); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("symlink to file", func(t *testing.T) {
+		m := testutil.NewMockMailgun(t)
+		cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+		code, _, stderr := runMock(t, m, "body",
+			"-c", cfg, "--to", "a@example.com", "--subject", "s", "--attach", fileLink)
+		if code != ExitOK {
+			t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+		}
+		req := m.LastRequest(t)
+		if len(req.Files) != 1 || req.Files[0].Filename != "filelink.txt" ||
+			!bytes.Equal(req.Files[0].Content, txtBytes) {
+			t.Errorf("files = %+v, want filelink.txt with target bytes", req.Files)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		paths []string
+		want  []string
+	}{
+		{"symlink to directory", []string{dirLink}, []string{dirLink, "is a directory"}},
+		{"trailing slash", []string{sub + "/"}, []string{"is a directory"}},
+		{"device", []string{os.DevNull}, []string{os.DevNull, "not a regular file"}},
+		{"empty path", []string{""}, []string{"attachment: empty path"}},
+		{"second fails", []string{target, filepath.Join(dir, "nope")}, []string{"nope"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testutil.NewMockMailgun(t)
+			cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+			args := []string{"-c", cfg, "--to", "a@example.com", "--subject", "s"}
+			for _, p := range tc.paths {
+				args = append(args, "--attach", p)
+			}
+			code, _, stderr := runMock(t, m, "body", args...)
+			if code != ExitUsage {
+				t.Errorf("exit = %d, want %d", code, ExitUsage)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr missing %q:\n%s", want, stderr)
+				}
+			}
+			if n := len(m.Requests()); n != 0 {
+				t.Errorf("mock received %d requests, want 0", n)
+			}
+		})
+	}
+}
+
+// TestOpenAttachmentsLifecycle checks the file handle lifecycle
+// directly: closeFiles closes every handle; duplicates get their own.
+func TestOpenAttachmentsLifecycle(t *testing.T) {
+	dir := t.TempDir()
+	ok := writeAttachment(t, dir, "ok.txt", txtBytes)
+
+	files, err := openAttachments([]string{ok})
+	if err != nil || len(files) != 1 {
+		t.Fatalf("openAttachments = %v, %v", files, err)
+	}
+	f := files[0].Reader.(*os.File)
+	closeFiles(files)
+	if _, err := f.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("read after closeFiles: err = %v, want os.ErrClosed", err)
+	}
+
+	// Duplicates are allowed and get independent handles.
+	files, err = openAttachments([]string{ok, ok})
+	if err != nil || len(files) != 2 || files[0].Reader == files[1].Reader {
+		t.Fatalf("duplicate attach: files = %v, err = %v", files, err)
+	}
+	closeFiles(files)
 }
