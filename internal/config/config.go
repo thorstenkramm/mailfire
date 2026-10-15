@@ -107,6 +107,31 @@ func load(flagPath string, stderr io.Writer, goos string, getenv func(string) st
 	return build(path, data, &raw, goos, getenv)
 }
 
+// Find resolves the config file path for flagPath (the -c/--config
+// value) without reading the file, applying the same search order as
+// Load. It exists for the validate subcommand, which reports locating
+// the config file as its own step (PRD FR-5).
+func Find(flagPath string) (string, error) {
+	return find(flagPath, runtime.GOOS, os.Getenv)
+}
+
+// CheckSyntax reads path and reports whether it parses as valid TOML.
+// Errors are formatted exactly like Load's read/parse errors (in
+// particular, details of an invalid api_key value are withheld). It
+// exists for the validate subcommand's step 1 (PRD FR-5); key presence
+// and validity are step 2, checked by Load.
+func CheckSyntax(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	var raw rawConfig
+	if err := toml.Unmarshal(data, &raw); err != nil {
+		return parseError(path, data, err)
+	}
+	return nil
+}
+
 // find resolves which config file to use.
 func find(flagPath, goos string, getenv func(string) string) (string, error) {
 	if flagPath != "" {

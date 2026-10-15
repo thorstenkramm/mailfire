@@ -67,6 +67,10 @@ Flags (resend):
   --force            resend even messages younger than the cooldown
   -c, --config <p>   use this config file
   -h, --help         show help
+
+Flags (validate):
+  -c, --config <p>   use this config file
+  -h, --help         show help
 `
 
 // Option customizes Run's behavior. Options exist mainly so tests can
@@ -114,7 +118,13 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 				return ExitOK
 			}
 			return runResend(args[1:], rc, stdout, stderr)
-		case "validate", "version":
+		case "validate":
+			if wantsHelp(args[1:]) {
+				fmt.Fprint(stdout, usageText)
+				return ExitOK
+			}
+			return runValidate(args[1:], rc, stdout, stderr)
+		case "version":
 			if wantsHelp(args[1:]) {
 				fmt.Fprint(stdout, usageText)
 				return ExitOK

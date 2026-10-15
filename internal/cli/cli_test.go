@@ -76,7 +76,7 @@ func TestRunUnknownSubcommand(t *testing.T) {
 }
 
 func TestRunStubs(t *testing.T) {
-	for _, sub := range []string{"validate", "version"} {
+	for _, sub := range []string{"version"} {
 		code, stdout, stderr := run(t, sub)
 		if code != ExitUsage {
 			t.Errorf("%s: exit = %d, want %d", sub, code, ExitUsage)
