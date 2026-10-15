@@ -103,24 +103,6 @@ func TestRunStubs(t *testing.T) {
 	}
 }
 
-func TestRunSendStub(t *testing.T) {
-	// Valid invocation: flags parse, config loads, but sending is not
-	// implemented yet.
-	cfg := writeTestConfig(t)
-	for _, args := range [][]string{
-		{"send", "-c", cfg, "--to", "a@example.com", "--subject", "hi"},
-		{"--config", cfg, "--to", "a@example.com", "--subject", "hi"}, // implicit send
-	} {
-		code, _, stderr := run(t, args...)
-		if code != ExitUsage {
-			t.Errorf("Run(%v): exit = %d, want %d", args, code, ExitUsage)
-		}
-		if !strings.Contains(stderr, "send: not implemented yet") {
-			t.Errorf("Run(%v): stderr missing stub note:\n%s", args, stderr)
-		}
-	}
-}
-
 func TestRunSendConfigErrors(t *testing.T) {
 	base := []string{"--to", "a@example.com", "--subject", "hi"}
 

@@ -46,6 +46,11 @@ func defaultDeferDir(goos string, getenv func(string) string) string {
 	return ""
 }
 
+// ExpandPath replaces a leading ~ (or ~/ or ~\) with the user's home
+// directory, using the process environment. Paths without a tilde prefix
+// are returned unchanged.
+func ExpandPath(p string) string { return expandPath(p, os.Getenv) }
+
 // expandPath replaces a leading ~ (or ~/ or ~\) with the user's home
 // directory. Paths without a tilde prefix are returned unchanged.
 func expandPath(p string, getenv func(string) string) string {

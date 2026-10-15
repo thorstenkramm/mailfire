@@ -8,9 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
+	"github.com/thorstenkramm/mailfire/internal/mailgun"
 )
 
 // BuildInfo carries version details injected at build time via -ldflags -X.
@@ -61,17 +63,45 @@ Flags (send):
   -h, --help         show help
 `
 
+// Option customizes Run's behavior. Options exist mainly so tests can
+// inject the body reader and point the Mailgun client at a mock server.
+type Option func(*runContext)
+
+// runContext carries the process resources Run needs.
+type runContext struct {
+	stdin      io.Reader
+	clientOpts []mailgun.Option
+}
+
+// WithStdin sets the reader the send subcommand reads the message body
+// from (default: os.Stdin).
+func WithStdin(r io.Reader) Option {
+	return func(rc *runContext) { rc.stdin = r }
+}
+
+// WithBaseURL points the Mailgun client at baseURL instead of the
+// region-derived production URL. Intended for tests.
+func WithBaseURL(baseURL string) Option {
+	return func(rc *runContext) {
+		rc.clientOpts = append(rc.clientOpts, mailgun.WithBaseURL(baseURL))
+	}
+}
+
 // Run dispatches the command line given in args (excluding the program
 // name) and returns the process exit code. With no subcommand, or when the
 // first argument is a flag, the send subcommand is assumed.
-func Run(args []string, stdout, stderr io.Writer, info BuildInfo) int {
+func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Option) int {
+	rc := &runContext{stdin: os.Stdin}
+	for _, opt := range options {
+		opt(rc)
+	}
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help":
 			fmt.Fprint(stdout, usageText)
 			return ExitOK
 		case "send":
-			return runSend(args[1:], stdout, stderr)
+			return runSend(args[1:], rc, stdout, stderr)
 		case "validate", "resend", "version":
 			if wantsHelp(args[1:]) {
 				fmt.Fprint(stdout, usageText)
@@ -84,10 +114,10 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo) int {
 				fmt.Fprint(stderr, usageText)
 				return ExitUsage
 			}
-			return runSend(args, stdout, stderr)
+			return runSend(args, rc, stdout, stderr)
 		}
 	}
-	return runSend(nil, stdout, stderr)
+	return runSend(nil, rc, stdout, stderr)
 }
 
 // wantsHelp reports whether args request help before any "--" terminator,
@@ -110,9 +140,9 @@ func notImplemented(stderr io.Writer, name string) int {
 	return ExitUsage
 }
 
-// runSend parses the send flags, loads and validates the configuration,
-// and, until the sending logic is implemented, reports that fact.
-func runSend(args []string, stdout, stderr io.Writer) int {
+// runSend parses the send flags, rejects not-yet-implemented features,
+// loads and validates the configuration, and sends the message.
+func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	opts, showHelp, err := ParseSendFlags(args)
 	if showHelp {
 		fmt.Fprint(stdout, usageText)
@@ -123,13 +153,34 @@ func runSend(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usageText)
 		return ExitUsage
 	}
+	if err := checkImplemented(&opts); err != nil {
+		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
+		return ExitUsage
+	}
 	cfg, err := config.Load(opts.Config, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "mailfire: %v\n", err)
 		return ExitConfig
 	}
-	_ = cfg // sending itself is implemented in a later milestone
-	return notImplemented(stderr, "send")
+	return send(cfg, &opts, rc, stdout, stderr)
+}
+
+// checkImplemented rejects flags whose features land in later milestones,
+// so they fail loudly instead of being silently ignored.
+func checkImplemented(opts *SendOptions) error {
+	if opts.Format != "txt" {
+		return fmt.Errorf("--%s: not implemented yet", opts.Format)
+	}
+	if len(opts.Attach) > 0 {
+		return fmt.Errorf("--attach: not implemented yet")
+	}
+	if opts.Preheader != "" {
+		return fmt.Errorf("--preheader: not implemented yet")
+	}
+	if opts.Footer != "" {
+		return fmt.Errorf("--footer: not implemented yet")
+	}
+	return nil
 }
 
 // stringSlice collects the values of a repeatable flag.

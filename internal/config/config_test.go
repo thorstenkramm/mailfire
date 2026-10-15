@@ -407,6 +407,12 @@ func TestExpandPath(t *testing.T) {
 	if got := expandPath("~/x", func(string) string { return "" }); got != "~/x" {
 		t.Errorf("expandPath without home = %q, want unchanged", got)
 	}
+
+	// The exported wrapper uses the process environment.
+	t.Setenv("HOME", "/home/env")
+	if got := ExpandPath("~/body.txt"); got != "/home/env/body.txt" {
+		t.Errorf("ExpandPath = %q, want %q", got, "/home/env/body.txt")
+	}
 }
 
 func TestParseSize(t *testing.T) {
