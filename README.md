@@ -46,22 +46,22 @@ On Windows:
 ## mailfire configuration
 [mailgun]
   ## Your API key, string, mandatory
-  api_key = <your-api-key>
+  api_key = "<your-api-key>"
 
   ## mailgun region, string, mandatory
   ## It's either 'us' or 'eu'
-  region = eu
+  region = "eu"
 
 [sending]
   ## Domain used for sending as configured on mailgun
   ## domain, string, mandatory
-  domain = example.com
+  domain = "example.com"
 
   ## From address, string, optional
   ## If not given, you must specify via --from for every email to be sent.
   ## Can be overwritten per email with --from
   ## Formats: "user@example" or "My Name <user@example.com>" 
-  from = My Name <user@example.com>
+  from = "My Name <user@example.com>"
 
 [logging]
   ## Logfile, string, optional
@@ -76,12 +76,12 @@ On Windows:
   ## error: datetime, message-id, to, status code (only on errors, successfull delivery is not logged) 
   ## information: datetime, message-id, to, subject, status code
   ## debug: datetime, message-id, from, to, subject, message size, status code, api response body
-  loglevel = debug
+  loglevel = "debug"
 
   ## To not flood your disk, logs are automatically truncated.
   ## If the max size is exeeded, oldes logs get removed.
   ## max_size, string, optional, default 50M
-  max_size = 100M
+  max_size = "100M"
 
 [defer]
   ## Failed sending attempts are by default deferred for later retrying.
@@ -96,13 +96,13 @@ On Windows:
   ## To not flood your disk, the deferred_dir is automatically cleaned up.
   ## If the max size is exeeded, oldes unsent emails get removed.
   ## max_size, string, optional, default 50M
-  max_size = 100M
+  max_size = "100M"
 
   ## Cooldown before a deferred message is retried by 'mailfire resend'.
   ## Messages younger than this are skipped to avoid hammering Mailgun
   ## during an outage. Override per run with 'resend --force'.
   ## resend_cooldown, duration string, optional, default 5m
-  resend_cooldown = 5m
+  resend_cooldown = "5m"
 ```
 
 ## full usage documentation
