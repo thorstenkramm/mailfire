@@ -11,34 +11,49 @@
 // clients that do support <style> need the original rules (see the header
 // comment of templates/base.html).
 //
-// Inline therefore wraps go-premailer: before inlining, every <style>
-// element is duplicated — the original is marked data-premailer="ignore"
-// (go-premailer neither reads nor removes ignored elements) and the
-// unmarked clone is what go-premailer consumes — and a marker comment is
-// appended to <head>. After the transform, the marker and the regenerated
-// leftover <style> block following it are cut out and the marker
-// attributes are stripped, leaving the original <style> blocks
-// byte-identical in the output.
+// Inline therefore wraps go-premailer, working on the parsed document
+// only (no string surgery on the serialized HTML): before inlining, every
+// <style> element is duplicated — the original is marked
+// data-premailer="ignore" (go-premailer neither reads nor removes ignored
+// elements) and the unmarked clone is what go-premailer consumes. After
+// the transform, every <style> element that was not in the input — the
+// regenerated leftover block, wherever go-premailer put it, and any clone
+// it did not consume — is removed, and the marker attribute is taken off
+// the originals again, leaving them byte-identical in the output.
+//
+// Known limitation: go-premailer does not count pseudo-classes when
+// ranking selectors, so ".content blockquote p" outranks
+// ".content blockquote > :last-child" and the last paragraph in a
+// blockquote or list item keeps its 10px/6px bottom margin. This is
+// cosmetic (a little extra whitespace) and would need an upstream fix or
+// a template change to avoid.
 package inliner
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/vanng822/go-premailer/premailer"
+	"golang.org/x/net/html"
 )
 
-// headEnd marks the end of <head> while go-premailer runs: the leftover
-// <style> block it generates is appended right after the marker, which
-// makes it trivial to find and drop afterwards. It never appears in the
-// returned document.
-const headEnd = "<!--mailfire-head-end-->"
+// transform runs go-premailer on d, mutating it in place. A variable so
+// tests can simulate a go-premailer that behaves differently.
+var transform = func(d *goquery.Document) error {
+	_, err := premailer.NewPremailer(d, premailer.NewOptions()).Transform()
+	return err
+}
 
 // Inline inlines the CSS of doc's <style> elements into style attributes
 // and returns the resulting document. The original <style> blocks stay in
 // place byte-identical. A document without <style> elements is returned
 // unchanged.
+//
+// <style> elements go-premailer skips by design are left alone: those with
+// a media attribute other than "all", and those the author already marked
+// data-premailer="ignore".
 //
 // The output is normalized by the HTML parser go-premailer builds on:
 // void elements are self-closed, tables gain <tbody>, entities may be
@@ -49,36 +64,64 @@ func Inline(doc string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("parsing HTML: %w", err)
 	}
-	if d.Find("style").Length() == 0 {
+	styles := d.Find("style")
+	if styles.Length() == 0 {
 		// Nothing to inline: return the input untouched instead of a
 		// normalized re-serialization.
 		return doc, nil
 	}
-	d.Find("style").Each(func(_ int, s *goquery.Selection) {
-		// go-premailer skips style elements with a media attribute other
-		// than "all" entirely (no inlining, no removal): leave them alone.
+
+	original := make(map[*html.Node]bool, styles.Length())
+	var marked []*goquery.Selection
+	styles.Each(func(_ int, s *goquery.Selection) {
+		original[s.Get(0)] = true
 		if media, ok := s.Attr("media"); ok && media != "all" {
+			return
+		}
+		if v, ok := s.Attr("data-premailer"); ok && v == "ignore" {
 			return
 		}
 		// Keep the original: mark it as ignored and let go-premailer
 		// consume an unmarked clone instead.
+		clone := s.Clone()
 		s.SetAttr("data-premailer", "ignore")
-		s.AfterSelection(s.Clone().RemoveAttr("data-premailer"))
+		s.AfterSelection(clone)
+		marked = append(marked, s)
 	})
-	d.Find("head").AppendHtml(headEnd)
 
-	out, err := premailer.NewPremailer(d, premailer.NewOptions()).Transform()
-	if err != nil {
+	if err := transform(d); err != nil {
 		return "", fmt.Errorf("inlining CSS: %w", err)
 	}
-	// Drop the marker and the regenerated leftover <style> block between
-	// it and </head>. Without a <head> go-premailer has nowhere to put
-	// leftover rules, so there is nothing to cut.
-	if i := strings.Index(out, headEnd); i >= 0 {
-		rest := out[i+len(headEnd):]
-		if j := strings.Index(rest, "</head>"); j >= 0 {
-			out = out[:i] + rest[j:]
+
+	// Every <style> element not in the input was created by the wrapper
+	// or by go-premailer: drop it.
+	d.Find("style").Each(func(_ int, s *goquery.Selection) {
+		if !original[s.Get(0)] {
+			s.Remove()
+		}
+	})
+	for _, s := range marked {
+		// Fail rather than silently send a mail without its <style>
+		// block (dark mode, small screens).
+		if !attached(s.Get(0), d.Get(0)) {
+			return "", errors.New("inlining CSS: a <style> block was lost")
+		}
+		s.RemoveAttr("data-premailer")
+	}
+
+	out, err := d.Html()
+	if err != nil {
+		return "", fmt.Errorf("serializing HTML: %w", err)
+	}
+	return out, nil
+}
+
+// attached reports whether n is still part of the tree rooted at root.
+func attached(n, root *html.Node) bool {
+	for ; n != nil; n = n.Parent {
+		if n == root {
+			return true
 		}
 	}
-	return strings.ReplaceAll(out, ` data-premailer="ignore"`, ""), nil
+	return false
 }

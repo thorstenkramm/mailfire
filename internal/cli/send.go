@@ -44,8 +44,10 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 }
 
 // compose builds the Mailgun message from flags and config. All failures
-// are usage errors (exit 1): bad addresses, a missing sender, or an
-// unreadable body.
+// are usage errors (exit 1): bad addresses, a missing sender, an
+// unreadable body, or a body whose CSS cannot be inlined. Inlining is
+// deterministic, so it fails the send instead of silently falling back
+// to an uninlined (differently rendered) mail.
 func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.Message, error) {
 	from := opts.From
 	if from == "" {
