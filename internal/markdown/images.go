@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"bytes"
+	"net/url"
 	"strings"
 
 	"github.com/yuin/goldmark/ast"
@@ -52,6 +53,21 @@ func LocalImages(src string) []string {
 		}
 	})
 	return dests
+}
+
+// ImagePath converts a local image destination as returned by
+// LocalImages (raw Markdown source) into the file path it names:
+// backslash escapes and entity references are resolved as goldmark
+// does when rendering, then percent-encoding is decoded, since the
+// destination is a URL ("my%20image.png" names "my image.png"). A
+// destination that is not valid percent-encoding ("100%.png") is taken
+// literally.
+func ImagePath(dest string) string {
+	p := unescape([]byte(dest))
+	if dec, err := url.PathUnescape(p); err == nil {
+		return dec
+	}
+	return p
 }
 
 // HTMLWithImages renders src like HTML, but rewrites the destination of

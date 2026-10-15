@@ -224,3 +224,53 @@ func TestSendMarkdownInlineImageTilde(t *testing.T) {
 		t.Errorf("got %d inline parts, want 1", n)
 	}
 }
+
+// TestSendMarkdownInlineImageEncodedPath: image destinations are URLs,
+// so percent-encoding, the <...> form and backslash escapes are decoded
+// before the file lookup — all three spellings find "my_image 1.png"
+// and share one inline part. data: and file: images are never read.
+func TestSendMarkdownInlineImageEncodedPath(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "my_image 1.png"), pngBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	body := "![a](my_image%201.png)\n\n![b](<my_image 1.png>)\n\n![c](<my\\_image 1.png>)\n\n" +
+		"![d](data:image/png;base64,iVBORw0K)\n\n![e](file:///etc/passwd)\n"
+	code, _, stderr := runMock(t, m, body,
+		"-c", cfg, "--to", "a@example.com", "--subject", "s", "--md")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	req := m.LastRequest(t)
+	inline := inlineFiles(req)
+	if len(inline) != 1 || !bytes.Equal(inline[0].Content, pngBytes) {
+		t.Fatalf("inline parts = %+v, want one part with the image bytes", inline)
+	}
+	html := req.Field("html")
+	if n := strings.Count(html, `src="cid:`+inline[0].Filename+`"`); n != 3 {
+		t.Errorf("html references cid: %d times, want 3:\n%s", n, html)
+	}
+	if !strings.Contains(html, `src="data:image/png;base64,iVBORw0K"`) {
+		t.Errorf("data: image not left untouched:\n%s", html)
+	}
+}
+
+func TestContentIDExtension(t *testing.T) {
+	for path, ext := range map[string]string{
+		"/x/logo.png":  ".png",
+		"/x/logo.JPEG": ".JPEG",
+		"/x/logo":      "",
+		"/x/a.p g":     "",
+		"/x/a.pñg":     "",
+	} {
+		id := contentID(path)
+		if !strings.HasPrefix(id, "img-") || len(id) != len("img-")+16+len(ext) || !strings.HasSuffix(id, ext) {
+			t.Errorf("contentID(%q) = %q, want img-<16 hex>%s", path, id, ext)
+		}
+	}
+}

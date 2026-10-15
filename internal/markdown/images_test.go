@@ -83,3 +83,20 @@ func TestHTMLWithImages(t *testing.T) {
 		t.Errorf("html missing untouched remote image %q:\n%s", want, html)
 	}
 }
+
+func TestImagePath(t *testing.T) {
+	for dest, want := range map[string]string{
+		"logo.png":         "logo.png",
+		"my%20image.png":   "my image.png",
+		"my image.png":     "my image.png",
+		`a\_b.png`:         "a_b.png",
+		"a&amp;b.png":      "a&b.png",
+		"100%.png":         "100%.png", // invalid escape: taken literally
+		"%C3%BC.png":       "ü.png",
+		"~/Pictures/x.png": "~/Pictures/x.png",
+	} {
+		if got := ImagePath(dest); got != want {
+			t.Errorf("ImagePath(%q) = %q, want %q", dest, got, want)
+		}
+	}
+}
