@@ -388,16 +388,25 @@ func readFooter(p string) (render.HTML, error) {
 // the exit code: the send outcome stays authoritative.
 func logAttempt(logger *logging.Logger, msg *mailgun.Message, test bool,
 	resp *mailgun.SendResponse, sendErr error, stderr io.Writer) {
-	a := logging.Attempt{
-		Time:    time.Now(),
+	logOutcome(logger, logging.Attempt{
 		From:    msg.From,
 		To:      msg.To,
 		Subject: msg.Subject,
 		Size:    int64(msg.Size),
-		Status:  0,
-		Success: sendErr == nil,
 		Test:    test,
-	}
+	}, resp, sendErr, stderr)
+}
+
+// logOutcome completes a with the outcome of a sending attempt — time,
+// success, message ID, status code, and the redacted response or error
+// message — and logs it. It is shared by send and resend so both write
+// identical field sets (FR-3). A logging failure is reported on stderr
+// only.
+func logOutcome(logger *logging.Logger, a logging.Attempt,
+	resp *mailgun.SendResponse, sendErr error, stderr io.Writer) {
+	a.Time = time.Now()
+	a.Success = sendErr == nil
+	a.Status = 0
 	if sendErr == nil {
 		a.MessageID = resp.ID
 		a.Status = resp.StatusCode

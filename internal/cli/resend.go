@@ -1,17 +1,25 @@
 package cli
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
+	"mime"
+	"mime/multipart"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
+	"github.com/thorstenkramm/mailfire/internal/logging"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 )
 
@@ -35,6 +43,21 @@ import (
 // guarantees stored bodies never carry o:testmode (--test sends are
 // never deferred), and resend replays the bytes verbatim, so the
 // invariant holds by construction; resend_test.go asserts it.
+//
+// Logging (FR-3): every resend is a sending attempt and is logged like a
+// send, with the same field sets per level (see logOutcome in send.go).
+// from is read back from the stored request body (meta.json does not
+// record it), size is the stored body's size, and resent messages are
+// never test sends. Skipped messages (cooldown, gone) are not attempts
+// and are not logged; neither is a stored body that cannot be read.
+//
+// Concurrency: two resend processes running at once may both list the
+// same message. If one has already delivered and removed it, the other
+// finds it gone and reports it as skipped, not failed. If both read it
+// before either removes it, it is delivered twice: preventing that
+// needs a cross-process claim/lock on the message directory (with crash
+// recovery for stale claims) — a store design change beyond task 15.
+// resend is a manual command, so overlapping runs are unlikely.
 //
 // Exit codes: 0 when everything selected was sent (or there was nothing
 // to do — skipped messages are not failures). Any failure maps to the
@@ -130,33 +153,61 @@ func resendList(store *deferral.Store, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "no deferred messages")
 		return ExitOK
 	}
+	header := [5]string{"ID", "DATE", "TO", "SUBJECT", "SIZE"}
 	rows := make([][5]string, 0, len(msgs))
-	widths := [5]int{len("ID"), len("DATE"), len("TO"), len("SUBJECT"), len("SIZE")}
+	var widths [5]int
+	for i, h := range header {
+		widths[i] = utf8.RuneCountInString(h)
+	}
 	for _, m := range msgs {
+		// The ID is never shortened: it is what `resend <id>` takes.
 		row := [5]string{
-			m.ID,
+			listCell(m.ID, 0),
 			m.Timestamp.UTC().Format("2006-01-02 15:04:05") + " UTC",
-			strings.Join(m.To, ", "),
-			m.Subject,
+			listCell(strings.Join(m.To, ", "), maxListTo),
+			listCell(m.Subject, maxListSubject),
 			fmt.Sprintf("%d", m.Size),
 		}
 		for i, cell := range row {
-			if len(cell) > widths[i] {
-				widths[i] = len(cell)
-			}
+			widths[i] = max(widths[i], utf8.RuneCountInString(cell))
 		}
 		rows = append(rows, row)
 	}
+	// Padding is computed in runes (fmt's width counts runes, too), so
+	// non-ASCII subjects stay aligned.
 	printRow := func(row [5]string) {
 		fmt.Fprintf(stdout, "%-*s  %-*s  %-*s  %-*s  %*s\n",
 			widths[0], row[0], widths[1], row[1], widths[2], row[2],
 			widths[3], row[3], widths[4], row[4])
 	}
-	printRow([5]string{"ID", "DATE", "TO", "SUBJECT", "SIZE"})
+	printRow(header)
 	for _, row := range rows {
 		printRow(row)
 	}
 	return ExitOK
+}
+
+// Column caps for resend --list: long recipient lists and subjects are
+// truncated so one message stays one readable table row.
+const (
+	maxListTo      = 40
+	maxListSubject = 50
+)
+
+// listCell makes s safe for one table cell: control characters (a
+// newline in a subject would break the row) become spaces, and when
+// maxRunes > 0 the cell is truncated with an ellipsis.
+func listCell(s string, maxRunes int) string {
+	s = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+	if maxRunes > 0 && utf8.RuneCountInString(s) > maxRunes {
+		s = string([]rune(s)[:maxRunes-1]) + "…"
+	}
+	return s
 }
 
 // resendSend resends the selected messages (all, oldest first, or the
@@ -185,6 +236,18 @@ func resendSend(cfg *config.Config, store *deferral.Store, opts *resendOptions,
 		return ExitConfig
 	}
 
+	// As in send, the logfile is opened before any attempt: an unusable
+	// path is a configuration error and aborts the run.
+	var logger *logging.Logger
+	if cfg.Logfile != "" {
+		logger, err = logging.Open(cfg.Logfile, cfg.LogLevel, cfg.LogMaxSize)
+		if err != nil {
+			fmt.Fprintf(stderr, "mailfire: %v\n", err)
+			return ExitConfig
+		}
+		defer logger.Close()
+	}
+
 	now := time.Now()
 	var sent, skipped, failed int
 	worst := ExitOK
@@ -195,13 +258,16 @@ func resendSend(cfg *config.Config, store *deferral.Store, opts *resendOptions,
 			eligible := meta.Timestamp.Add(cfg.ResendCooldown)
 			fmt.Fprintf(stdout, "%s: skipped (deferred %s ago; eligible at %s, in %s; use --force to resend now)\n",
 				meta.ID, age, eligible.UTC().Format("2006-01-02 15:04:05")+" UTC",
-				time.Until(eligible).Round(time.Second))
+				eligible.Sub(now).Round(time.Second))
 			continue
 		}
-		code := resendOne(client, store, meta, stdout, stderr)
-		if code == ExitOK {
+		code, gone := resendOne(client, store, logger, meta, stdout, stderr)
+		switch {
+		case gone:
+			skipped++
+		case code == ExitOK:
 			sent++
-		} else {
+		default:
 			failed++
 		}
 		if resendSeverity(code) > resendSeverity(worst) {
@@ -259,19 +325,43 @@ func cooldownActive(meta deferral.Metadata, cooldown time.Duration, now time.Tim
 
 // resendOne replays one deferred message. On success the message is
 // removed from the defer_dir; on any failure it stays. The outcome line
-// goes to stdout, the error detail to stderr. The returned exit code is
-// the send's mapped code (PRD §8): 0, 3 (auth), 4 (deferrable — the
-// message remains deferred), or 5 (permanent / local read failure).
-func resendOne(client *mailgun.Client, store *deferral.Store, meta deferral.Metadata,
-	stdout, stderr io.Writer) int {
+// goes to stdout, the error detail to stderr, and the attempt is logged
+// when logger is non-nil. The returned exit code is the send's mapped
+// code (PRD §8): 0, 3 (auth), 4 (deferrable — the message remains
+// deferred), or 5 (permanent / local read failure). gone reports that
+// the message vanished since it was listed — resent or removed by a
+// concurrent mailfire process — and nothing was attempted (code 0).
+func resendOne(client *mailgun.Client, store *deferral.Store, logger *logging.Logger,
+	meta deferral.Metadata, stdout, stderr io.Writer) (code int, gone bool) {
 	dir := filepath.Join(store.Dir, meta.ID)
 	body, err := os.ReadFile(filepath.Join(dir, deferral.BodyFile))
+	if errors.Is(err, fs.ErrNotExist) {
+		fmt.Fprintf(stdout, "%s: skipped (no longer in defer_dir; resent or removed by another process)\n", meta.ID)
+		return ExitOK, true
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "mailfire: resend: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
 		fmt.Fprintf(stdout, "%s: failed (stored request unreadable; message kept)\n", meta.ID)
-		return ExitSendFail
+		return ExitSendFail, false
 	}
 	resp, err := client.SendRaw(context.Background(), meta.ContentType, body)
+	if logger != nil {
+		logOutcome(logger, logging.Attempt{
+			From:    storedFrom(meta.ContentType, body),
+			To:      meta.To,
+			Subject: meta.Subject,
+			Size:    int64(len(body)),
+		}, resp, err, stderr)
+	}
+	return reportResend(store, meta, resp, err, stdout, stderr), false
+}
+
+// reportResend prints the outcome of one resend attempt, removes the
+// message from the defer_dir after successful delivery, and maps the
+// outcome to an exit code (see resendOne).
+func reportResend(store *deferral.Store, meta deferral.Metadata, resp *mailgun.SendResponse,
+	err error, stdout, stderr io.Writer) int {
+	dir := filepath.Join(store.Dir, meta.ID)
 	if err == nil {
 		if rerr := os.RemoveAll(dir); rerr != nil {
 			// Delivered but not removed: the next resend would send a
@@ -296,6 +386,31 @@ func resendOne(client *mailgun.Client, store *deferral.Store, meta deferral.Meta
 		fmt.Fprintf(stdout, "%s: failed (permanent; message kept — inspect it in %s and remove it manually)\n",
 			meta.ID, store.Dir)
 		return ExitSendFail
+	}
+}
+
+// storedFrom extracts the "from" form field of a stored multipart
+// request for the debug-level log; meta.json does not record the sender.
+// It returns "" when the body cannot be parsed or has no from field —
+// the log line is still written.
+func storedFrom(contentType string, body []byte) string {
+	_, params, err := mime.ParseMediaType(contentType)
+	if err != nil || params["boundary"] == "" {
+		return ""
+	}
+	r := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	for {
+		part, err := r.NextPart()
+		if err != nil {
+			return ""
+		}
+		if part.FormName() == "from" {
+			v, err := io.ReadAll(io.LimitReader(part, 4096))
+			if err != nil {
+				return ""
+			}
+			return string(v)
+		}
 	}
 }
 

@@ -658,9 +658,10 @@ func TestListDeferredNoDir(t *testing.T) {
 	}
 }
 
-// A stored body that vanishes between listing and reading is a local
-// failure: exit 5, the message directory is left alone.
-func TestResendOneUnreadableBody(t *testing.T) {
+// A message that vanishes between listing and reading — resent or
+// removed by a concurrent mailfire process — is skipped, not failed:
+// nothing is attempted and nothing is reported on stderr.
+func TestResendOneGoneMessage(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	client, err := mailgun.New("k", "d", "us", mailgun.WithBaseURL(m.URL()))
 	if err != nil {
@@ -669,8 +670,69 @@ func TestResendOneUnreadableBody(t *testing.T) {
 	store := &deferral.Store{Dir: t.TempDir()}
 	meta := deferral.Metadata{ID: "no-such-dir", To: []string{"a@example.com"}, Subject: "s"}
 	var stdout, stderr bytes.Buffer
-	if code := resendOne(client, store, meta, &stdout, &stderr); code != ExitSendFail {
-		t.Errorf("exit = %d, want %d", code, ExitSendFail)
+	code, gone := resendOne(client, store, nil, meta, &stdout, &stderr)
+	if code != ExitOK || !gone {
+		t.Errorf("resendOne = (%d, %v), want (%d, true)", code, gone, ExitOK)
+	}
+	if !strings.Contains(stdout.String(), "no-such-dir: skipped (no longer in defer_dir") {
+		t.Errorf("stdout missing the skipped line:\n%s", stdout.String())
+	}
+	if stderr.String() != "" {
+		t.Errorf("stderr = %q, want empty", stderr.String())
+	}
+	if n := len(m.Requests()); n != 0 {
+		t.Errorf("mock received %d requests, want 0", n)
+	}
+}
+
+// End to end: a message removed after listing (simulated by a concurrent
+// process deleting it while the first message is being sent) counts as
+// skipped in the summary and does not fail the run.
+func TestResendConcurrentRemoval(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg, deferDir := deferConfig(t, "")
+	first := seedDeferred(t, deferDir, "a@example.com", "first", 2*time.Hour)
+	second := seedDeferred(t, deferDir, "b@example.com", "second", time.Hour)
+	m.SendHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The "other process" resends and removes the second message.
+		os.RemoveAll(filepath.Join(deferDir, second.ID))
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"id":"<x@mg.example.com>","message":"Queued. Thank you."}`)
+	})
+
+	code, stdout, stderr := runMock(t, m, "", "resend", "-c", cfg)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	if !strings.Contains(stdout, first.ID+": sent") || !strings.Contains(stdout, second.ID+": skipped (no longer") {
+		t.Errorf("stdout missing outcome lines:\n%s", stdout)
+	}
+	if !strings.Contains(stdout, "resend: 1 sent, 1 skipped, 0 failed") {
+		t.Errorf("stdout missing the summary line:\n%s", stdout)
+	}
+	if n := len(m.Requests()); n != 1 {
+		t.Errorf("mock received %d requests, want 1", n)
+	}
+}
+
+// A stored body that exists but cannot be read is a local failure:
+// exit 5, nothing is sent, the message directory is left alone.
+func TestResendOneUnreadableBody(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	client, err := mailgun.New("k", "d", "us", mailgun.WithBaseURL(m.URL()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &deferral.Store{Dir: t.TempDir()}
+	meta := deferral.Metadata{ID: "broken", To: []string{"a@example.com"}, Subject: "s"}
+	// body.bin is a directory: it exists, but reading it fails.
+	if err := os.MkdirAll(filepath.Join(store.Dir, meta.ID, deferral.BodyFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code, gone := resendOne(client, store, nil, meta, &stdout, &stderr)
+	if code != ExitSendFail || gone {
+		t.Errorf("resendOne = (%d, %v), want (%d, false)", code, gone, ExitSendFail)
 	}
 	if !strings.Contains(stdout.String(), "failed (stored request unreadable") {
 		t.Errorf("stdout missing the failure line:\n%s", stdout.String())
@@ -680,5 +742,83 @@ func TestResendOneUnreadableBody(t *testing.T) {
 	}
 	if n := len(m.Requests()); n != 0 {
 		t.Errorf("mock received %d requests, want 0", n)
+	}
+	if _, err := os.Stat(filepath.Join(store.Dir, meta.ID)); err != nil {
+		t.Errorf("message directory touched: %v", err)
+	}
+}
+
+// --list keeps one row per message: control characters in subjects are
+// neutralized, long subjects and recipient lists are truncated, and the
+// ID is never shortened (resend <id> needs it in full).
+func TestResendListLongAndControlChars(t *testing.T) {
+	cfg, deferDir := deferConfig(t, "")
+	long := strings.Repeat("ä", 80)
+	meta := seedDeferred(t, deferDir, strings.Repeat("r", 60)+"@example.com", "line1\nline2 "+long, time.Hour)
+
+	code, stdout, stderr := run(t, "resend", "--list", "-c", cfg)
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	lines := strings.Split(strings.TrimRight(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("--list printed %d lines, want header + 1:\n%s", len(lines), stdout)
+	}
+	if !strings.Contains(lines[1], meta.ID) {
+		t.Errorf("row missing the full ID %s:\n%s", meta.ID, lines[1])
+	}
+	if !strings.Contains(lines[1], "line1 line2") {
+		t.Errorf("newline in subject not neutralized:\n%s", lines[1])
+	}
+	if strings.Contains(lines[1], long) || strings.Count(lines[1], "…") != 2 {
+		t.Errorf("long subject/to not truncated with an ellipsis:\n%s", lines[1])
+	}
+	// Columns align in runes: SUBJECT starts at the same rune offset in
+	// header and row.
+	hdr := []rune(lines[0])
+	row := []rune(lines[1])
+	col := strings.Index(lines[0], "SUBJECT")
+	col = len([]rune(lines[0][:col]))
+	if string(row[col:col+5]) != "line1" || string(hdr[col:col+7]) != "SUBJECT" {
+		t.Errorf("SUBJECT column misaligned:\n%s\n%s", lines[0], lines[1])
+	}
+}
+
+func TestListCell(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"short", 10, "short"},
+		{"exactly10!", 10, "exactly10!"},
+		{"eleven chars", 10, "eleven ch…"},
+		{"tab\there", 0, "tab here"},
+		{strings.Repeat("x", 100), 0, strings.Repeat("x", 100)},
+	} {
+		if got := listCell(tc.in, tc.max); got != tc.want {
+			t.Errorf("listCell(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+		}
+	}
+}
+
+func TestStoredFrom(t *testing.T) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	w.WriteField("to", "a@example.com")
+	w.WriteField("from", "Ops <ops@example.com>")
+	w.Close()
+	if got := storedFrom(w.FormDataContentType(), buf.Bytes()); got != "Ops <ops@example.com>" {
+		t.Errorf("storedFrom = %q, want the from field", got)
+	}
+	for _, tc := range []struct{ name, ct, body string }{
+		{"bad content type", "not a media type;;", buf.String()},
+		{"no boundary", "multipart/form-data", buf.String()},
+		{"no from field", "multipart/form-data; boundary=zzz", "--zzz\r\nContent-Disposition: form-data; name=\"to\"\r\n\r\nx\r\n--zzz--\r\n"},
+		{"garbage body", w.FormDataContentType(), "garbage"},
+	} {
+		if got := storedFrom(tc.ct, []byte(tc.body)); got != "" {
+			t.Errorf("%s: storedFrom = %q, want empty", tc.name, got)
+		}
 	}
 }
