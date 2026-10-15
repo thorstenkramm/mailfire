@@ -129,7 +129,7 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 				fmt.Fprint(stdout, usageText)
 				return ExitOK
 			}
-			return notImplemented(stderr, args[0])
+			return runVersion(stdout, info)
 		default:
 			if !strings.HasPrefix(args[0], "-") {
 				fmt.Fprintf(stderr, "mailfire: unknown subcommand %q\n\n", args[0])
@@ -154,12 +154,6 @@ func wantsHelp(args []string) bool {
 		}
 	}
 	return false
-}
-
-// notImplemented reports a recognized but not yet implemented subcommand.
-func notImplemented(stderr io.Writer, name string) int {
-	fmt.Fprintf(stderr, "mailfire: %s: not implemented yet\n", name)
-	return ExitUsage
 }
 
 // runSend parses the send flags, rejects not-yet-implemented features,

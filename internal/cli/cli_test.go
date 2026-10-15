@@ -75,22 +75,6 @@ func TestRunUnknownSubcommand(t *testing.T) {
 	}
 }
 
-func TestRunStubs(t *testing.T) {
-	for _, sub := range []string{"version"} {
-		code, stdout, stderr := run(t, sub)
-		if code != ExitUsage {
-			t.Errorf("%s: exit = %d, want %d", sub, code, ExitUsage)
-		}
-		want := "mailfire: " + sub + ": not implemented yet\n"
-		if stderr != want {
-			t.Errorf("%s: stderr = %q, want %q", sub, stderr, want)
-		}
-		if stdout != "" {
-			t.Errorf("%s: stdout = %q, want empty", sub, stdout)
-		}
-	}
-}
-
 func TestRunSendConfigErrors(t *testing.T) {
 	base := []string{"--to", "a@example.com", "--subject", "hi"}
 
