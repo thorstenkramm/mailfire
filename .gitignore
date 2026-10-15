@@ -1,0 +1,9 @@
+/tmp/
+.idea
+# Local config with real API key — never commit
+mailfire.conf
+.mailfire.conf
+/mailfire
+mailfire.conf
+mailfire.log
+/deferred/
