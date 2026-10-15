@@ -40,6 +40,11 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 		return ExitConfig
 	}
 
+	// TODO(task 14/15): deferral persists the fully encoded request, so
+	// a failed --test send would carry o:testmode=yes into defer_dir and
+	// resend would replay it in test mode — violating "resend never uses
+	// test mode" (FR-1, Decision Q5). Task 14 must either not defer
+	// --test sends or store the message so resend can drop o:testmode.
 	resp, err := client.SendMessage(context.Background(), msg)
 	if err != nil {
 		return reportSendError(err, stderr)

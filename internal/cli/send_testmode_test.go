@@ -78,6 +78,32 @@ func TestSendTestModeAbsent(t *testing.T) {
 	}
 }
 
+// TestSendTestModeNotFromConfig: test mode is CLI-flag only; a "test" key
+// in any config section must not enable it (unknown keys are ignored).
+func TestSendTestModeNotFromConfig(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	path := filepath.Join(t.TempDir(), "mailfire.conf")
+	content := "test = true\ntestmode = true\n\n" +
+		"[mailgun]\napi_key = \"test-key-not-real\"\nregion = \"us\"\ntest = true\ntestmode = true\n\n" +
+		"[sending]\ndomain = \"mg.example.com\"\nfrom = \"ops@example.com\"\ntest = true\ntestmode = true\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, stdout, stderr := runMock(t, m, "body\n",
+		"-c", path, "--to", "a@example.com", "--subject", "s")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	req := m.LastRequest(t)
+	if _, ok := req.Fields["o:testmode"]; ok {
+		t.Errorf("o:testmode enabled by config: %q", req.Fields["o:testmode"])
+	}
+	if want := "<abc123@mg.example.com>\n"; stdout != want {
+		t.Errorf("stdout = %q, want plain message id %q", stdout, want)
+	}
+}
+
 // TestSendTestModeWithAttachment: --test combines with --attach; the
 // attachment is part of the validated (but not delivered) request.
 func TestSendTestModeWithAttachment(t *testing.T) {

@@ -36,17 +36,21 @@ type File struct {
 // milestones populate attachments, inline files, and both body variants;
 // the struct is designed so they can do so without changes here.
 type Message struct {
-	From     string   // sender, e.g. "Ops Bot <ops@example.com>"
-	To       []string // recipients, at least one required by Mailgun
-	Cc       []string
-	Bcc      []string
-	Subject  string
-	Text     string // plain-text body; optional when HTML is set
-	HTML     string // HTML body; optional when Text is set
-	TestMode bool   // sends o:testmode=yes: Mailgun validates but does not deliver.
-	// Invariant: resend (task 15, deferred sends) must never set TestMode,
-	// even if the original send used --test — a resent message must
-	// actually be delivered (PRD FR-1, Decision Q5).
+	From    string   // sender, e.g. "Ops Bot <ops@example.com>"
+	To      []string // recipients, at least one required by Mailgun
+	Cc      []string
+	Bcc     []string
+	Subject string
+	Text    string // plain-text body; optional when HTML is set
+	HTML    string // HTML body; optional when Text is set
+
+	// TestMode sends o:testmode=yes: Mailgun validates but does not
+	// deliver. Set only from the --test CLI flag, never from config.
+	// Invariant: resend (task 15) never sends in test mode, even if the
+	// original send used --test (PRD FR-1, Decision Q5). Deferral
+	// persists the encoded body, where o:testmode=yes is already baked
+	// in — see the note at the SendMessage call in cli/send.go.
+	TestMode bool
 
 	Attachments []File // sent as repeated "attachment" file parts
 	Inline      []File // sent as repeated "inline" file parts
