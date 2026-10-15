@@ -2,6 +2,7 @@
 # which would make `gofmt -l` flag every Go file.
 * text=auto eol=lf
 
-# Golden files are compared byte-for-byte and may contain CRLF on purpose
-# (MIME output); never convert them.
+# Golden files and other test fixtures are compared byte-for-byte and may
+# contain CRLF on purpose (MIME output); never convert them.
 *.golden -text
+**/testdata/** -text

@@ -17,7 +17,8 @@ var updateGolden = flag.Bool("update", false, "rewrite golden files with actual 
 // Golden compares got with the golden file testdata/<name> (relative to
 // the calling test's package directory). With -update the file is
 // rewritten first. Goldens are compared byte-for-byte; .gitattributes
-// marks *.golden -text so Windows checkouts keep their line endings.
+// marks *.golden and testdata/** -text so Windows checkouts keep their
+// line endings.
 func Golden(t *testing.T, name string, got []byte) {
 	t.Helper()
 	path := filepath.Join("testdata", name)

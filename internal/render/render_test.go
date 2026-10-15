@@ -3,6 +3,7 @@ package render
 import (
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/thorstenkramm/mailfire/internal/testutil"
@@ -34,7 +35,7 @@ func TestBaseReport(t *testing.T) {
 	got := Base(Data{
 		Subject:   "Nightly backup finished",
 		Preheader: "All five hosts were backed up; files01 needed a retry.",
-		Body:      string(body),
+		Body:      HTML(body),
 		Footer:    `Sent automatically by the nightly backup job on ops01. <a href="https://example.com/backups/settings">Change who gets this report</a>.`,
 	})
 	testutil.GoldenString(t, "report.html", got)
@@ -65,13 +66,13 @@ func TestBaseEscapesPreheader(t *testing.T) {
 }
 
 func TestBaseInsertsBodyAndFooterAsIs(t *testing.T) {
-	body := "<p>a &amp; b — already <strong>HTML</strong></p>\n"
-	footer := `<a href="https://example.com/?a=1&b=2">link & more</a>`
+	body := HTML("<p>a &amp; b — already <strong>HTML</strong></p>\n")
+	footer := HTML(`<a href="https://example.com/?a=1&b=2">link & more</a>`)
 	got := Base(Data{Subject: "s", Body: body, Footer: footer})
-	if !strings.Contains(got, body) {
+	if !strings.Contains(got, string(body)) {
 		t.Error("body was escaped or altered")
 	}
-	if !strings.Contains(got, footer) {
+	if !strings.Contains(got, string(footer)) {
 		t.Error("footer was escaped or altered")
 	}
 }
@@ -88,6 +89,30 @@ func TestBaseLang(t *testing.T) {
 	if strings.Contains(de, `lang="en"`) {
 		t.Error("explicit lang: output still contains lang=\"en\"")
 	}
+}
+
+func TestBaseEscapesLang(t *testing.T) {
+	got := Base(Data{Lang: `x" onload="y`, Subject: "s", Body: "<p>hi</p>\n"})
+	if n := strings.Count(got, `lang="x&#34; onload=&#34;y"`); n != 2 {
+		t.Errorf("found %d escaped lang attributes, want 2", n)
+	}
+}
+
+// TestBaseConcurrent renders in parallel; run with -race to verify the
+// shared parsed template carries no mutable state.
+func TestBaseConcurrent(t *testing.T) {
+	want := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if got := Base(Data{Subject: "s", Body: "<p>hi</p>\n"}); got != want {
+				t.Error("concurrent render differs")
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestBasePreheaderAbsent(t *testing.T) {
