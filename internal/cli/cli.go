@@ -129,7 +129,7 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 				fmt.Fprint(stdout, usageText)
 				return ExitOK
 			}
-			return runVersion(stdout, info)
+			return runVersion(args[1:], stdout, stderr, info)
 		default:
 			if !strings.HasPrefix(args[0], "-") {
 				fmt.Fprintf(stderr, "mailfire: unknown subcommand %q\n\n", args[0])

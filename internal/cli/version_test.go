@@ -51,6 +51,26 @@ func TestRunVersionNeedsNoConfig(t *testing.T) {
 	}
 }
 
+func TestRunVersionRejectsExtraArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"version", "foo"},
+		{"version", "--", "foo"},
+		{"version", "--bogus"},
+	} {
+		var stdout, stderr bytes.Buffer
+		code := Run(args, &stdout, &stderr, testInfo)
+		if code != ExitUsage {
+			t.Errorf("%q: exit = %d, want %d", args, code, ExitUsage)
+		}
+		if stdout.String() != "" {
+			t.Errorf("%q: stdout = %q, want empty", args, stdout.String())
+		}
+		if !strings.HasPrefix(stderr.String(), "mailfire: version: ") {
+			t.Errorf("%q: stderr = %q, want version usage error", args, stderr.String())
+		}
+	}
+}
+
 func TestRunVersionHelp(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := Run([]string{"version", "--help"}, &stdout, &stderr, testInfo)

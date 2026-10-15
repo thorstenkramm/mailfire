@@ -1,5 +1,7 @@
 BINARY  := mailfire
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Tags are expected as vX.Y.Z; the leading "v" is dropped so the version
+# subcommand prints "mailfire 0.3.1 (...)" as specified in FR-6.
+VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/null || echo dev))
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%d)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(DATE)
