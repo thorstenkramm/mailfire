@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/mail"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
@@ -27,6 +28,8 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
 		return ExitUsage
 	}
+	// Attachment files stay open until the message is encoded.
+	defer closeFiles(msg.Attachments)
 
 	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, rc.clientOpts...)
 	if err != nil {
@@ -90,13 +93,19 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
 	}
 
+	attachments, err := openAttachments(opts.Attach)
+	if err != nil {
+		return nil, err
+	}
+
 	msg := &mailgun.Message{
-		From:     fromAddr,
-		To:       to,
-		Cc:       cc,
-		Bcc:      bcc,
-		Subject:  opts.Subject,
-		TestMode: opts.Test,
+		From:        fromAddr,
+		To:          to,
+		Cc:          cc,
+		Bcc:         bcc,
+		Subject:     opts.Subject,
+		TestMode:    opts.Test,
+		Attachments: attachments,
 	}
 	switch opts.Format {
 	case "md":
@@ -109,6 +118,7 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			Body:    render.HTML(markdown.HTML(body)),
 		}))
 		if err != nil {
+			closeFiles(msg.Attachments)
 			return nil, err
 		}
 		msg.HTML = html
@@ -124,6 +134,7 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			Body:    render.HTML(body),
 		}))
 		if err != nil {
+			closeFiles(msg.Attachments)
 			return nil, err
 		}
 		msg.HTML = html
@@ -137,6 +148,46 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		msg.Text = body
 	}
 	return msg, nil
+}
+
+// openAttachments resolves the --attach paths into message attachments.
+// A leading ~ is expanded; the attachment's filename is the path's base
+// name. Content type is left empty: the Mailgun client sniffs it from
+// the first bytes of the part. Files are opened for streaming (the
+// client io.Copies them into the request) and must be closed by the
+// caller via closeFiles once the message is encoded. On error, any
+// files opened so far are closed.
+func openAttachments(paths []string) ([]mailgun.File, error) {
+	files := make([]mailgun.File, 0, len(paths))
+	for _, p := range paths {
+		path := config.ExpandPath(p)
+		fi, err := os.Stat(path)
+		if err != nil {
+			closeFiles(files)
+			return nil, fmt.Errorf("attachment %s: %v", path, err)
+		}
+		if fi.IsDir() {
+			closeFiles(files)
+			return nil, fmt.Errorf("attachment %s: is a directory, not a file", path)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			closeFiles(files)
+			return nil, fmt.Errorf("attachment %s: %v", path, err)
+		}
+		files = append(files, mailgun.File{Name: filepath.Base(path), Reader: f})
+	}
+	return files, nil
+}
+
+// closeFiles closes every attachment reader that is an io.Closer. The
+// message has been encoded (or abandoned) by the time this runs.
+func closeFiles(files []mailgun.File) {
+	for _, f := range files {
+		if c, ok := f.Reader.(io.Closer); ok {
+			c.Close()
+		}
+	}
 }
 
 // parseAddress validates one address and returns its normalized form:

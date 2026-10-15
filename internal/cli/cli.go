@@ -168,9 +168,6 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 // checkImplemented rejects flags whose features land in later milestones,
 // so they fail loudly instead of being silently ignored.
 func checkImplemented(opts *SendOptions) error {
-	if len(opts.Attach) > 0 {
-		return fmt.Errorf("--attach: not implemented yet")
-	}
 	if opts.Preheader != "" {
 		return fmt.Errorf("--preheader: not implemented yet")
 	}
