@@ -264,6 +264,48 @@ func TestValidateHelp(t *testing.T) {
 	}
 }
 
+// TestValidateNeverPrintsAPIKey covers every step: TOML errors on the
+// api_key line, key errors, and a server echoing the key in error and
+// success responses.
+func TestValidateNeverPrintsAPIKey(t *testing.T) {
+	const key = "LEAKY-SECRET-KEY-1234"
+	base := "region = \"us\"\n\n[sending]\ndomain = \"mg.example.com\"\n"
+	cases := []struct {
+		name    string
+		content string
+		resp    *testutil.Response
+	}{
+		{"unquoted", "[mailgun]\napi_key = " + key + "\n", nil},
+		{"bad escape", "[mailgun]\napi_key = \"" + key + "\\q\"\n", nil},
+		{"inline table", "mailgun = { api_key = \"" + key + "\\q\", region = \"us\" }\n", nil},
+		{"trailing junk", "[mailgun]\napi_key = \"" + key + "\" x\n", nil},
+		{"wrong type", "[mailgun]\napi_key = [\"" + key + "\"]\n", nil},
+		{"bad region", "[mailgun]\napi_key = \"" + key + "\"\nregion = \"mars\"\n", nil},
+		{"401 echo", "[mailgun]\napi_key = \"" + key + "\"\n" + base,
+			&testutil.Response{Status: http.StatusUnauthorized, Body: `{"message":"bad key ` + key + `"}`}},
+		{"404 echo", "[mailgun]\napi_key = \"" + key + "\"\n" + base,
+			&testutil.Response{Status: http.StatusNotFound, Body: `{"message":"` + key + `"}`}},
+		{"200 echo", "[mailgun]\napi_key = \"" + key + "\"\n" + base,
+			&testutil.Response{Status: http.StatusOK, Body: `{"domain":{"name":"` + key + `","state":"` + key + `"}}`}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := testutil.NewMockMailgun(t)
+			if tc.resp != nil {
+				m.DomainResponse = *tc.resp
+			}
+			path := filepath.Join(t.TempDir(), "mailfire.conf")
+			if err := os.WriteFile(path, []byte(tc.content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, stdout, stderr := runValidateMock(t, m, "-c", path)
+			if strings.Contains(stdout+stderr, key) || strings.Contains(stdout+stderr, "U+") {
+				t.Errorf("output leaks the API key:\nstdout:\n%s\nstderr:\n%s", stdout, stderr)
+			}
+		})
+	}
+}
+
 // assertNoAPIRequest fails the test when the mock received any request.
 func assertNoAPIRequest(t *testing.T, m *testutil.MockMailgun) {
 	t.Helper()

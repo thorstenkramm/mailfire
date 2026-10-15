@@ -473,6 +473,20 @@ func TestValidateDomain(t *testing.T) {
 			t.Fatalf("ValidateDomain: %v, want deferrable invalid-response error", err)
 		}
 	})
+
+	t.Run("echoed key is redacted", func(t *testing.T) {
+		m := testutil.NewMockMailgun(t)
+		m.DomainResponse = testutil.Response{Status: http.StatusOK, Body: `{"domain":{"name":"` +
+			testAPIKey + `","state":"x-` + testAPIKey + `"}}`}
+		c := newTestClient(t, m)
+		info, err := c.ValidateDomain(context.Background())
+		if err != nil {
+			t.Fatalf("ValidateDomain: %v", err)
+		}
+		if strings.Contains(info.Name+info.State, testAPIKey) {
+			t.Errorf("info leaks the API key: %+v", info)
+		}
+	})
 }
 
 // errReader always fails, simulating an unreadable attachment.

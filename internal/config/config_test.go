@@ -451,6 +451,7 @@ func TestParseErrorWithholdsAPIKeyDetails(t *testing.T) {
 		"unterminated":      "[mailgun]\napi_key = \"" + testAPIKey + "\n",
 		"multi-line string": "[mailgun]\napi_key = \"\"\"\nTEST\\qSECRET\"\"\"\n",
 		"dotted key":        "mailgun.api_key = " + testAPIKey + "\n",
+		"inline table":      "mailgun = { api_key = \"TEST\\qSECRET\", region = \"us\" }\n",
 	}
 	for name, content := range cases {
 		t.Run(name, func(t *testing.T) {

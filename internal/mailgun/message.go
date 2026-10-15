@@ -173,6 +173,10 @@ func (c *Client) ValidateDomain(ctx context.Context) (*DomainInfo, error) {
 		return nil, &Error{Op: op, Kind: KindDeferrable,
 			Message: "invalid response: expected JSON with a domain record"}
 	}
+	// The fields are server-supplied and end up on stdout; redact them
+	// like error messages.
+	parsed.Domain.Name = c.redact(parsed.Domain.Name)
+	parsed.Domain.State = c.redact(parsed.Domain.State)
 	return &parsed.Domain, nil
 }
 

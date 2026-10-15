@@ -182,7 +182,7 @@ func parseError(path string, data []byte, err error) error {
 	} else if strings.Contains(msg, "at start of value") {
 		msg += ` (strings must be quoted, e.g. region = "eu")`
 	}
-	if strings.HasSuffix(key, "api_key") || assignedKeyAt(data, row) == "api_key" {
+	if strings.HasSuffix(key, "api_key") || assignedKeyAt(data, row) == "api_key" || lineMentionsAPIKey(data, row) {
 		key = "mailgun.api_key"
 		msg = "invalid value (details withheld: the line contains the API key)"
 	}
@@ -190,6 +190,15 @@ func parseError(path string, data []byte, err error) error {
 		return fmt.Errorf("config: parsing %s: line %d: %s: %s", path, row, key, msg)
 	}
 	return fmt.Errorf("config: parsing %s: line %d: %s", path, row, msg)
+}
+
+// lineMentionsAPIKey reports whether the 1-based line row contains
+// "api_key" anywhere. This covers inline tables such as
+// mailgun = { api_key = "..." }, where the assignment at the start of
+// the line names a different key.
+func lineMentionsAPIKey(data []byte, row int) bool {
+	lines := strings.Split(string(data), "\n")
+	return row >= 1 && row <= len(lines) && strings.Contains(lines[row-1], "api_key")
 }
 
 // assignedKeyAt returns the last path component of the key assigned on, or
