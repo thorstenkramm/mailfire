@@ -9,9 +9,12 @@
 package mailgun
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -36,7 +39,9 @@ const (
 	// KindAuth means the API key was rejected (HTTP 401/403); exit 3.
 	KindAuth
 	// KindPermanent means the request will never succeed as-is (other
-	// HTTP 4xx); exit 5, no deferral.
+	// HTTP 4xx, local encoding errors, or the caller canceling the
+	// context — e.g. on SIGINT, where the outcome is unknown and deferring
+	// could cause a duplicate send); exit 5, no deferral.
 	KindPermanent
 	// KindDeferrable means retrying later may succeed (HTTP 429, 5xx,
 	// network error, timeout, or an unparseable success response);
@@ -128,26 +133,28 @@ func WithBaseURL(baseURL string) Option {
 	}
 }
 
-// WithTimeout sets the HTTP timeout. Non-positive values are ignored.
+// WithTimeout sets the HTTP timeout. Non-positive values are ignored. The
+// HTTP client is copied first, so a client passed via WithHTTPClient is
+// never mutated.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Client) {
 		if d > 0 {
+			hc := *c.http
+			hc.Timeout = d
+			c.http = &hc
 			c.timeout = d
-			c.http.Timeout = d
 		}
 	}
 }
 
 // WithHTTPClient replaces the HTTP client (e.g. to install a custom
-// transport). Its Timeout, if non-zero, wins over the default; use
-// WithTimeout afterwards to override it.
+// transport). Its Timeout replaces the default (zero means no client
+// timeout); use WithTimeout afterwards to override it.
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		if hc != nil {
 			c.http = hc
-			if hc.Timeout > 0 {
-				c.timeout = hc.Timeout
-			}
+			c.timeout = hc.Timeout
 		}
 	}
 }
@@ -178,12 +185,32 @@ func New(apiKey, domain, region string, opts ...Option) (*Client, error) {
 	return c, nil
 }
 
-// redact replaces any occurrence of the API key in s. Mailgun never
+// redact replaces any occurrence of the API key in s, including its
+// percent-encoded forms and the base64 Basic Auth credential (a server
+// echoing the Authorization header would otherwise leak it). Mailgun never
 // legitimately echoes the key, but a malformed or malicious server could,
 // and the key must never reach stderr or log files.
 func (c *Client) redact(s string) string {
 	if c.apiKey == "" {
 		return s
 	}
-	return strings.ReplaceAll(s, c.apiKey, "[redacted]")
+	for _, secret := range c.secretForms() {
+		s = strings.ReplaceAll(s, secret, "[redacted]")
+	}
+	return s
+}
+
+// secretForms lists the encodings of the API key that might appear in
+// text, longest first so a longer form is not partially replaced by a
+// shorter one.
+func (c *Client) secretForms() []string {
+	forms := []string{
+		base64.StdEncoding.EncodeToString([]byte("api:" + c.apiKey)),
+		base64.StdEncoding.EncodeToString([]byte(c.apiKey)),
+		url.QueryEscape(c.apiKey),
+		url.PathEscape(c.apiKey),
+		c.apiKey,
+	}
+	sort.SliceStable(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	return forms
 }

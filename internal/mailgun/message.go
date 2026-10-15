@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strings"
+	"unicode/utf8"
 )
 
 // maxResponseBody caps how much of a Mailgun response is read. Real
@@ -130,8 +131,9 @@ func (c *Client) do(req *http.Request, op string) ([]byte, error) {
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
-		return nil, &Error{Op: op, StatusCode: resp.StatusCode, Kind: KindDeferrable,
-			Message: c.redact("reading response: " + err.Error())}
+		kind, msg := c.classifyTransport(err)
+		return nil, &Error{Op: op, StatusCode: resp.StatusCode, Kind: kind,
+			Message: c.redact("reading response: " + msg)}
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return body, nil
@@ -140,7 +142,7 @@ func (c *Client) do(req *http.Request, op string) ([]byte, error) {
 		Op:         op,
 		StatusCode: resp.StatusCode,
 		Kind:       classifyStatus(resp.StatusCode),
-		Message:    c.redact(extractMessage(resp.StatusCode, body)),
+		Message:    c.extractMessage(resp.StatusCode, body),
 	}
 }
 
@@ -159,40 +161,68 @@ func classifyStatus(code int) Kind {
 }
 
 // transportError classifies a request that never received an HTTP
-// response: timeouts and network errors are deferrable.
+// response.
 func (c *Client) transportError(op string, err error) error {
-	msg := err.Error()
-	var nerr net.Error
-	if errors.As(err, &nerr) && nerr.Timeout() {
-		msg = fmt.Sprintf("request timed out after %s", c.timeout)
-	} else if errors.Is(err, context.DeadlineExceeded) {
-		msg = "request timed out: context deadline exceeded"
-	}
-	return &Error{Op: op, Kind: KindDeferrable, Message: c.redact(msg)}
+	kind, msg := c.classifyTransport(err)
+	return &Error{Op: op, Kind: kind, Message: c.redact(msg)}
 }
 
+// classifyTransport maps a transport-level error to a Kind and message.
+// Timeouts and network errors are deferrable. Cancellation by the caller
+// is not: the user aborted, and since the request may already have reached
+// Mailgun, deferring it could send the message twice.
+func (c *Client) classifyTransport(err error) (Kind, string) {
+	var nerr net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return KindPermanent, "request canceled"
+	case errors.As(err, &nerr) && nerr.Timeout() && c.timeout > 0:
+		return KindDeferrable, fmt.Sprintf("request timed out after %s", c.timeout)
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &nerr) && nerr.Timeout()):
+		return KindDeferrable, "request timed out: " + err.Error()
+	default:
+		return KindDeferrable, err.Error()
+	}
+}
+
+// maxErrorMessage caps the length of a server-provided error message.
+const maxErrorMessage = 300
+
 // extractMessage pulls Mailgun's "message" field out of an error body,
-// falling back to a truncated raw snippet and finally the status text.
-func extractMessage(statusCode int, body []byte) string {
+// falling back to a raw snippet and finally the status text. The result is
+// redacted before truncation so a key straddling the cut cannot leak
+// partially.
+func (c *Client) extractMessage(statusCode int, body []byte) string {
 	var parsed struct {
 		Message string `json:"message"`
 	}
+	msg := ""
 	if err := json.Unmarshal(body, &parsed); err == nil && parsed.Message != "" {
-		return parsed.Message
+		msg = parsed.Message
+	} else {
+		msg = strings.TrimSpace(string(body))
 	}
-	if snippet := strings.TrimSpace(string(body)); snippet != "" {
-		const max = 300
-		if len(snippet) > max {
-			snippet = snippet[:max] + "…"
-		}
-		return snippet
+	if msg == "" {
+		return http.StatusText(statusCode)
 	}
-	return http.StatusText(statusCode)
+	return truncate(c.redact(msg), maxErrorMessage)
+}
+
+// truncate shortens s to at most max runes, appending an ellipsis.
+func truncate(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max]) + "…"
 }
 
 // encodeMessage builds the multipart/form-data body. The whole body is
-// buffered in memory; Mailgun caps requests at 25 MB, which bounds the
-// buffer.
+// buffered in memory (file parts are streamed into the buffer via
+// io.Copy, so each file is held only once); Mailgun caps requests at
+// 25 MB, which bounds the buffer. Streaming the body through an io.Pipe
+// would avoid the buffer but loses Content-Length and turns local read
+// errors into mid-request transport errors (misclassified as deferrable);
+// revisit only if memory becomes a concern.
 func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
@@ -253,15 +283,26 @@ func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
 	return &buf, w.FormDataContentType(), nil
 }
 
-// writeFile adds one file part with an explicit Content-Type.
+// writeFile adds one file part with an explicit Content-Type, streaming
+// the content. Only the first 512 bytes are buffered, for sniffing.
 func writeFile(w *multipart.Writer, field string, f File) error {
-	content, err := io.ReadAll(f.Reader)
-	if err != nil {
-		return err
+	if f.Reader == nil {
+		return errors.New("no content reader")
 	}
+	src := f.Reader
 	ct := f.ContentType
 	if ct == "" {
-		ct = http.DetectContentType(content)
+		head := make([]byte, 512)
+		n, err := io.ReadFull(src, head)
+		// EOF means empty content and ErrUnexpectedEOF with n > 0 a short
+		// file; anything else (including a reader failing on its first
+		// read) is a real error.
+		if err != nil && err != io.EOF && (err != io.ErrUnexpectedEOF || n == 0) {
+			return err
+		}
+		head = head[:n]
+		ct = http.DetectContentType(head)
+		src = io.MultiReader(bytes.NewReader(head), src)
 	}
 	h := textproto.MIMEHeader{}
 	h.Set("Content-Disposition",
@@ -271,7 +312,7 @@ func writeFile(w *multipart.Writer, field string, f File) error {
 	if err != nil {
 		return err
 	}
-	_, err = part.Write(content)
+	_, err = io.Copy(part, src)
 	return err
 }
 

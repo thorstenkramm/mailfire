@@ -1,6 +1,7 @@
 package mailgun
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"io"
@@ -8,9 +9,11 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -581,5 +584,222 @@ func TestBasicAuthHeaderValue(t *testing.T) {
 	if gotHeader != want {
 		t.Errorf("Authorization header wrong (user or encoding); starts with %q",
 			strings.SplitN(gotHeader, " ", 2)[0])
+	}
+}
+
+func simpleMessage() *Message {
+	return &Message{From: "ops@example.com", To: []string{"a@example.com"},
+		Subject: "s", Text: "b"}
+}
+
+func TestSendMessageCanceledIsNotDeferrable(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer close(release)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-started
+		cancel()
+	}()
+	_, err := c.SendMessage(ctx, simpleMessage())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !IsPermanent(err) {
+		t.Errorf("caller cancellation must not be deferrable: %v", err)
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Errorf("error = %q, want mention of cancellation", err)
+	}
+}
+
+func TestSendMessageContextDeadlineIsDeferrable(t *testing.T) {
+	release := make(chan struct{})
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := c.SendMessage(ctx, simpleMessage())
+	if err == nil || !IsDeferrable(err) {
+		t.Fatalf("SendMessage: %v, want deferrable timeout", err)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error = %q, want mention of timeout", err)
+	}
+}
+
+func TestTruncatedResponseBodyIsDeferrable(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = w.Write([]byte(`{"id":`))
+	}))
+	_, err := c.SendMessage(context.Background(), simpleMessage())
+	if err == nil || !IsDeferrable(err) {
+		t.Fatalf("SendMessage: %v, want deferrable read error", err)
+	}
+	if !strings.Contains(err.Error(), "reading response") {
+		t.Errorf("error = %q, want reading response", err)
+	}
+}
+
+func TestRedactsEncodedKeyForms(t *testing.T) {
+	const key = "key/with+special chars&=?"
+	var echo string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(echo))
+	}))
+	defer srv.Close()
+	c, err := New(key, testDomain, "us", WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	forms := map[string]string{
+		"raw":         key,
+		"query":       url.QueryEscape(key),
+		"path":        url.PathEscape(key),
+		"basic auth":  "Basic " + base64.StdEncoding.EncodeToString([]byte("api:"+key)),
+		"base64 only": base64.StdEncoding.EncodeToString([]byte(key)),
+	}
+	for name, form := range forms {
+		t.Run(name, func(t *testing.T) {
+			echo = `{"message":"got ` + form + `"}`
+			_, err := c.SendMessage(context.Background(), simpleMessage())
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			for _, f := range forms {
+				if strings.Contains(err.Error(), strings.TrimPrefix(f, "Basic ")) {
+					t.Fatalf("error leaks key form %q: %q", f, err)
+				}
+			}
+			if !strings.Contains(err.Error(), "[redacted]") {
+				t.Errorf("error = %q, want redacted placeholder", err)
+			}
+		})
+	}
+}
+
+func TestErrorMessageTruncatedAfterRedaction(t *testing.T) {
+	// The key straddles the truncation boundary; truncating first would
+	// leak a prefix of it.
+	msg := strings.Repeat("x", maxErrorMessage-5) + testAPIKey + strings.Repeat("y", 500)
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"` + msg + `"}`))
+	}))
+	_, err := c.SendMessage(context.Background(), simpleMessage())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), testAPIKey[:5]) {
+		t.Fatalf("error leaks part of the key: %q", err)
+	}
+	merr, _ := As(err)
+	if n := utf8.RuneCountInString(merr.Message); n > maxErrorMessage+1 {
+		t.Errorf("message has %d runes, want ≤ %d", n, maxErrorMessage+1)
+	}
+	if !strings.HasSuffix(merr.Message, "…") {
+		t.Errorf("message = %q, want ellipsis", merr.Message)
+	}
+}
+
+func TestTruncateRuneSafe(t *testing.T) {
+	got := truncate(strings.Repeat("ä", 10), 3)
+	if got != "äää…" {
+		t.Errorf("truncate = %q, want äää…", got)
+	}
+	if got := truncate("short", 10); got != "short" {
+		t.Errorf("truncate = %q, want short", got)
+	}
+}
+
+func TestWithTimeoutDoesNotMutateCallerClient(t *testing.T) {
+	hc := &http.Client{Timeout: 7 * time.Second}
+	c, err := New(testAPIKey, testDomain, "us", WithHTTPClient(hc), WithTimeout(time.Second))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if hc.Timeout != 7*time.Second {
+		t.Errorf("caller's client mutated: Timeout = %s", hc.Timeout)
+	}
+	if c.http.Timeout != time.Second || c.timeout != time.Second {
+		t.Errorf("client timeout = %s/%s, want 1s", c.http.Timeout, c.timeout)
+	}
+}
+
+func TestWithHTTPClientZeroTimeout(t *testing.T) {
+	c, err := New(testAPIKey, testDomain, "us", WithHTTPClient(&http.Client{}))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if c.timeout != 0 {
+		t.Errorf("timeout = %s, want 0 (mirrors the supplied client)", c.timeout)
+	}
+	kind, msg := c.classifyTransport(&url.Error{Op: "Post", URL: "http://x", Err: timeoutErr{}})
+	if kind != KindDeferrable || !strings.Contains(msg, "timed out") {
+		t.Errorf("classifyTransport = %v %q, want deferrable timeout", kind, msg)
+	}
+}
+
+type timeoutErr struct{}
+
+func (timeoutErr) Error() string   { return "i/o timeout" }
+func (timeoutErr) Timeout() bool   { return true }
+func (timeoutErr) Temporary() bool { return true }
+
+func TestSendMessageNilAttachmentReader(t *testing.T) {
+	c := newTestClient(t, okHandler(t))
+	msg := simpleMessage()
+	msg.Attachments = []File{{Name: "empty.bin"}}
+	_, err := c.SendMessage(context.Background(), msg)
+	if err == nil || !IsPermanent(err) {
+		t.Fatalf("SendMessage: %v, want permanent encoding error", err)
+	}
+}
+
+func TestLargeAttachmentStreamedAndSniffed(t *testing.T) {
+	content := append([]byte("%PDF-1.4\n"), bytes.Repeat([]byte("0123456789"), 100_000)...)
+	small := []byte("hi")
+	var got multipartRequest
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = parseMultipart(t, r)
+		_, _ = w.Write([]byte(`{"id":"<x>","message":"ok"}`))
+	}))
+	msg := simpleMessage()
+	msg.Attachments = []File{
+		{Name: "big.pdf", Reader: bytes.NewReader(content)},
+		{Name: "small.txt", Reader: bytes.NewReader(small)},
+		{Name: "empty.txt", Reader: bytes.NewReader(nil)},
+	}
+	if _, err := c.SendMessage(context.Background(), msg); err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if len(got.files) != 3 {
+		t.Fatalf("got %d files, want 3", len(got.files))
+	}
+	if !bytes.Equal(got.files[0].content, content) {
+		t.Errorf("big attachment corrupted: %d bytes, want %d", len(got.files[0].content), len(content))
+	}
+	if got.files[0].contentType != "application/pdf" {
+		t.Errorf("big content type = %q, want application/pdf", got.files[0].contentType)
+	}
+	if !bytes.Equal(got.files[1].content, small) {
+		t.Errorf("small attachment = %q, want %q", got.files[1].content, small)
+	}
+	if len(got.files[2].content) != 0 {
+		t.Errorf("empty attachment has %d bytes", len(got.files[2].content))
 	}
 }
