@@ -414,8 +414,6 @@ func TestSendNotImplementedFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		{"html", []string{"--html"}, "--html: not implemented yet"},
-		{"html-raw", []string{"--html-raw"}, "--html-raw: not implemented yet"},
 		{"attach", []string{"--attach", "x.pdf"}, "--attach: not implemented yet"},
 		{"preheader", []string{"--preheader", "preview"}, "--preheader: not implemented yet"},
 		{"footer", []string{"--footer", "f.html"}, "--footer: not implemented yet"},

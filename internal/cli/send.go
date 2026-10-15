@@ -10,14 +10,16 @@ import (
 	"strings"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
+	"github.com/thorstenkramm/mailfire/internal/htmltext"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/markdown"
 	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
-// send composes a message (plain text, or multipart/alternative for --md)
-// from the parsed flags and the body read from stdin or --file, posts it
-// via the Mailgun client, and maps the outcome to an exit code per PRD §8.
+// send composes a message (plain text, or multipart/alternative for
+// --md, --html and --html-raw) from the parsed flags and the body read
+// from stdin or --file, posts it via the Mailgun client, and maps the
+// outcome to an exit code per PRD §8.
 func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr io.Writer) int {
 	msg, err := compose(cfg, opts, rc.stdin)
 	if err != nil {
@@ -93,7 +95,8 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		Subject:  opts.Subject,
 		TestMode: opts.Test,
 	}
-	if opts.Format == "md" {
+	switch opts.Format {
+	case "md":
 		// Multipart/alternative (FR-1): the Markdown rendered into the
 		// base template as the HTML part, plus a plain-text part derived
 		// from the same source.
@@ -102,7 +105,21 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			Body:    render.HTML(markdown.HTML(body)),
 		})
 		msg.Text = markdown.Text(body)
-	} else {
+	case "html":
+		// The fragment is trusted markup and goes into the base
+		// template as is — inline styles and colors survive (the
+		// template sets text color once on .content and inherits).
+		msg.HTML = render.Base(render.Data{
+			Subject: opts.Subject,
+			Body:    render.HTML(body),
+		})
+		msg.Text = htmltext.Text(body)
+	case "html-raw":
+		// A complete document, sent byte-identical: no template, no
+		// inlining, no additions. Only the text part is derived.
+		msg.HTML = body
+		msg.Text = htmltext.Text(body)
+	default:
 		msg.Text = body
 	}
 	return msg, nil
