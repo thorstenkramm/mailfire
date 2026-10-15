@@ -54,12 +54,25 @@ type Message struct {
 
 	Attachments []File // sent as repeated "attachment" file parts
 	Inline      []File // sent as repeated "inline" file parts
+
+	// Size is the encoded multipart request size in bytes, set by
+	// SendMessage after encoding (0 before the first SendMessage call or
+	// when encoding failed). It backs the "size" field of debug-level
+	// logging (PRD FR-3). Consumers must not set it.
+	Size int
 }
 
 // SendResponse is Mailgun's answer to a successful send.
 type SendResponse struct {
 	ID      string // e.g. "<20261015...@mg.example.com>"
 	Message string // e.g. "Queued. Thank you."
+
+	// StatusCode is the HTTP status of the response (200 from Mailgun).
+	StatusCode int
+	// RawBody is the raw response body with any occurrence of the API
+	// key redacted; it backs the "response" field of debug-level logging
+	// (PRD FR-3).
+	RawBody string
 }
 
 // SendMessage posts the message to /v3/{domain}/messages as
@@ -71,6 +84,7 @@ func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, 
 	if err != nil {
 		return nil, &Error{Op: op, Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
+	msg.Size = body.Len()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v3/"+url.PathEscape(c.domain)+"/messages", body)
@@ -79,15 +93,17 @@ func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, 
 	}
 	req.Header.Set("Content-Type", contentType)
 
-	respBody, err := c.do(req, op)
+	respBody, status, err := c.do(req, op)
 	if err != nil {
 		return nil, err
 	}
 	var parsed SendResponse
 	if err := json.Unmarshal(respBody, &parsed); err != nil || parsed.ID == "" {
-		return nil, &Error{Op: op, Kind: KindDeferrable,
+		return nil, &Error{Op: op, StatusCode: status, Kind: KindDeferrable,
 			Message: "invalid response: expected JSON with a message id"}
 	}
+	parsed.StatusCode = status
+	parsed.RawBody = c.redact(string(respBody))
 	return &parsed, nil
 }
 
@@ -110,7 +126,7 @@ func (c *Client) ValidateDomain(ctx context.Context) (*DomainInfo, error) {
 		return nil, &Error{Op: op, Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
 
-	respBody, err := c.do(req, op)
+	respBody, _, err := c.do(req, op)
 	if err != nil {
 		return nil, err
 	}
@@ -125,27 +141,28 @@ func (c *Client) ValidateDomain(ctx context.Context) (*DomainInfo, error) {
 }
 
 // do executes the request with Basic Auth and classifies the response.
-// On 2xx it returns the body; otherwise the error is a classified *Error
-// carrying Mailgun's message with the API key redacted.
-func (c *Client) do(req *http.Request, op string) ([]byte, error) {
+// On 2xx it returns the body and the status code; otherwise the error is
+// a classified *Error carrying Mailgun's message with the API key
+// redacted.
+func (c *Client) do(req *http.Request, op string) ([]byte, int, error) {
 	req.SetBasicAuth("api", c.apiKey)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, c.transportError(op, err)
+		return nil, 0, c.transportError(op, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {
 		kind, msg := c.classifyTransport(err)
-		return nil, &Error{Op: op, StatusCode: resp.StatusCode, Kind: kind,
+		return nil, 0, &Error{Op: op, StatusCode: resp.StatusCode, Kind: kind,
 			Message: c.redact("reading response: " + msg)}
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		return body, nil
+		return body, resp.StatusCode, nil
 	}
-	return nil, &Error{
+	return nil, 0, &Error{
 		Op:         op,
 		StatusCode: resp.StatusCode,
 		Kind:       classifyStatus(resp.StatusCode),

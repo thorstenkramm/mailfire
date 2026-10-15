@@ -9,10 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/htmltext"
 	"github.com/thorstenkramm/mailfire/internal/inliner"
+	"github.com/thorstenkramm/mailfire/internal/logging"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/markdown"
 	"github.com/thorstenkramm/mailfire/internal/render"
@@ -40,12 +42,27 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 		return ExitConfig
 	}
 
+	// The logfile is opened before any send attempt (FR-3): an unusable
+	// path is a configuration error and aborts the run.
+	var logger *logging.Logger
+	if cfg.Logfile != "" {
+		logger, err = logging.Open(cfg.Logfile, cfg.LogLevel, cfg.LogMaxSize)
+		if err != nil {
+			fmt.Fprintf(stderr, "mailfire: %v\n", err)
+			return ExitConfig
+		}
+		defer logger.Close()
+	}
+
 	// TODO(task 14/15): deferral persists the fully encoded request, so
 	// a failed --test send would carry o:testmode=yes into defer_dir and
 	// resend would replay it in test mode — violating "resend never uses
 	// test mode" (FR-1, Decision Q5). Task 14 must either not defer
 	// --test sends or store the message so resend can drop o:testmode.
 	resp, err := client.SendMessage(context.Background(), msg)
+	if logger != nil {
+		logAttempt(logger, msg, opts.Test, resp, err, stderr)
+	}
 	if err != nil {
 		return reportSendError(err, stderr)
 	}
@@ -363,6 +380,40 @@ func readFooter(p string) (render.HTML, error) {
 		return "", fmt.Errorf("footer %s: %v", f.Name(), err)
 	}
 	return render.HTML(data), nil
+}
+
+// logAttempt writes exactly one log line for the attempt when logging is
+// enabled (at the error level, successful sends are skipped by the logger
+// itself). Message ID, status code, and response body come from the
+// Mailgun client and are already redacted there, so the API key can never
+// reach the logfile. On failure there is usually no message ID; it is
+// logged as "". A logging failure is reported on stderr but never changes
+// the exit code: the send outcome stays authoritative.
+func logAttempt(logger *logging.Logger, msg *mailgun.Message, test bool,
+	resp *mailgun.SendResponse, sendErr error, stderr io.Writer) {
+	a := logging.Attempt{
+		Time:    time.Now(),
+		From:    msg.From,
+		To:      msg.To,
+		Subject: msg.Subject,
+		Size:    int64(msg.Size),
+		Status:  0,
+		Success: sendErr == nil,
+		Test:    test,
+	}
+	if sendErr == nil {
+		a.MessageID = resp.ID
+		a.Status = resp.StatusCode
+		a.Response = resp.RawBody
+	} else if merr, ok := mailgun.As(sendErr); ok {
+		a.Status = merr.StatusCode
+		a.Response = merr.Message // redacted by the client
+	} else {
+		a.Response = sendErr.Error()
+	}
+	if err := logger.Log(a); err != nil {
+		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+	}
 }
 
 // reportSendError maps a client failure to an exit code per PRD §8.
