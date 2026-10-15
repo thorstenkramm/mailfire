@@ -55,6 +55,49 @@ func TestSendPreheaderFooterGolden(t *testing.T) {
 			t.Errorf("html part missing %q", want)
 		}
 	}
+
+	// Placement: the fragment is the content of the footer-text cell,
+	// not appended elsewhere in the document.
+	_, cell, ok := strings.Cut(html, `class="footer-text"`)
+	if ok {
+		_, cell, ok = strings.Cut(cell, ">")
+	}
+	if ok {
+		cell, _, ok = strings.Cut(cell, "</td>")
+	}
+	if !ok || !strings.HasPrefix(cell, `<p>Sent by the nightly job on ops01.`) {
+		t.Errorf("footer-text cell does not hold the footer fragment:\n%s", cell)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(html), "</body></html>") {
+		t.Errorf("html part has content after </body></html>")
+	}
+}
+
+// TestSendPreheaderMultiline: the preheader is body content, never a
+// header, so newlines are harmless; they stay inside the hidden block.
+func TestSendPreheaderMultiline(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	code, _, stderr := runMock(t, m, "body\n",
+		"-c", cfg, "--to", "a@example.com", "--subject", "s", "--md",
+		"--preheader", "line one\r\nBcc: evil@example.com")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	req := m.LastRequest(t)
+	if got := req.Field("bcc"); got != "" {
+		t.Errorf("bcc = %q, want empty", got)
+	}
+	html := req.Field("html")
+	start := strings.Index(html, "mso-hide:all")
+	if start < 0 {
+		t.Fatalf("html part has no preheader block:\n%s", html)
+	}
+	end := strings.Index(html[start:], "</div>")
+	if end < 0 || !strings.Contains(html[start:start+end], "Bcc: evil@example.com") {
+		t.Errorf("multi-line preheader not inside the hidden block:\n%s", html)
+	}
 }
 
 // TestSendPreheaderFooterOmitted: without the flags neither the hidden
@@ -228,7 +271,7 @@ func TestSendFooterFileErrors(t *testing.T) {
 		if code != ExitUsage {
 			t.Errorf("exit = %d, want %d", code, ExitUsage)
 		}
-		if !strings.Contains(stderr, "reading footer file") || !strings.Contains(stderr, missing) {
+		if !strings.Contains(stderr, "footer "+missing) {
 			t.Errorf("stderr missing footer error with path:\n%s", stderr)
 		}
 	})
@@ -241,7 +284,7 @@ func TestSendFooterFileErrors(t *testing.T) {
 		if code != ExitUsage {
 			t.Errorf("exit = %d, want %d", code, ExitUsage)
 		}
-		if !strings.Contains(stderr, "reading footer file") || !strings.Contains(stderr, dir) {
+		if !strings.Contains(stderr, "footer "+dir+": is a directory") {
 			t.Errorf("stderr missing footer error with path:\n%s", stderr)
 		}
 	})

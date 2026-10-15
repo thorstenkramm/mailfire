@@ -232,7 +232,8 @@ func openImage(p string) (*os.File, error) {
 }
 
 // openRegular opens path (~ expanded) for streaming and accepts only
-// regular files; kind ("attachment", "image") prefixes the errors.
+// regular files; kind ("attachment", "image", "footer") prefixes the
+// errors.
 func openRegular(kind, p string) (*os.File, error) {
 	if p == "" {
 		return nil, fmt.Errorf("%s: empty path", kind)
@@ -336,13 +337,18 @@ func readBody(file string, stdin io.Reader) (string, error) {
 
 // readFooter reads the --footer HTML fragment (~ expanded). The content
 // is trusted markup: it is inserted into the base template as is
-// (render.HTML), never escaped. A missing or unreadable file — including
-// a directory — fails the send with the resolved path in the message.
+// (render.HTML), never escaped. Like attachments and images, only
+// regular files are accepted (a FIFO would block the send); a missing,
+// unreadable or non-regular file fails with the resolved path.
 func readFooter(p string) (render.HTML, error) {
-	path := config.ExpandPath(p)
-	data, err := os.ReadFile(path)
+	f, err := openRegular("footer", p)
 	if err != nil {
-		return "", fmt.Errorf("reading footer file %s: %v", path, err)
+		return "", err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return "", fmt.Errorf("footer %s: %v", f.Name(), err)
 	}
 	return render.HTML(data), nil
 }

@@ -44,3 +44,36 @@ func TestSendAttachmentFIFO(t *testing.T) {
 		t.Fatal("send blocked on the FIFO")
 	}
 }
+
+// TestSendFooterFIFO: a named pipe as --footer is refused like an
+// attachment instead of blocking the send.
+func TestSendFooterFIFO(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	type result struct {
+		code   int
+		stderr string
+	}
+	done := make(chan result, 1)
+	go func() {
+		code, _, stderr := runMock(t, m, "body",
+			"-c", cfg, "--to", "a@example.com", "--subject", "s", "--md", "--footer", fifo)
+		done <- result{code, stderr}
+	}()
+	select {
+	case r := <-done:
+		if r.code != ExitUsage {
+			t.Errorf("exit = %d, want %d", r.code, ExitUsage)
+		}
+		if !strings.Contains(r.stderr, "footer "+fifo+": not a regular file") {
+			t.Errorf("stderr missing footer FIFO error:\n%s", r.stderr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("send blocked on the FIFO")
+	}
+}
