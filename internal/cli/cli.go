@@ -61,6 +61,12 @@ Flags (send):
   --no-defer         fail immediately instead of deferring on error
   -c, --config <p>   use this config file
   -h, --help         show help
+
+Flags (resend):
+  --list             show deferred messages (ID, date, to, subject, size)
+  --force            resend even messages younger than the cooldown
+  -c, --config <p>   use this config file
+  -h, --help         show help
 `
 
 // Option customizes Run's behavior. Options exist mainly so tests can
@@ -102,7 +108,13 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 			return ExitOK
 		case "send":
 			return runSend(args[1:], rc, stdout, stderr)
-		case "validate", "resend", "version":
+		case "resend":
+			if wantsHelp(args[1:]) {
+				fmt.Fprint(stdout, usageText)
+				return ExitOK
+			}
+			return runResend(args[1:], rc, stdout, stderr)
+		case "validate", "version":
 			if wantsHelp(args[1:]) {
 				fmt.Fprint(stdout, usageText)
 				return ExitOK

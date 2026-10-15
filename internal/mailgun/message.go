@@ -91,16 +91,37 @@ type SendResponse struct {
 // SendMessage posts the message to /v3/{domain}/messages as
 // multipart/form-data and returns Mailgun's message ID on success.
 func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, error) {
-	const op = "send message"
-
 	body, contentType, err := encodeMessage(msg)
 	if err != nil {
-		return nil, &Error{Op: op, Kind: KindPermanent, Message: c.redact(err.Error())}
+		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
 	msg.Size = body.Len()
 	msg.Encoded = body.Bytes()
 	msg.EncodedType = contentType
+	return c.postMessages(ctx, "send message", contentType, body)
+}
 
+// SendRaw posts body verbatim to /v3/{domain}/messages with the given
+// Content-Type. It replays a previously encoded request — a deferred
+// message restored from the defer_dir (FR-4): the stored bytes are sent
+// byte-identically with the stored multipart Content-Type (boundary
+// included), never re-composed. Response classification is exactly that
+// of SendMessage. An empty body or Content-Type is a permanent error:
+// there is nothing meaningful to replay.
+func (c *Client) SendRaw(ctx context.Context, contentType string, body []byte) (*SendResponse, error) {
+	const op = "resend message"
+	if len(body) == 0 || contentType == "" {
+		return nil, &Error{Op: op, Kind: KindPermanent,
+			Message: "nothing to replay: stored request body or content type is empty"}
+	}
+	return c.postMessages(ctx, op, contentType, bytes.NewReader(body))
+}
+
+// postMessages posts body to /v3/{domain}/messages with the given
+// Content-Type and classifies the response: the error kinds (and hence
+// the caller's exit codes and deferral decisions) are identical whether
+// the body was just encoded or replayed from the defer_dir.
+func (c *Client) postMessages(ctx context.Context, op, contentType string, body io.Reader) (*SendResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v3/"+url.PathEscape(c.domain)+"/messages", body)
 	if err != nil {
