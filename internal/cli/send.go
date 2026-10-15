@@ -44,7 +44,14 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 	if err != nil {
 		return reportSendError(err, stderr)
 	}
-	fmt.Fprintln(stdout, resp.ID)
+	if opts.Test {
+		// Test mode (FR-1, Decision Q5): Mailgun accepted and validated
+		// the request but delivers nothing — say so explicitly, so the
+		// message id is not mistaken for proof of delivery.
+		fmt.Fprintf(stdout, "accepted in test mode, message id %s (validated only, nothing was delivered)\n", resp.ID)
+	} else {
+		fmt.Fprintln(stdout, resp.ID)
+	}
 	return ExitOK
 }
 

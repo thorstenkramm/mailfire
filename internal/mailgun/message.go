@@ -43,7 +43,10 @@ type Message struct {
 	Subject  string
 	Text     string // plain-text body; optional when HTML is set
 	HTML     string // HTML body; optional when Text is set
-	TestMode bool   // sends o:testmode=yes: Mailgun validates but does not deliver
+	TestMode bool   // sends o:testmode=yes: Mailgun validates but does not deliver.
+	// Invariant: resend (task 15, deferred sends) must never set TestMode,
+	// even if the original send used --test — a resent message must
+	// actually be delivered (PRD FR-1, Decision Q5).
 
 	Attachments []File // sent as repeated "attachment" file parts
 	Inline      []File // sent as repeated "inline" file parts
