@@ -1,11 +1,13 @@
 package markdown
 
 import (
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestIsLocalImage(t *testing.T) {
+	// Platform-independent cases: identical on every OS.
 	for _, tc := range []struct {
 		dest  string
 		local bool
@@ -16,18 +18,43 @@ func TestIsLocalImage(t *testing.T) {
 		{"/abs/path/logo.png", true},
 		{"~/Pictures/logo.png", true},
 		{"space in name.png", true},
-		{"", true}, // renders as an empty src; opening it fails with a clear error
+		{`\\host\share\logo.png`, true}, // UNC path: no colon, local everywhere
+		{"", true},                      // renders as an empty src; opening it fails with a clear error
 		{"https://example.com/logo.png", false},
 		{"http://example.com/logo.png", false},
 		{"HTTP://example.com/logo.png", false},
 		{"//cdn.example.com/logo.png", false},
 		{"cid:img-abc@mailfire", false}, // already rewritten
 		{"data:image/png;base64,iVBORw0K", false},
-		{"img:2.png", false},         // looks like a scheme; documented in IsLocalImage
-		{"C:\\img\\logo.png", false}, // Windows path, task 18
+		{"img:2.png", false}, // multi-letter scheme, not a drive letter, on any OS
 	} {
-		if got := IsLocalImage(tc.dest); got != tc.local {
-			t.Errorf("IsLocalImage(%q) = %v, want %v", tc.dest, got, tc.local)
+		for _, windows := range []bool{false, true} {
+			if got := isLocalImage(tc.dest, windows); got != tc.local {
+				t.Errorf("isLocalImage(%q, windows=%v) = %v, want %v", tc.dest, windows, got, tc.local)
+			}
+		}
+		if got := IsLocalImage(tc.dest); got != isLocalImage(tc.dest, runtime.GOOS == "windows") {
+			t.Errorf("IsLocalImage(%q) disagrees with the parametrized classification", tc.dest)
+		}
+	}
+}
+
+// TestIsLocalImageDriveLetters: on Windows a single-letter "scheme" is a
+// drive letter, so C:\... (and C:/..., C:...) name local files; on other
+// platforms they keep the URL-scheme reading and are not local.
+func TestIsLocalImageDriveLetters(t *testing.T) {
+	for _, dest := range []string{
+		`C:\img\logo.png`,
+		`C:/img/logo.png`,
+		`C:logo.png`, // drive-relative
+		`c:\img\logo.png`,
+		`D:`,
+	} {
+		if !isLocalImage(dest, true) {
+			t.Errorf("isLocalImage(%q, windows=true) = false, want true (drive letter)", dest)
+		}
+		if isLocalImage(dest, false) {
+			t.Errorf("isLocalImage(%q, windows=false) = true, want false (parses as URL scheme)", dest)
 		}
 	}
 }

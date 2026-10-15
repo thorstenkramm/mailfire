@@ -120,6 +120,15 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
 	}
 
+	// Bodies piped on Windows or saved by Windows editors use CRLF line
+	// endings. The Markdown renderer and the HTML-to-text derivation
+	// normalize CRLF internally; normalize here too, so --txt and --html
+	// compose the same message no matter which platform produced the
+	// body. --html-raw is exempt: it is sent byte-identical (FR-1).
+	if opts.Format != "html-raw" {
+		body = strings.ReplaceAll(body, "\r\n", "\n")
+	}
+
 	// --preheader and --footer only reach here with --md or --html
 	// (checkFlags). The footer is trusted HTML read from a file and
 	// inserted into the template as is (FR-1, FR-7).

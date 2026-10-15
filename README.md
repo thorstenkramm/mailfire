@@ -42,6 +42,10 @@ On Windows:
 > Using a system-wide configuration is usually insecure. Anyone can take the API key and use it anywhere.
 > Use only with the utmost care!
 
+On Linux and macOS, `mailfire` warns on startup when the config file is readable by group or
+others (permissions more permissive than `0600`); fix it with `chmod 600 <path>`. On Windows
+this check is skipped — file access is governed by NTFS ACLs, not POSIX permission bits.
+
 ```toml
 ## mailfire configuration
 [mailgun]
@@ -89,6 +93,7 @@ On Windows:
   defer = false
 
   ## Deferred email are stored by default in your home dir in $HOME/.local/share/mailfire
+  ## (%LOCALAPPDATA%\mailfire on Windows)
   ## The default defer_dir is created on-the-fly
   ## defer_dir, path to an existing directory, string, optional
   defer_dir = /var/tmp/mailfire/deferred

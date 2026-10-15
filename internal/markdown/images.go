@@ -3,6 +3,7 @@ package markdown
 import (
 	"bytes"
 	"net/url"
+	"runtime"
 	"strings"
 
 	"github.com/yuin/goldmark/ast"
@@ -16,12 +17,21 @@ import (
 // schemes (cid:, data:, ...) and protocol-relative URLs (//host/x.png)
 // are not.
 //
-// Two edge cases are deliberately classified as not-local: a Windows
-// drive-letter path (C:\img.png) parses as the scheme "c" — Windows
-// support is task 18 — and a plain filename containing a colon
-// (img:2.png) parses as a scheme too. Neither is attempted as a file,
-// so they render unchanged instead of failing the send.
+// On Windows a drive-letter path (C:\img.png, C:/img.png, or the
+// drive-relative C:img.png) parses as the single-letter scheme "c"; it
+// is classified as local there (see isLocalImage). On other platforms it
+// keeps the scheme reading and is not local — a Windows path on a Unix
+// box names no file anyway. A plain filename containing a colon
+// (img:2.png) also parses as a scheme and is deliberately not local:
+// it is never attempted as a file, so it renders unchanged instead of
+// failing the send.
 func IsLocalImage(dest string) bool {
+	return isLocalImage(dest, runtime.GOOS == "windows")
+}
+
+// isLocalImage is IsLocalImage parametrized on the target platform, so
+// the Windows drive-letter rule can be tested on any OS.
+func isLocalImage(dest string, windows bool) bool {
 	if strings.HasPrefix(dest, "//") {
 		return false
 	}
@@ -33,6 +43,11 @@ func IsLocalImage(dest string) bool {
 		if c := dest[i]; !isAlphaNum(c) && c != '+' && c != '-' && c != '.' {
 			return true // not a valid scheme: a local path containing ':'
 		}
+	}
+	// No registered URL scheme has a single letter, so on Windows a
+	// single-letter "scheme" is a drive letter — a local path.
+	if windows && colon == 1 {
+		return true
 	}
 	return false
 }
