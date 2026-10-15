@@ -164,3 +164,26 @@ func TestSendHTMLRawFromFile(t *testing.T) {
 		t.Errorf("text = %q, want %q", got, want)
 	}
 }
+
+// TestSendHTMLRawNoNormalization checks that --html-raw applies no
+// normalization at all: a BOM, CRLF line endings and a missing trailing
+// newline all reach the html part unchanged, while the text part is
+// still derived cleanly.
+func TestSendHTMLRawNoNormalization(t *testing.T) {
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+
+	doc := "\ufeff<!DOCTYPE html>\r\n<html><body>\r\n<p>crlf &amp; bom</p>\r\n</body></html>"
+	code, _, stderr := runMock(t, m, doc,
+		"-c", cfg, "--to", "a@example.com", "--subject", "s", "--html-raw")
+	if code != ExitOK {
+		t.Fatalf("exit = %d, want %d; stderr:\n%s", code, ExitOK, stderr)
+	}
+	req := m.LastRequest(t)
+	if got := req.Field("html"); got != doc {
+		t.Errorf("html part not byte-identical:\ngot  %q\nwant %q", got, doc)
+	}
+	if got, want := req.Field("text"), "crlf & bom\n"; got != want {
+		t.Errorf("text = %q, want %q", got, want)
+	}
+}

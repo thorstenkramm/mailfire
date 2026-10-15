@@ -3,31 +3,40 @@
 //
 // Tags and comments are removed, the content of script, style and title
 // elements is dropped (the title duplicates the subject), block-level
-// elements become line breaks, runs of whitespace are collapsed, and
-// entity references are decoded with html.UnescapeString — the same
-// entity-decoding machinery the markdown package's plain-text writer
-// uses. The scanner is deliberately lenient: it never fails, so even
-// malformed HTML yields its readable text.
+// elements become line breaks, whitespace runs collapse except inside
+// <pre>, and entity references are decoded. Tokenizing is done by
+// golang.org/x/net/html, which follows the HTML5 tokenizer rules for
+// attributes, comments and raw-text elements (a quote or '>' inside an
+// attribute, "</script>" inside a comment, invalid UTF-8 — none of them
+// can swallow the rest of the text). It never fails, so even malformed
+// HTML yields its readable text.
 package htmltext
 
 import (
-	"html"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"golang.org/x/net/html"
 )
 
 // Text converts HTML to plain text. Paragraph-level blocks are separated
 // by a blank line, simpler breaks (list items, table cells, <br>) by a
 // single newline. The result ends with exactly one newline; empty or
-// markup-only input yields "".
+// markup-only input yields "". A leading byte order mark is ignored.
 func Text(src string) string {
+	src = strings.TrimPrefix(src, "\ufeff")
 	s := &scanner{}
 	s.scan(strings.ReplaceAll(src, "\r\n", "\n"))
 	return clean(s.b.String())
 }
 
-// rawContent elements carry no visible text for a message body; their
-// content up to the closing tag is dropped.
-var rawContent = map[string]bool{"script": true, "style": true, "title": true}
+// dropped elements carry no visible text for a message body. The
+// tokenizer returns their content as raw text, which is discarded.
+var dropped = map[string]bool{
+	"iframe": true, "noembed": true, "noframes": true, "noscript": true,
+	"script": true, "style": true, "title": true,
+}
 
 // par elements are separated from the surrounding text by a blank line.
 var par = map[string]bool{
@@ -45,77 +54,108 @@ var brk = map[string]bool{
 	"td": true, "th": true,
 }
 
-// scanner accumulates the text of an HTML document in b. Block newlines
-// are not written immediately but held pending: consecutive boundaries
-// (a closing </p> right before an opening <ul>) collapse into the wider
-// one instead of stacking, and whitespace-only text between them is
-// dropped.
+// scanner accumulates the text of an HTML document in b, collapsing
+// whitespace as it goes. Block newlines are not written immediately but
+// held pending: consecutive boundaries (a closing </p> right before an
+// opening <ul>) collapse into the wider one instead of stacking, and
+// whitespace between them is dropped.
 type scanner struct {
-	b  strings.Builder
-	nl int // pending block newlines: 1 = line break, 2 = blank line
+	b     strings.Builder
+	nl    int    // pending block newlines: 1 = line break, 2 = blank line
+	space bool   // whitespace seen since the last word
+	line  bool   // the current output line has text
+	pre   int    // depth of open <pre> elements
+	skip  string // dropped element whose content is being skipped
 }
 
-// scan walks src, writing text (entities decoded) to s.b while skipping
-// markup.
+// scan tokenizes src, writing text (entities decoded) to s.b while
+// skipping markup. Comments, doctypes and processing instructions
+// produce no text.
 func (s *scanner) scan(src string) {
-	for len(src) > 0 {
-		i := strings.IndexByte(src, '<')
-		if i < 0 {
-			s.text(src)
+	z := html.NewTokenizer(strings.NewReader(src))
+	for {
+		tt := z.Next()
+		if tt == html.ErrorToken {
+			return // io.EOF; a strings.Reader cannot fail otherwise
+		}
+		if tt == html.TextToken {
+			if s.skip == "" {
+				s.text(string(z.Text()))
+			}
+			continue
+		}
+		name, _ := z.TagName()
+		tag := string(name)
+		switch {
+		case s.skip != "":
+			if tt == html.EndTagToken && tag == s.skip {
+				s.skip = ""
+			}
+		case tt == html.StartTagToken && dropped[tag]:
+			s.skip = tag
+		case tt == html.StartTagToken || tt == html.SelfClosingTagToken:
+			if tag == "pre" && tt == html.StartTagToken {
+				s.pre++
+			}
+			s.newline(tag)
+		case tt == html.EndTagToken:
+			if tag == "pre" && s.pre > 0 {
+				s.pre--
+			}
+			s.newline(tag)
+		}
+	}
+}
+
+// text appends decoded text t. Outside <pre>, whitespace runs (source
+// newlines included, per HTML) collapse into one space, and whitespace
+// at a line start or block boundary is dropped. Inside <pre>, t is kept
+// verbatim.
+func (s *scanner) text(t string) {
+	if s.pre > 0 {
+		if s.nl > 0 {
+			// HTML ignores a newline directly after <pre>.
+			t = strings.TrimPrefix(t, "\n")
+		}
+		if t == "" {
 			return
 		}
-		s.text(src[:i])
-		src = src[i+1:] // after '<'
-		switch {
-		case strings.HasPrefix(src, "!--"):
-			// Comment: skip to "-->" (an unterminated comment
-			// consumes the rest of the input).
-			end := strings.Index(src, "-->")
-			if end < 0 {
-				return
-			}
-			src = src[end+3:]
-		case strings.HasPrefix(src, "!") || strings.HasPrefix(src, "?"):
-			// Doctype or processing instruction.
-			src = skipTag(src)
-		case strings.HasPrefix(src, "/"):
-			name, rest := tagName(src[1:])
-			s.newline(name)
-			src = skipTag(rest)
-		default:
-			name, rest := tagName(src)
-			if name == "" {
-				// Stray '<' not starting a tag: keep it as text.
-				s.text("<")
-				continue
-			}
-			src = skipTag(rest)
-			if rawContent[name] {
-				src = skipRaw(src, name)
-			} else {
-				s.newline(name)
-			}
+		s.flush()
+		s.b.WriteString(t)
+		s.line = !strings.HasSuffix(t, "\n")
+		s.space = false
+		return
+	}
+	for t != "" {
+		r, n := utf8.DecodeRuneInString(t)
+		if unicode.IsSpace(r) {
+			s.space = true
+			t = t[n:]
+			continue
 		}
+		end := strings.IndexFunc(t, unicode.IsSpace)
+		if end < 0 {
+			end = len(t)
+		}
+		s.flush()
+		if s.space && s.line {
+			s.b.WriteByte(' ')
+		}
+		s.b.WriteString(t[:end])
+		s.line, s.space = true, false
+		t = t[end:]
 	}
 }
 
-// text appends t with entity references decoded and source newlines
-// treated as spaces (HTML semantics), flushing pending block newlines
-// first. Whitespace-only text is dropped at a block boundary and kept
-// (as spacing between inline elements) elsewhere.
-func (s *scanner) text(t string) {
-	t = html.UnescapeString(strings.ReplaceAll(t, "\n", " "))
-	if strings.TrimSpace(t) == "" {
-		if s.nl == 0 {
-			s.b.WriteString(t)
-		}
+// flush writes the pending block newlines, unless nothing precedes them.
+func (s *scanner) flush() {
+	if s.nl == 0 {
 		return
 	}
-	if s.nl > 0 && s.b.Len() > 0 {
+	if s.b.Len() > 0 {
 		s.b.WriteString(strings.Repeat("\n", s.nl))
 	}
-	s.nl = 0
-	s.b.WriteString(t)
+	s.nl, s.line, s.space = 0, false, false
 }
 
 // newline records the boundary strength of the block element name.
@@ -128,75 +168,18 @@ func (s *scanner) newline(name string) {
 	}
 }
 
-// tagName reads a tag name at the start of s (just after '<' or "</")
-// and returns it lowercased, plus the rest of s. It returns "" when s
-// does not start with an ASCII letter.
-func tagName(s string) (name, rest string) {
-	i := 0
-	for i < len(s) && isNameChar(s[i]) {
-		i++
-	}
-	return strings.ToLower(s[:i]), s[i:]
-}
-
-func isNameChar(c byte) bool {
-	return c == '-' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
-}
-
-// skipTag returns s advanced past the next '>', honoring quoted attribute
-// values (a '>' inside quotes does not end the tag). An unterminated tag
-// consumes the rest of the input.
-func skipTag(s string) string {
-	var quote byte
-	for i := 0; i < len(s); i++ {
-		switch {
-		case quote != 0:
-			if s[i] == quote {
-				quote = 0
-			}
-		case s[i] == '"' || s[i] == '\'':
-			quote = s[i]
-		case s[i] == '>':
-			return s[i+1:]
-		}
-	}
-	return ""
-}
-
-// skipRaw returns s advanced past the closing tag of the raw-content
-// element name; a missing closing tag consumes the rest of the input.
-func skipRaw(s, name string) string {
-	i := strings.Index(strings.ToLower(s), "</"+name)
-	if i < 0 {
-		return ""
-	}
-	return skipTag(s[i+2+len(name):])
-}
-
-// clean normalizes whitespace: leading/trailing and repeated inner
-// whitespace per line collapses, blank-line runs collapse to one blank
-// line, and the result ends with exactly one newline. Whitespace-only
-// input yields "".
+// clean strips trailing whitespace from every line and leading and
+// trailing blank lines from the text, which then ends with exactly one
+// newline. Whitespace-only input yields "". Blank-line runs can only
+// come from <pre> content and are kept.
 func clean(s string) string {
-	var b strings.Builder
-	blank := false
-	for _, line := range strings.Split(s, "\n") {
-		line = strings.Join(strings.Fields(line), " ")
-		if line == "" {
-			blank = true
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteByte('\n')
-			if blank {
-				b.WriteByte('\n')
-			}
-		}
-		blank = false
-		b.WriteString(line)
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRightFunc(l, unicode.IsSpace)
 	}
-	if b.Len() == 0 {
+	s = strings.Trim(strings.Join(lines, "\n"), "\n")
+	if s == "" {
 		return ""
 	}
-	return b.String() + "\n"
+	return s + "\n"
 }
