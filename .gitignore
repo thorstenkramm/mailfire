@@ -4,6 +4,5 @@
 mailfire.conf
 .mailfire.conf
 /mailfire
-mailfire.conf
 mailfire.log
 /deferred/
