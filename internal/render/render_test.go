@@ -1,0 +1,121 @@
+package render
+
+import (
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/thorstenkramm/mailfire/internal/testutil"
+)
+
+// noteBody is the README example body (mailfire --md), as produced by the
+// Markdown renderer, with its trailing newline.
+const noteBody = `<h1>This is an Email</h1>
+<p>It is written in markdown. It&rsquo;s delivered as HTML.</p>
+<p><a href="https://github.com/thorstenkramm/mailfire">mailfire</a></p>
+`
+
+// TestBaseNote renders the README example and compares it against the
+// reference rendering (testdata/note.html is a copy of the design preview).
+// It covers: default Lang, no preheader, no footer.
+func TestBaseNote(t *testing.T) {
+	got := Base(Data{Subject: "Have a nice day", Body: noteBody})
+	testutil.GoldenString(t, "note.html", got)
+}
+
+// TestBaseReport renders a full report body with preheader and footer and
+// compares it against the reference rendering (testdata/report.html is a
+// copy of the design preview).
+func TestBaseReport(t *testing.T) {
+	body, err := os.ReadFile("testdata/report.body.html")
+	if err != nil {
+		t.Fatalf("reading report body: %v", err)
+	}
+	got := Base(Data{
+		Subject:   "Nightly backup finished",
+		Preheader: "All five hosts were backed up; files01 needed a retry.",
+		Body:      string(body),
+		Footer:    `Sent automatically by the nightly backup job on ops01. <a href="https://example.com/backups/settings">Change who gets this report</a>.`,
+	})
+	testutil.GoldenString(t, "report.html", got)
+}
+
+func TestBaseEscapesSubject(t *testing.T) {
+	got := Base(Data{Subject: `Fish & "Chips" <3`, Body: "<p>hi</p>\n"})
+	escaped := `Fish &amp; &#34;Chips&#34; &lt;3`
+	for _, want := range []string{
+		"<title>" + escaped + "</title>",
+		`aria-label="` + escaped + `"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q", want)
+		}
+	}
+}
+
+func TestBaseEscapesPreheader(t *testing.T) {
+	got := Base(Data{
+		Subject:   "s",
+		Preheader: `2 < 3 & "fine"`,
+		Body:      "<p>hi</p>\n",
+	})
+	if !strings.Contains(got, `2 &lt; 3 &amp; &#34;fine&#34;`) {
+		t.Error("preheader is not HTML-escaped")
+	}
+}
+
+func TestBaseInsertsBodyAndFooterAsIs(t *testing.T) {
+	body := "<p>a &amp; b — already <strong>HTML</strong></p>\n"
+	footer := `<a href="https://example.com/?a=1&b=2">link & more</a>`
+	got := Base(Data{Subject: "s", Body: body, Footer: footer})
+	if !strings.Contains(got, body) {
+		t.Error("body was escaped or altered")
+	}
+	if !strings.Contains(got, footer) {
+		t.Error("footer was escaped or altered")
+	}
+}
+
+func TestBaseLang(t *testing.T) {
+	def := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
+	if n := strings.Count(def, `lang="en"`); n != 2 {
+		t.Errorf("default lang: found %d occurrences of lang=\"en\", want 2", n)
+	}
+	de := Base(Data{Lang: "de", Subject: "s", Body: "<p>hi</p>\n"})
+	if n := strings.Count(de, `lang="de"`); n != 2 {
+		t.Errorf("explicit lang: found %d occurrences of lang=\"de\", want 2", n)
+	}
+	if strings.Contains(de, `lang="en"`) {
+		t.Error("explicit lang: output still contains lang=\"en\"")
+	}
+}
+
+func TestBasePreheaderAbsent(t *testing.T) {
+	got := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
+	if strings.Contains(got, "display:none;max-height:0") {
+		t.Error("hidden preheader block rendered although Preheader is empty")
+	}
+}
+
+func TestBaseFooterAbsent(t *testing.T) {
+	got := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
+	if strings.Contains(got, `padding:36px 0 0 0;`) {
+		t.Error("footer block rendered although Footer is empty")
+	}
+}
+
+// TestBaseKeepsMSOConditionals is the regression guard for the choice of
+// text/template: html/template would strip these comments and break
+// Outlook rendering.
+func TestBaseKeepsMSOConditionals(t *testing.T) {
+	got := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
+	for _, want := range []string{
+		"<!--[if mso]>",
+		"<!--[if mso]><table role=\"presentation\" width=\"640\"",
+		"<!--[if mso]></td></tr></table><![endif]-->",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing Outlook conditional %q", want)
+		}
+	}
+}

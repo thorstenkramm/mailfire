@@ -1,0 +1,70 @@
+<h1>Nightly backup finished</h1>
+<p>All five hosts were backed up between 02:00 and 03:18. One host needed a retry; the details are below. The full log is on <a href="https://example.com/backups/2026-10-15">the backup dashboard</a>.</p>
+<h2>Summary</h2>
+<table>
+<thead>
+<tr>
+<th>Host</th>
+<th style="text-align:right">Size</th>
+<th style="text-align:right">Duration</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>db01</td>
+<td style="text-align:right">48.2 GB</td>
+<td style="text-align:right">21 min</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>db02</td>
+<td style="text-align:right">47.9 GB</td>
+<td style="text-align:right">20 min</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>web01</td>
+<td style="text-align:right">3.1 GB</td>
+<td style="text-align:right">2 min</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>web02</td>
+<td style="text-align:right">3.1 GB</td>
+<td style="text-align:right">2 min</td>
+<td>OK</td>
+</tr>
+<tr>
+<td>files01</td>
+<td style="text-align:right">212.4 GB</td>
+<td style="text-align:right">1 h 04 min</td>
+<td>OK after retry</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>Total size: <strong>314.7 GB</strong>, up 2.1 % from last night</li>
+<li>Longest job: files01</li>
+</ul>
+<h2>What happened on files01</h2>
+<p>The first attempt timed out after 30 minutes while reading <code>/srv/share/archive</code>. The second attempt ran with a longer timeout and completed:</p>
+<pre><code class="language-text">02:13:07 rsync: read timeout after 1800 s
+02:13:08 retrying (attempt 2 of 3) with --timeout=3600
+03:17:41 transfer complete, 212.4 GB, 0 errors
+</code></pre>
+<blockquote>
+<p>If the archive share keeps growing at this rate, files01 will no longer fit into the backup window by the end of November.</p>
+</blockquote>
+<p>Next steps:</p>
+<ol>
+<li>Move <code>/srv/share/archive</code> to a weekly schedule.</li>
+<li>Raise the default timeout to <em>60 minutes</em>.</li>
+<li><del>Add a second backup target</del> &ndash; done last week.</li>
+</ol>
+<hr>
+<h3>Restoring a file</h3>
+<p>Restores work as before. Pick the snapshot date and run:</p>
+<pre><code class="language-shell">backup restore --host files01 --date 2026-10-15 /srv/share/projects/report.pdf
+</code></pre>
+<p>Replies to this message reach the on-call person.</p>
