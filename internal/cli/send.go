@@ -448,6 +448,12 @@ func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message
 // cannot be stored, the send degrades to a plain failure (exit 5) — the
 // exit code must not promise a retry that will never happen.
 func deferMessage(cfg *config.Config, msg *mailgun.Message, logger *logging.Logger, stderr io.Writer) int {
+	if msg.TestMode {
+		// Cannot happen: reportSendError never defers --test sends. Guard
+		// anyway — a stored body would carry o:testmode=yes into resend.
+		fmt.Fprintf(stderr, "mailfire: defer: test-mode sends are never deferred; the message was NOT saved\n")
+		return ExitSendFail
+	}
 	if len(msg.Encoded) == 0 || msg.EncodedType == "" {
 		// Cannot happen: a deferrable failure implies the request was
 		// encoded (encoding errors are permanent). Guard anyway —

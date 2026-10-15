@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
+	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
 
@@ -404,5 +406,36 @@ func TestDeferStoresAttachments(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte(`filename="notes.txt"`)) {
 		t.Errorf("stored body does not contain the attachment part")
+	}
+}
+
+// Defense in depth: even if reportSendError's --test check were bypassed,
+// deferMessage refuses a test-mode message, so a stored body can never
+// carry o:testmode=yes into a resend. The empty-encoding guard likewise
+// never claims a deferral it did not make.
+func TestDeferMessageGuards(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  *mailgun.Message
+		want string
+	}{
+		{"test mode", &mailgun.Message{TestMode: true, Encoded: []byte("o:testmode=yes"),
+			EncodedType: "multipart/form-data; boundary=x"}, "never deferred"},
+		{"not encoded", &mailgun.Message{}, "no encoded request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deferDir := filepath.Join(t.TempDir(), "deferred")
+			var stderr bytes.Buffer
+			code := deferMessage(&config.Config{Defer: true, DeferDir: deferDir}, tc.msg, nil, &stderr)
+			if code != ExitSendFail {
+				t.Errorf("exit = %d, want %d", code, ExitSendFail)
+			}
+			if !strings.Contains(stderr.String(), tc.want) || !strings.Contains(stderr.String(), "NOT saved") {
+				t.Errorf("stderr = %q", stderr.String())
+			}
+			if _, err := os.Stat(deferDir); !os.IsNotExist(err) {
+				t.Errorf("defer_dir created: %v", err)
+			}
+		})
 	}
 }

@@ -17,9 +17,14 @@
 // the message; meta.json holds everything `resend --list` shows, so
 // listing never parses the request body.
 //
-// meta.json is written last and acts as the commit marker: a directory
-// without a parseable meta.json is an incomplete write (crash mid-save),
-// skipped by List and evicted first by the max_size cleanup.
+// meta.json is written last and acts as the commit marker: body.bin is
+// synced to disk first, then meta.json is written to a temporary file,
+// synced and renamed into place. A directory without a parseable
+// meta.json, or whose body.bin is missing or does not match the recorded
+// size, is an incomplete write (crash mid-save): it is skipped by List
+// and evicted first by the max_size cleanup — once it is older than
+// incompleteGrace, so a save in progress in a concurrent mailfire
+// process is never mistaken for a crash leftover.
 //
 // This layout is read by resend and may sit on disk across upgrades;
 // change it only with backwards compatibility in mind.
@@ -49,7 +54,16 @@ const (
 	// files are owner-only, like the config file and the logfile.
 	dirPerm  = 0o700
 	filePerm = 0o600
+
+	// metaTmpFile is meta.json while being written; renamed on success.
+	metaTmpFile = MetaFile + ".tmp"
 )
+
+// incompleteGrace is how long an incomplete message directory is left
+// alone by the max_size cleanup (neither counted nor dropped): a younger
+// one may be a save in progress in another mailfire process. A save
+// takes milliseconds even at Mailgun's 25 MB limit.
+const incompleteGrace = 10 * time.Minute
 
 // Metadata describes one deferred message (stored as meta.json).
 type Metadata struct {
@@ -114,8 +128,11 @@ func (s *Store) Save(to []string, subject string, body []byte, contentType strin
 
 	// body.bin first, meta.json last: meta.json is the commit marker, so
 	// a crash mid-save leaves a directory that List skips and the cleanup
-	// evicts first. A failed write removes the incomplete directory.
-	if err := os.WriteFile(filepath.Join(dir, BodyFile), body, filePerm); err != nil {
+	// evicts first. body.bin is synced before meta.json appears, so even
+	// a power loss cannot persist the marker without the body; meta.json
+	// itself appears atomically via rename. A failed write removes the
+	// incomplete directory.
+	if err := writeFileSync(filepath.Join(dir, BodyFile), body); err != nil {
 		os.RemoveAll(dir)
 		return Metadata{}, fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, BodyFile), err)
 	}
@@ -124,7 +141,12 @@ func (s *Store) Save(to []string, subject string, body []byte, contentType strin
 		os.RemoveAll(dir)
 		return Metadata{}, fmt.Errorf("deferral: encoding metadata: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, MetaFile), append(data, '\n'), filePerm); err != nil {
+	tmp := filepath.Join(dir, metaTmpFile)
+	if err := writeFileSync(tmp, append(data, '\n')); err != nil {
+		os.RemoveAll(dir)
+		return Metadata{}, fmt.Errorf("deferral: writing %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, MetaFile)); err != nil {
 		os.RemoveAll(dir)
 		return Metadata{}, fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, MetaFile), err)
 	}
@@ -169,6 +191,24 @@ func (s *Store) createMessageDir(t time.Time) (dir, id string, err error) {
 	return "", "", fmt.Errorf("deferral: creating message directory in %s: ID collision persists", s.Dir)
 }
 
+// writeFileSync creates path exclusively (owner-only), writes data and
+// syncs it to disk before closing.
+func writeFileSync(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // idTimeFormat makes the ID's timestamp prefix sortable as plain text.
 const idTimeFormat = "20060102T150405.000000000"
 
@@ -186,13 +226,15 @@ func newID(t time.Time) string {
 }
 
 // entry is one subdirectory of the defer_dir. Entries without a parseable
-// meta.json are invalid (incomplete writes or foreign directories); they
-// can never be resent and are the first eviction candidates.
+// meta.json, or whose body.bin is missing or not of the recorded size,
+// are invalid (incomplete writes or foreign directories); they can never
+// be resent and are the first eviction candidates.
 type entry struct {
-	meta  Metadata
-	path  string
-	size  int64 // total size of the directory's regular files
-	valid bool
+	meta    Metadata
+	path    string
+	size    int64 // total size of the directory's regular files
+	valid   bool
+	modTime time.Time // of the directory; ages incomplete writes
 }
 
 // scan reads the defer_dir and returns its message directories in
@@ -213,9 +255,12 @@ func (s *Store) scan() ([]entry, error) {
 			continue // stray files are not ours to touch
 		}
 		e := entry{path: filepath.Join(s.Dir, d.Name()), size: dirSize(filepath.Join(s.Dir, d.Name()))}
+		if fi, err := d.Info(); err == nil {
+			e.modTime = fi.ModTime()
+		}
 		if data, err := os.ReadFile(filepath.Join(e.path, MetaFile)); err == nil {
 			err = json.Unmarshal(data, &e.meta)
-			e.valid = err == nil && e.meta.ID != ""
+			e.valid = err == nil && e.meta.ID != "" && bodyIntact(e.path, e.meta.Size)
 		}
 		if !e.valid {
 			e.meta = Metadata{ID: d.Name(), Size: e.size}
@@ -233,6 +278,13 @@ func (s *Store) scan() ([]entry, error) {
 		return a.meta.ID < b.meta.ID
 	})
 	return entries, nil
+}
+
+// bodyIntact reports whether the message directory holds a regular
+// body.bin of exactly size bytes: a torn write must never be replayed.
+func bodyIntact(path string, size int64) bool {
+	fi, err := os.Lstat(filepath.Join(path, BodyFile))
+	return err == nil && fi.Mode().IsRegular() && fi.Size() == size
 }
 
 // dirSize sums the sizes of the regular files directly inside path.
@@ -253,32 +305,51 @@ func dirSize(path string) int64 {
 // enforceMaxSize drops the oldest messages (incomplete writes first, then
 // oldest valid) until the store fits MaxSize, reporting each drop via
 // OnDrop. The message with protectID — the one just saved — is never
-// dropped.
+// dropped, and neither is anything ordered after it: those are messages
+// saved concurrently by other mailfire processes, each protected by its
+// own Save. Without that rule two concurrent cleanups could drop each
+// other's just-saved message, and both sends would exit 4 with nothing
+// stored. Hence the store may stay above MaxSize (e.g. when the newest
+// message alone exceeds it); the next Save evicts it as the oldest.
+//
+// Incomplete writes younger than incompleteGrace are neither counted nor
+// dropped: they may be saves in progress elsewhere.
+//
+// Sizes are those of the files in each message directory (body.bin plus
+// meta.json); filesystem overhead of the directories is not counted.
 func (s *Store) enforceMaxSize(protectID string) error {
 	if s.MaxSize <= 0 {
 		return nil
 	}
-	entries, err := s.scan()
+	all, err := s.scan()
 	if err != nil {
 		return err
 	}
+	cutoff := time.Now().Add(-incompleteGrace)
+	var candidates []entry // eviction order, up to the protected message
 	var total int64
-	for _, e := range entries {
+	protected := false
+	for _, e := range all {
+		if !e.valid && e.modTime.After(cutoff) {
+			continue
+		}
 		total += e.size
+		if e.valid && e.meta.ID == protectID {
+			protected = true
+		}
+		if !protected {
+			candidates = append(candidates, e)
+		}
 	}
-	for total > s.MaxSize {
-		victim := -1
-		for i, e := range entries {
-			if e.valid && e.meta.ID == protectID {
-				continue
-			}
-			victim = i
+	if !protected {
+		// The just-saved message is gone already (dropped by a newer
+		// concurrent Save, whose cleanup is responsible): drop nothing.
+		return nil
+	}
+	for _, e := range candidates {
+		if total <= s.MaxSize {
 			break
 		}
-		if victim < 0 {
-			break // only the just-saved message remains; keep it
-		}
-		e := entries[victim]
 		if err := os.RemoveAll(e.path); err != nil {
 			return fmt.Errorf("deferral: dropping %s: %w", e.path, err)
 		}
@@ -286,7 +357,6 @@ func (s *Store) enforceMaxSize(protectID string) error {
 			s.OnDrop(e.meta)
 		}
 		total -= e.size
-		entries = append(entries[:victim], entries[victim+1:]...)
 	}
 	return nil
 }
