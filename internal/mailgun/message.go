@@ -68,11 +68,13 @@ type SendResponse struct {
 	Message string // e.g. "Queued. Thank you."
 
 	// StatusCode is the HTTP status of the response (200 from Mailgun).
-	StatusCode int
+	// StatusCode and RawBody are set by the client, never decoded from
+	// the response body.
+	StatusCode int `json:"-"`
 	// RawBody is the raw response body with any occurrence of the API
 	// key redacted; it backs the "response" field of debug-level logging
-	// (PRD FR-3).
-	RawBody string
+	// (PRD FR-3). It is capped at maxResponseBody bytes.
+	RawBody string `json:"-"`
 }
 
 // SendMessage posts the message to /v3/{domain}/messages as

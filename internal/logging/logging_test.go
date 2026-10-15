@@ -2,6 +2,7 @@ package logging
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -389,5 +390,161 @@ func TestLogWriteError(t *testing.T) {
 		t.Fatal("Log on a closed logger succeeded")
 	} else if !strings.Contains(err.Error(), "writing") {
 		t.Errorf("error = %q, want a write error", err)
+	}
+}
+
+// Subjects and response bodies may contain quotes, newlines, control
+// characters, line separators, non-ASCII and invalid UTF-8; every entry
+// must remain exactly one valid JSON line.
+func TestJSONEscapingKeepsOneLinePerEntry(t *testing.T) {
+	l, path := openLogger(t, LevelDebug, 1<<20)
+	tricky := []string{
+		`he said "hi" \ back`,
+		"multi\nline\r\nsubject\tTab",
+		"pretty JSON body {\n  \"id\": \"<x@y>\"\n}\n",
+		"unicode: Grüße 日本語 🚀 \u2028 \u2029 \x00 \x1b[0m",
+		"invalid utf8: \xff\xfe",
+	}
+	for _, s := range tricky {
+		a := successAttempt()
+		a.Subject = s
+		a.Response = s
+		if err := l.Log(a); err != nil {
+			t.Fatalf("Log(%q): %v", s, err)
+		}
+	}
+	entries := readEntries(t, path) // fails on any invalid line
+	if len(entries) != len(tricky) {
+		t.Fatalf("got %d lines, want %d (an entry spans lines)", len(entries), len(tricky))
+	}
+	for i, s := range tricky[:4] {
+		if entries[i]["subject"] != s || entries[i]["response"] != s {
+			t.Errorf("entry %d does not round-trip: subject=%q response=%q, want %q",
+				i, entries[i]["subject"], entries[i]["response"], s)
+		}
+	}
+}
+
+// Message IDs are written verbatim ("<id@domain>"), not HTML-escaped,
+// so they can be grepped for with the ID printed on stdout.
+func TestMessageIDNotHTMLEscaped(t *testing.T) {
+	l, path := openLogger(t, LevelInformation, 1<<20)
+	if err := l.Log(successAttempt()); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"<abc123@mg.example.com>"`) {
+		t.Errorf("message id not written verbatim:\n%s", data)
+	}
+}
+
+// A pre-existing logfile ending in a partial line (crash mid-write) must
+// not corrupt the next entry.
+func TestAppendAfterPartialLine(t *testing.T) {
+	l, path := openLogger(t, LevelInformation, 1<<20)
+	if err := os.WriteFile(path, []byte(`{"old":true}`+"\n"+`{"partial":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Log(successAttempt()); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3:\n%s", len(lines), data)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &m); err != nil {
+		t.Errorf("new entry corrupted by the partial line: %q: %v", lines[2], err)
+	}
+}
+
+func TestTruncationExactlyAtMaxSize(t *testing.T) {
+	// Measure one line, then set maxSize to exactly two lines: the file
+	// at exactly maxSize is not truncated; one more line triggers it.
+	probe, probePath := openLogger(t, LevelInformation, 1<<20)
+	if err := probe.Log(successAttempt()); err != nil {
+		t.Fatal(err)
+	}
+	one, err := os.ReadFile(probePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maxSize := int64(2 * len(one))
+
+	l, path := openLogger(t, LevelInformation, maxSize)
+	for i := 0; i < 2; i++ {
+		if err := l.Log(successAttempt()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fi, _ := os.Stat(path); fi.Size() != maxSize {
+		t.Fatalf("size = %d, want exactly %d (no truncation at the limit)", fi.Size(), maxSize)
+	}
+	if err := l.Log(successAttempt()); err != nil {
+		t.Fatal(err)
+	}
+	if fi, _ := os.Stat(path); fi.Size() != maxSize {
+		t.Errorf("size = %d, want %d (oldest of three equal lines dropped)", fi.Size(), maxSize)
+	}
+}
+
+func TestTruncationManyAppends(t *testing.T) {
+	// Variable-length lines over many appends: after every append the
+	// file is within maxSize, consists of whole valid lines, and ends
+	// with the newest entry, preceded by the next-newest in order.
+	const maxSize = 700
+	l, path := openLogger(t, LevelInformation, maxSize)
+	for i := 0; i < 300; i++ {
+		a := successAttempt()
+		a.Subject = fmt.Sprintf("n=%d %s", i, strings.Repeat("z", (i*37)%150))
+		if err := l.Log(a); err != nil {
+			t.Fatalf("Log(%d): %v", i, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(data) > maxSize {
+			t.Fatalf("append %d: size %d > %d", i, len(data), maxSize)
+		}
+		if len(data) == 0 || data[len(data)-1] != '\n' {
+			t.Fatalf("append %d: file does not end with a newline", i)
+		}
+		entries := readEntries(t, path)
+		for j, e := range entries {
+			want := i - (len(entries) - 1 - j)
+			if !strings.HasPrefix(e["subject"].(string), fmt.Sprintf("n=%d ", want)) {
+				t.Fatalf("append %d: entry %d subject %q, want n=%d", i, j, e["subject"], want)
+			}
+		}
+	}
+}
+
+func TestKeepNewest(t *testing.T) {
+	for _, tc := range []struct {
+		data    string
+		maxSize int64
+		want    string
+	}{
+		{"", 10, ""},
+		{"aa\nbb\ncc\n", 9, "aa\nbb\ncc\n"},       // exactly at limit
+		{"aa\nbb\ncc\n", 8, "bb\ncc\n"},           // one byte over
+		{"aa\nbb\ncc\n", 6, "bb\ncc\n"},           // cut on a line boundary
+		{"aa\nbb\ncc\n", 5, "cc\n"},               // cut straddles a line
+		{"aa\nbb\ncc\n", 0, "cc\n"},               // newest always kept
+		{"aaaa\nbbbbbbbbbb\n", 3, "bbbbbbbbbb\n"}, // oversized newest kept
+		{"aa\nbb\npartial", 10, "bb\npartial"},    // no trailing newline
+	} {
+		got := string(keepNewest([]byte(tc.data), tc.maxSize))
+		if got != tc.want {
+			t.Errorf("keepNewest(%q, %d) = %q, want %q", tc.data, tc.maxSize, got, tc.want)
+		}
 	}
 }

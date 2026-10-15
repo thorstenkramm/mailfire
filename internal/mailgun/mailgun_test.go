@@ -214,6 +214,39 @@ func TestSendMessageSuccess(t *testing.T) {
 	if captured.Files[0].ContentType == "" {
 		t.Error("sniffed Content-Type missing for report.txt")
 	}
+
+	// Logging metadata (FR-3): status, raw body, encoded request size.
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(resp.RawBody, "Queued. Thank you.") {
+		t.Errorf("RawBody = %q, want the response body", resp.RawBody)
+	}
+	if msg.Size != len(captured.Body) {
+		t.Errorf("msg.Size = %d, want encoded request size %d", msg.Size, len(captured.Body))
+	}
+}
+
+func TestSendMessageRawBodyRedacted(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"<x@mg>","message":"echo `+testAPIKey+`","rawbody":"injected","statuscode":999}`)
+	}))
+	resp, err := c.SendMessage(context.Background(), &Message{
+		From: "a@example.com", To: []string{"b@example.com"}, Subject: "s", Text: "t",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage: %v", err)
+	}
+	if strings.Contains(resp.RawBody, testAPIKey) {
+		t.Errorf("RawBody leaks the API key: %q", resp.RawBody)
+	}
+	if !strings.Contains(resp.RawBody, "[redacted]") || !strings.Contains(resp.RawBody, `"rawbody":"injected"`) {
+		t.Errorf("RawBody = %q, want the full body with the key redacted", resp.RawBody)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("StatusCode = %d, want 200 (not decoded from the body)", resp.StatusCode)
+	}
 }
 
 func TestSendMessageTestMode(t *testing.T) {

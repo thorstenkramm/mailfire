@@ -145,33 +145,64 @@ func (l *Logger) Log(a Attempt) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if _, err := l.f.Write(append(line, '\n')); err != nil {
+	// A pre-existing file may end in a partial line (crash mid-write,
+	// manual edit); start a fresh line so the new entry stays valid JSON.
+	if l.endsMidLineLocked() {
+		line = append([]byte{'\n'}, line...)
+	}
+	if _, err := l.f.Write(line); err != nil {
 		return fmt.Errorf("logging: writing %s: %w", l.path, err)
 	}
 	return l.truncateLocked()
 }
 
-// marshal encodes the attempt with the field set of the configured level.
+// endsMidLineLocked reports whether the logfile is non-empty and its last
+// byte is not a newline.
+func (l *Logger) endsMidLineLocked() bool {
+	fi, err := l.f.Stat()
+	if err != nil || fi.Size() == 0 {
+		return false
+	}
+	var last [1]byte
+	if _, err := l.f.ReadAt(last[:], fi.Size()-1); err != nil {
+		return false
+	}
+	return last[0] != '\n'
+}
+
+// marshal encodes the attempt with the field set of the configured level
+// as one JSON line, terminated by '\n'. Control characters (including
+// newlines in subjects or response bodies) are escaped by encoding/json,
+// so an entry never spans lines. HTML escaping is disabled so message IDs
+// stay greppable as "<id@domain>" rather than "\u003cid@domain\u003e".
 func (l *Logger) marshal(a Attempt) ([]byte, error) {
 	ts := a.Time.UTC().Format(time.RFC3339)
+	var v any
 	switch l.level {
 	case LevelError:
-		return json.Marshal(errorEntry{
+		v = errorEntry{
 			Timestamp: ts, MessageID: a.MessageID, To: a.To,
 			Status: a.Status, Test: a.Test,
-		})
+		}
 	case LevelDebug:
-		return json.Marshal(debugEntry{
+		v = debugEntry{
 			Timestamp: ts, MessageID: a.MessageID, From: a.From, To: a.To,
 			Subject: a.Subject, Size: a.Size, Status: a.Status,
 			Response: a.Response, Test: a.Test,
-		})
+		}
 	default: // LevelInformation
-		return json.Marshal(informationEntry{
+		v = informationEntry{
 			Timestamp: ts, MessageID: a.MessageID, To: a.To,
 			Subject: a.Subject, Status: a.Status, Test: a.Test,
-		})
+		}
 	}
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, fmt.Errorf("logging: encoding entry: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // truncateLocked drops the oldest whole lines while the file exceeds
