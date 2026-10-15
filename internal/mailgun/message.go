@@ -47,9 +47,10 @@ type Message struct {
 	// TestMode sends o:testmode=yes: Mailgun validates but does not
 	// deliver. Set only from the --test CLI flag, never from config.
 	// Invariant: resend (task 15) never sends in test mode, even if the
-	// original send used --test (PRD FR-1, Decision Q5). Deferral
-	// persists the encoded body, where o:testmode=yes is already baked
-	// in — see the note at the SendMessage call in cli/send.go.
+	// original send used --test (PRD FR-1, Decision Q5). This holds
+	// because --test sends are never deferred (review 12 decision, see
+	// reportSendError in cli/send.go), so a stored body never carries
+	// o:testmode=yes.
 	TestMode bool
 
 	Attachments []File // sent as repeated "attachment" file parts
@@ -60,6 +61,16 @@ type Message struct {
 	// when encoding failed). It backs the "size" field of debug-level
 	// logging (PRD FR-3). Consumers must not set it.
 	Size int
+
+	// Encoded is the exact multipart request body sent to Mailgun and
+	// EncodedType its Content-Type (boundary included). Both are set by
+	// SendMessage alongside Size (nil/"" before the first call or when
+	// encoding failed). Deferral (task 14) persists these bytes: the
+	// readers in Attachments/Inline are consumed by encoding, so the
+	// message cannot be re-encoded after a send attempt (review 09).
+	// Consumers must not set them.
+	Encoded     []byte
+	EncodedType string
 }
 
 // SendResponse is Mailgun's answer to a successful send.
@@ -87,6 +98,8 @@ func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, 
 		return nil, &Error{Op: op, Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
 	msg.Size = body.Len()
+	msg.Encoded = body.Bytes()
+	msg.EncodedType = contentType
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v3/"+url.PathEscape(c.domain)+"/messages", body)

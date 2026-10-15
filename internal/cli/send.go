@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
+	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/htmltext"
 	"github.com/thorstenkramm/mailfire/internal/inliner"
 	"github.com/thorstenkramm/mailfire/internal/logging"
@@ -54,17 +55,12 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 		defer logger.Close()
 	}
 
-	// TODO(task 14/15): deferral persists the fully encoded request, so
-	// a failed --test send would carry o:testmode=yes into defer_dir and
-	// resend would replay it in test mode — violating "resend never uses
-	// test mode" (FR-1, Decision Q5). Task 14 must either not defer
-	// --test sends or store the message so resend can drop o:testmode.
 	resp, err := client.SendMessage(context.Background(), msg)
 	if logger != nil {
 		logAttempt(logger, msg, opts.Test, resp, err, stderr)
 	}
 	if err != nil {
-		return reportSendError(err, stderr)
+		return reportSendError(cfg, opts, msg, logger, err, stderr)
 	}
 	if opts.Test {
 		// Test mode (FR-1, Decision Q5): Mailgun accepted and validated
@@ -229,9 +225,10 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 // it fails with "too many open files" naming the path. Mailgun's 25 MB
 // message limit makes that far beyond any realistic use.
 //
-// TODO(review 09): File.Reader is consumed once and holds an *os.File.
-// Deferral (task 14) must persist the attachment bytes (or paths, if
-// re-reading them on resend is acceptable), not the Message itself.
+// File.Reader is consumed once and holds an *os.File, so the Message
+// cannot be re-encoded after a send attempt. Deferral (task 14) therefore
+// persists the encoded request body (Message.Encoded), never the Message
+// itself (review 09).
 func openAttachments(paths []string) ([]mailgun.File, error) {
 	files := make([]mailgun.File, 0, len(paths))
 	for _, p := range paths {
@@ -416,20 +413,68 @@ func logAttempt(logger *logging.Logger, msg *mailgun.Message, test bool,
 	}
 }
 
-// reportSendError maps a client failure to an exit code per PRD §8.
-// Deferral is not implemented yet, so a deferrable failure exits 4 with an
-// explicit note instead of storing the message.
-func reportSendError(err error, stderr io.Writer) int {
+// reportSendError maps a client failure to an exit code per PRD §8. A
+// deferrable failure defers the message when deferral applies (FR-4): the
+// exact encoded request is stored in the defer_dir and the exit code is
+// 4. Test sends are never deferred (design decision, review 12): --test
+// validates the request rather than delivering it, and a stored body
+// would carry o:testmode=yes into a resend (FR-1, Decision Q5).
+func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message,
+	logger *logging.Logger, sendErr error, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "mailfire: send: %v\n", sendErr)
 	switch {
-	case mailgun.IsAuth(err):
-		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
+	case mailgun.IsAuth(sendErr):
 		return ExitAuth
-	case mailgun.IsDeferrable(err):
-		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
-		fmt.Fprintf(stderr, "mailfire: send: deferral is not implemented yet; the message was NOT saved and is lost\n")
-		return ExitDeferred
-	default:
-		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
+	case !mailgun.IsDeferrable(sendErr):
+		// Permanent failure (other 4xx, encoding error, cancellation):
+		// retrying cannot succeed, so nothing is ever stored.
+		return ExitSendFail
+	case opts.Test:
+		fmt.Fprintf(stderr, "mailfire: send: --test sends are never deferred (test mode only validates the request); the message was NOT saved\n")
+		return ExitSendFail
+	case opts.NoDefer:
+		fmt.Fprintf(stderr, "mailfire: send: not deferring (--no-defer); the message was NOT saved\n")
+		return ExitSendFail
+	case !cfg.Defer:
+		fmt.Fprintf(stderr, "mailfire: send: not deferring (defer = false in %s); the message was NOT saved\n", cfg.Path)
 		return ExitSendFail
 	}
+	return deferMessage(cfg, msg, logger, stderr)
+}
+
+// deferMessage persists the encoded request in the defer_dir and enforces
+// max_size, dropping the oldest deferred messages (FR-4); each drop is
+// reported on stderr and logged when logging is enabled. When the message
+// cannot be stored, the send degrades to a plain failure (exit 5) — the
+// exit code must not promise a retry that will never happen.
+func deferMessage(cfg *config.Config, msg *mailgun.Message, logger *logging.Logger, stderr io.Writer) int {
+	if len(msg.Encoded) == 0 || msg.EncodedType == "" {
+		// Cannot happen: a deferrable failure implies the request was
+		// encoded (encoding errors are permanent). Guard anyway —
+		// storing nothing would silently lose the mail.
+		fmt.Fprintf(stderr, "mailfire: defer: no encoded request to store; the message was NOT saved and is lost\n")
+		return ExitSendFail
+	}
+	store := &deferral.Store{Dir: cfg.DeferDir, MaxSize: cfg.DeferMaxSize}
+	store.OnDrop = func(meta deferral.Metadata) {
+		fmt.Fprintf(stderr, "mailfire: defer: dropped %s (to %s, subject %q, %d bytes): defer_dir exceeds max_size\n",
+			meta.ID, strings.Join(meta.To, ", "), meta.Subject, meta.Size)
+		if logger != nil {
+			d := logging.Drop{Time: time.Now(), ID: meta.ID, To: meta.To, Subject: meta.Subject, Size: meta.Size}
+			if err := logger.LogDrop(d); err != nil {
+				fmt.Fprintf(stderr, "mailfire: %v\n", err)
+			}
+		}
+	}
+	meta, err := store.Save(msg.To, msg.Subject, msg.Encoded, msg.EncodedType)
+	if err != nil {
+		if meta.ID == "" {
+			fmt.Fprintf(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)
+			return ExitSendFail
+		}
+		// The message is stored; only the max_size cleanup failed.
+		fmt.Fprintf(stderr, "mailfire: defer: %v\n", err)
+	}
+	fmt.Fprintf(stderr, "mailfire: defer: message saved as %s in %s; retry with: mailfire resend\n", meta.ID, cfg.DeferDir)
+	return ExitDeferred
 }

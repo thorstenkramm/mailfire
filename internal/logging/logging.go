@@ -21,6 +21,12 @@
 // whole lines are dropped in place; the newest line is never dropped, even
 // if it alone exceeds max_size.
 //
+// Besides sending attempts, the log records deferral drops (PRD FR-4):
+// when the defer_dir exceeds [defer].max_size and the oldest deferred
+// message is discarded, LogDrop appends an entry with "event":
+// "defer_drop". Drops are recorded at every level — a lost message is
+// never routine.
+//
 // Concurrency: a Logger is safe for concurrent use within one process, and
 // appends use O_APPEND, so lines from concurrent mailfire processes do not
 // interleave. Truncation, however, is not coordinated across processes:
@@ -93,6 +99,29 @@ type debugEntry struct {
 	Test      bool     `json:"test,omitempty"`
 }
 
+// Drop describes a deferred message evicted from the defer_dir because
+// the directory exceeded [defer].max_size (PRD FR-4).
+type Drop struct {
+	Time    time.Time // stamped as RFC3339 in UTC
+	ID      string    // deferred message ID (logged as message_id)
+	To      []string  // recipients of the dropped message
+	Subject string
+	Size    int64 // stored request size in bytes
+}
+
+// dropEntry is the JSONL record of a Drop. It reuses the field names of
+// the attempt entries (message_id, to, subject, size) so log consumers
+// can correlate; "event" distinguishes it from a sending attempt. There
+// is no status: no sending attempt happened.
+type dropEntry struct {
+	Timestamp string   `json:"timestamp"`
+	Event     string   `json:"event"` // always "defer_drop"
+	MessageID string   `json:"message_id"`
+	To        []string `json:"to"`
+	Subject   string   `json:"subject"`
+	Size      int64    `json:"size"`
+}
+
 // Logger appends JSONL entries to a logfile and truncates it in place when
 // it exceeds the configured maximum size.
 type Logger struct {
@@ -143,6 +172,31 @@ func (l *Logger) Log(a Attempt) error {
 	if err != nil {
 		return err
 	}
+	return l.appendLine(line)
+}
+
+// LogDrop writes one JSON line for a deferred message dropped from the
+// defer_dir by the max_size cleanup (PRD FR-4). Drops are logged at every
+// level, including error: a discarded message is never routine.
+func (l *Logger) LogDrop(d Drop) error {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(dropEntry{
+		Timestamp: d.Time.UTC().Format(time.RFC3339),
+		Event:     "defer_drop",
+		MessageID: d.ID,
+		To:        d.To,
+		Subject:   d.Subject,
+		Size:      d.Size,
+	}); err != nil {
+		return fmt.Errorf("logging: encoding entry: %w", err)
+	}
+	return l.appendLine(buf.Bytes())
+}
+
+// appendLine appends one JSON line and truncates the logfile afterwards.
+func (l *Logger) appendLine(line []byte) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	// A pre-existing file may end in a partial line (crash mid-write,

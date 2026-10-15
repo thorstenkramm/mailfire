@@ -527,6 +527,85 @@ func TestTruncationManyAppends(t *testing.T) {
 	}
 }
 
+// LogDrop appends a "defer_drop" entry (PRD FR-4) at every level,
+// including error: a discarded deferred message is a failure-class event.
+func TestLogDrop(t *testing.T) {
+	d := Drop{
+		Time:    testTime,
+		ID:      "20261015T123045.000000000-0123456789abcdef",
+		To:      []string{"a@example.com"},
+		Subject: "dropped subject",
+		Size:    4711,
+	}
+	for _, level := range []string{LevelError, LevelInformation, LevelDebug} {
+		t.Run(level, func(t *testing.T) {
+			l, path := openLogger(t, level, 1<<20)
+			if err := l.LogDrop(d); err != nil {
+				t.Fatalf("LogDrop: %v", err)
+			}
+			entries := readEntries(t, path)
+			if len(entries) != 1 {
+				t.Fatalf("got %d entries, want 1", len(entries))
+			}
+			e := entries[0]
+			if !equalKeys(keys(e), "timestamp", "event", "message_id", "to", "subject", "size") {
+				t.Errorf("keys = %v, want the drop field set", keys(e))
+			}
+			if e["event"] != "defer_drop" {
+				t.Errorf("event = %v, want defer_drop", e["event"])
+			}
+			if e["message_id"] != d.ID {
+				t.Errorf("message_id = %v, want %s", e["message_id"], d.ID)
+			}
+			if e["subject"] != d.Subject || e["size"] != float64(d.Size) {
+				t.Errorf("subject/size = %v/%v", e["subject"], e["size"])
+			}
+			if e["timestamp"] != "2026-10-15T12:30:00Z" {
+				t.Errorf("timestamp = %v, want RFC3339", e["timestamp"])
+			}
+		})
+	}
+}
+
+// A drop entry obeys the same append rules as attempts: it lands intact
+// after a partial line left by a crash mid-write.
+func TestLogDropAfterPartialLine(t *testing.T) {
+	l, path := openLogger(t, LevelInformation, 1<<20)
+	if err := os.WriteFile(path, []byte(`{"old":true}`+"\n"+`{"partial":`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.LogDrop(Drop{Time: testTime, ID: "x", To: []string{"a@example.com"}}); err != nil {
+		t.Fatalf("LogDrop: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("got %d lines, want 3:\n%s", len(lines), data)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &m); err != nil {
+		t.Fatalf("drop entry corrupted by the partial line: %q: %v", lines[2], err)
+	}
+	if m["event"] != "defer_drop" {
+		t.Errorf("last entry = %v, want the drop", m)
+	}
+}
+
+func TestLogDropWriteError(t *testing.T) {
+	l, _ := openLogger(t, LevelInformation, 1<<20)
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.LogDrop(Drop{Time: testTime, ID: "x"}); err == nil {
+		t.Fatal("LogDrop on a closed logger succeeded")
+	} else if !strings.Contains(err.Error(), "writing") {
+		t.Errorf("error = %q, want a write error", err)
+	}
+}
+
 func TestKeepNewest(t *testing.T) {
 	for _, tc := range []struct {
 		data    string

@@ -106,10 +106,13 @@ func TestLoggingErrorLevelSkipsSuccess(t *testing.T) {
 		}
 	}
 
-	// A failing send is logged.
+	// A failing send is logged. The send defers (exit 4) into a pinned
+	// defer_dir; the attempt stays a failure for logging (status 500).
 	m.SendResponse = testutil.InternalError()
+	deferDir := filepath.Join(t.TempDir(), "deferred")
+	cfgFail := writeConfig(t, "from = \"ops@example.com\"\n\n[logging]\nlogfile = '"+logfile+"'\nloglevel = \"error\"\n\n[defer]\ndefer_dir = '"+deferDir+"'\n")
 	code, _, _ = runMock(t, m, "body",
-		"-c", cfg, "--to", "a@example.com", "--subject", "s")
+		"-c", cfgFail, "--to", "a@example.com", "--subject", "s")
 	if code != ExitDeferred {
 		t.Fatalf("exit = %d, want %d", code, ExitDeferred)
 	}

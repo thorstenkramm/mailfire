@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,6 +25,11 @@ func writeConfig(t *testing.T, extra string) string {
 
 // runMock runs Run against a mock Mailgun server with the given stdin and
 // returns exit code, stdout, stderr.
+//
+// Note: tests that trigger a deferrable failure (429, 5xx, network,
+// malformed success) must pin [defer].defer_dir (see deferConfig in
+// send_defer_test.go) or disable deferral, otherwise the deferred message
+// lands in the real ~/.local/share/mailfire.
 func runMock(t *testing.T, m *testutil.MockMailgun, stdin string, args ...string) (int, string, string) {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
@@ -341,40 +345,6 @@ func TestSendErrorExitCodes(t *testing.T) {
 		}
 		if !strings.Contains(stderr, "400") {
 			t.Errorf("stderr missing status:\n%s", stderr)
-		}
-	})
-
-	t.Run("deferrable error exits 4 until deferral lands", func(t *testing.T) {
-		for _, resp := range []testutil.Response{
-			testutil.InternalError(),
-			testutil.RateLimited(),
-			testutil.MalformedJSON(),
-		} {
-			m := testutil.NewMockMailgun(t)
-			m.SendResponse = resp
-			code, _, stderr := runMock(t, m, "body", base...)
-			if code != ExitDeferred {
-				t.Errorf("status %d: exit = %d, want %d", resp.Status, code, ExitDeferred)
-			}
-			if !strings.Contains(stderr, "deferral is not implemented yet") {
-				t.Errorf("status %d: stderr missing deferral note:\n%s", resp.Status, stderr)
-			}
-		}
-	})
-
-	t.Run("network error exits 4", func(t *testing.T) {
-		// Grab a port and release it, so connecting is refused.
-		l, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		url := "http://" + l.Addr().String()
-		l.Close()
-		var stdout, stderr bytes.Buffer
-		code := Run(base, &stdout, &stderr, testInfo,
-			WithStdin(strings.NewReader("body")), WithBaseURL(url))
-		if code != ExitDeferred {
-			t.Errorf("exit = %d, want %d; stderr:\n%s", code, ExitDeferred, stderr.String())
 		}
 	})
 }
