@@ -2,12 +2,26 @@ package cli
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
 var testInfo = BuildInfo{Version: "1.2.3", Commit: "abc1234", BuildDate: "2026-10-15"}
+
+// writeTestConfig writes a minimal valid config to a temp file and returns
+// its path.
+func writeTestConfig(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "mailfire.conf")
+	content := []byte("[mailgun]\napi_key = \"test-key-not-real\"\nregion = \"us\"\n\n[sending]\ndomain = \"example.com\"\n")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("writing test config: %v", err)
+	}
+	return path
+}
 
 // run executes Run with captured output and returns exit code, stdout, stderr.
 func run(t *testing.T, args ...string) (int, string, string) {
@@ -90,10 +104,12 @@ func TestRunStubs(t *testing.T) {
 }
 
 func TestRunSendStub(t *testing.T) {
-	// Valid invocation: flags parse, but sending is not implemented yet.
+	// Valid invocation: flags parse, config loads, but sending is not
+	// implemented yet.
+	cfg := writeTestConfig(t)
 	for _, args := range [][]string{
-		{"send", "--to", "a@example.com", "--subject", "hi"},
-		{"--to", "a@example.com", "--subject", "hi"}, // implicit send
+		{"send", "-c", cfg, "--to", "a@example.com", "--subject", "hi"},
+		{"--config", cfg, "--to", "a@example.com", "--subject", "hi"}, // implicit send
 	} {
 		code, _, stderr := run(t, args...)
 		if code != ExitUsage {
@@ -103,6 +119,50 @@ func TestRunSendStub(t *testing.T) {
 			t.Errorf("Run(%v): stderr missing stub note:\n%s", args, stderr)
 		}
 	}
+}
+
+func TestRunSendConfigErrors(t *testing.T) {
+	base := []string{"--to", "a@example.com", "--subject", "hi"}
+
+	t.Run("explicit config file missing", func(t *testing.T) {
+		args := append([]string{"-c", filepath.Join(t.TempDir(), "nope.conf")}, base...)
+		code, _, stderr := run(t, args...)
+		if code != ExitConfig {
+			t.Errorf("exit = %d, want %d", code, ExitConfig)
+		}
+		if !strings.Contains(stderr, "no such file") {
+			t.Errorf("stderr missing message:\n%s", stderr)
+		}
+	})
+
+	t.Run("invalid config", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "mailfire.conf")
+		if err := os.WriteFile(path, []byte("[mailgun]\nregion = \"us\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		args := append([]string{"-c", path}, base...)
+		code, _, stderr := run(t, args...)
+		if code != ExitConfig {
+			t.Errorf("exit = %d, want %d", code, ExitConfig)
+		}
+		if !strings.Contains(stderr, "mailgun.api_key") {
+			t.Errorf("stderr missing key name:\n%s", stderr)
+		}
+	})
+
+	t.Run("no config found", func(t *testing.T) {
+		// Isolate from any config on the host: empty HOME and an empty
+		// working directory.
+		t.Setenv("HOME", t.TempDir())
+		t.Chdir(t.TempDir())
+		code, _, stderr := run(t, base...)
+		if code != ExitConfig {
+			t.Errorf("exit = %d, want %d", code, ExitConfig)
+		}
+		if !strings.Contains(stderr, "no configuration file found") {
+			t.Errorf("stderr missing message:\n%s", stderr)
+		}
+	})
 }
 
 func TestRunSendUsageErrors(t *testing.T) {

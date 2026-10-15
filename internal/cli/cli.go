@@ -1,6 +1,6 @@
 // Package cli implements mailfire's command-line interface: subcommand
-// dispatch and flag parsing. It performs no configuration loading, API
-// calls, or sending — those live in their own packages.
+// dispatch, flag parsing, and wiring to the configuration loader. API
+// calls and sending live in their own packages.
 package cli
 
 import (
@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/thorstenkramm/mailfire/internal/config"
 )
 
 // BuildInfo carries version details injected at build time via -ldflags -X.
@@ -108,8 +110,8 @@ func notImplemented(stderr io.Writer, name string) int {
 	return ExitUsage
 }
 
-// runSend parses the send flags and, until the sending logic is
-// implemented, reports that fact.
+// runSend parses the send flags, loads and validates the configuration,
+// and, until the sending logic is implemented, reports that fact.
 func runSend(args []string, stdout, stderr io.Writer) int {
 	opts, showHelp, err := ParseSendFlags(args)
 	if showHelp {
@@ -121,7 +123,12 @@ func runSend(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, usageText)
 		return ExitUsage
 	}
-	_ = opts // sending itself is implemented in a later milestone
+	cfg, err := config.Load(opts.Config, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+		return ExitConfig
+	}
+	_ = cfg // sending itself is implemented in a later milestone
 	return notImplemented(stderr, "send")
 }
 
