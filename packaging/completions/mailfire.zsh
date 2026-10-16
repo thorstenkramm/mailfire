@@ -20,7 +20,8 @@ _mailfire_send() {
         '(--file)--message=[explicit body]:text:' \
         '(--file)--m=[explicit body]:text:' \
         '(--file)-m[explicit body]:text:' \
-        '--template=[email template]:template:(card card-serif plain plain-serif)' \
+        '(--template-file)--template=[email template]:template:(card card-serif plain plain-serif)' \
+        '(--template)--template-file=[custom HTML template]:file:_files' \
         '--preheader=[inbox preview text]:text:' \
         '--footer=[HTML fragment appended as footer]:file:_files' \
         '*--attach=[attach a file, repeatable]:file:_files' \
@@ -50,6 +51,12 @@ _mailfire_version() {
         '(-h --help)'{-h,--help}'[show help]'
 }
 
+_mailfire_export-templates() {
+    _arguments -S \
+        '(-h --help)'{-h,--help}'[show help]' \
+        '1:export folder:_files -/'
+}
+
 _mailfire() {
     local -a subcommands
     subcommands=(
@@ -57,6 +64,7 @@ _mailfire() {
         'validate:check config and Mailgun credentials'
         'resend:retry deferred messages'
         'version:show version information'
+        'export-templates:export editable built-in templates'
     )
 
     if (( CURRENT == 2 )) && [[ $words[2] != -* ]]; then
@@ -67,7 +75,7 @@ _mailfire() {
     local sub=send
     if (( CURRENT > 2 )); then
         case $words[2] in
-            send|validate|resend|version) sub=$words[2] ;;
+            send|validate|resend|version|export-templates) sub=$words[2] ;;
         esac
     fi
 

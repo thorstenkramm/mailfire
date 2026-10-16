@@ -14,7 +14,7 @@ _mailfire() {
 
     # Flags taking a path argument.
     case "$prev" in
-        --file | --footer | --attach | -c | --config)
+        --file | --template-file | --footer | --attach | -c | --config)
             compopt -o filenames 2>/dev/null
             # shellcheck disable=SC2207
             COMPREPLY=($(compgen -f -- "$cur"))
@@ -35,14 +35,14 @@ _mailfire() {
     sub="send"
     if [[ $COMP_CWORD -ge 2 ]]; then
         case "${COMP_WORDS[1]}" in
-            send | validate | resend | version) sub="${COMP_WORDS[1]}" ;;
+            send | validate | resend | version | export-templates) sub="${COMP_WORDS[1]}" ;;
         esac
     fi
 
     case "$sub" in
         send)
             opts="--to --cc --bcc --from --subject --txt --md --html --html-raw
-                  --file --message --m -m --template --preheader --footer --attach --test --no-defer
+                  --file --message --m -m --template --template-file --preheader --footer --attach --test --no-defer
                   -c --config -h --help"
             ;;
         validate)
@@ -54,10 +54,19 @@ _mailfire() {
         version)
             opts="-h --help"
             ;;
+        export-templates)
+            if [[ $cur != -* || $prev == -- ]]; then
+                compopt -o filenames 2>/dev/null
+                # shellcheck disable=SC2207
+                COMPREPLY=($(compgen -d -- "$cur"))
+                return 0
+            fi
+            opts="-h --help"
+            ;;
     esac
 
     if [[ $COMP_CWORD -eq 1 && $cur != -* ]]; then
-        opts="send validate resend version"
+        opts="send validate resend version export-templates"
     fi
 
     # shellcheck disable=SC2207

@@ -42,9 +42,10 @@ type Config struct {
 	Region string // "us" or "eu"
 
 	// [sending]
-	Domain   string // required
-	From     string // optional; valid mailbox ("user@example.com" or "Name <user@example.com>")
-	Template string // email template for --md and --html; default render.DefaultTemplate
+	Domain       string // required
+	From         string // optional; valid mailbox ("user@example.com" or "Name <user@example.com>")
+	Template     string // email template for --md and --html; default render.DefaultTemplate
+	TemplateFile string // custom template path; mutually exclusive with Template in TOML
 
 	// [logging]
 	Logfile    string // optional; logging disabled when empty
@@ -67,9 +68,10 @@ type rawConfig struct {
 		Region string `toml:"region"`
 	} `toml:"mailgun"`
 	Sending struct {
-		Domain   string `toml:"domain"`
-		From     string `toml:"from"`
-		Template string `toml:"template"`
+		Domain       string `toml:"domain"`
+		From         string `toml:"from"`
+		Template     string `toml:"template"`
+		TemplateFile string `toml:"template_file"`
 	} `toml:"sending"`
 	Logging struct {
 		Logfile string `toml:"logfile"`
@@ -306,6 +308,10 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 	}
 
 	cfg.Template = strings.ToLower(strings.TrimSpace(raw.Sending.Template))
+	cfg.TemplateFile = expandPath(strings.TrimSpace(raw.Sending.TemplateFile), getenv)
+	if cfg.Template != "" && cfg.TemplateFile != "" {
+		return nil, keyErr("sending.template_file", "mutually exclusive with sending.template")
+	}
 	if cfg.Template == "" {
 		cfg.Template = render.DefaultTemplate
 	}

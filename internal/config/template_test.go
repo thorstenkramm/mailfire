@@ -29,3 +29,15 @@ func TestLoadTemplateInvalid(t *testing.T) {
 		t.Errorf("error = %q, want it to contain %q", msg, want)
 	}
 }
+
+func TestLoadTemplateFile(t *testing.T) {
+	isolate(t)
+	path := writeConfig(t, t.TempDir(), minimalTOML+"template_file = \"./Custom.html\"\n")
+	if got := loadOK(t, path).TemplateFile; got != "./Custom.html" {
+		t.Errorf("TemplateFile = %q", got)
+	}
+	path = writeConfig(t, t.TempDir(), minimalTOML+"template = \"card\"\ntemplate_file = \"custom.html\"\n")
+	if msg := loadErr(t, path); !strings.Contains(msg, "mutually exclusive") {
+		t.Errorf("error = %s", msg)
+	}
+}

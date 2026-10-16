@@ -141,8 +141,25 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 
 	// --template overrides the config's template (default "card").
 	template := cfg.Template
+	templateFile := cfg.TemplateFile
 	if opts.Template != "" {
 		template = opts.Template
+		templateFile = ""
+	}
+	if opts.TemplateFile != "" {
+		templateFile = opts.TemplateFile
+	}
+	renderHTML := func(d render.Data) (string, error) {
+		var doc string
+		if templateFile != "" {
+			doc, err = render.File(config.ExpandPath(templateFile), d)
+			if err != nil {
+				return "", err
+			}
+		} else {
+			doc = render.Base(d)
+		}
+		return inliner.Inline(doc)
 	}
 
 	msg := &mailgun.Message{
@@ -172,13 +189,13 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 				return cids[dest]
 			})
 		}
-		html, err := inliner.Inline(render.Base(render.Data{
+		html, err := renderHTML(render.Data{
 			Template:  template,
 			Subject:   opts.Subject,
 			Preheader: opts.Preheader,
 			Body:      render.HTML(fragment),
 			Footer:    footer,
-		}))
+		})
 		if err != nil {
 			closeFiles(inline)
 			return nil, err
@@ -192,13 +209,13 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		// template sets text color once on .content and inherits, and
 		// existing style attributes win over inlined rules). The
 		// template's CSS is inlined after rendering (FR-7).
-		html, err := inliner.Inline(render.Base(render.Data{
+		html, err := renderHTML(render.Data{
 			Template:  template,
 			Subject:   opts.Subject,
 			Preheader: opts.Preheader,
 			Body:      render.HTML(body),
 			Footer:    footer,
-		}))
+		})
 		if err != nil {
 			return nil, err
 		}

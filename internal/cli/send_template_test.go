@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -65,6 +68,14 @@ func TestSendTemplateUsageErrors(t *testing.T) {
 		{[]string{"--md", "--template", "fancy"}, `--template: unknown template "fancy": must be one of "card", "card-serif", "plain", or "plain-serif"`},
 		{[]string{"--txt", "--template", "plain"}, "--template requires --md or --html"},
 		{[]string{"--html-raw", "--template", "plain"}, "--template requires --md or --html"},
+		{[]string{"--md", "--template", "plain", "--template-file", "custom.html"}, "mutually exclusive"},
+		{[]string{"--md", "--template=", "--template-file", "custom.html"}, "mutually exclusive"},
+		{[]string{"--md", "--template", "plain", "--template-file="}, "mutually exclusive"},
+		{[]string{"--md", "--template=", "--template-file="}, "mutually exclusive"},
+		{[]string{"--txt", "--template-file", "custom.html"}, "--template-file requires --md or --html"},
+		{[]string{"--html-raw", "--template-file", "custom.html"}, "--template-file requires --md or --html"},
+		{[]string{"--md", "--template-file", ""}, "--template-file: empty path"},
+		{[]string{"--md", "--template-file", filepath.Join(t.TempDir(), "missing")}, "template file:"},
 	} {
 		m := testutil.NewMockMailgun(t)
 		cfg := writeConfig(t, "from = \"ops@example.com\"\n")
@@ -78,6 +89,50 @@ func TestSendTemplateUsageErrors(t *testing.T) {
 		}
 		if len(m.Requests()) != 0 {
 			t.Errorf("%v: a request was sent", tc.args)
+		}
+	}
+}
+
+func TestSendCustomTemplate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "custom.html")
+	source := `<html><head><style>p { color: #123456; }</style></head><body><h1>{{html .Subject}}</h1>{{.Body}}</body></html>`
+	if err := os.WriteFile(path, []byte(source), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"--md", "--html"} {
+		for _, tc := range []struct {
+			name, config string
+			args         []string
+			custom       bool
+		}{
+			{"flag", "template = \"plain\"\n", []string{"--template-file", path}, true},
+			{"config", fmt.Sprintf("template_file = %q\n", path), nil, true},
+			{"builtin override", fmt.Sprintf("template_file = %q\n", path), []string{"--template", "card"}, false},
+			{"file override", "template_file = \"missing.html\"\n", []string{"--template-file", path}, true},
+		} {
+			t.Run(format+tc.name, func(t *testing.T) {
+				m := testutil.NewMockMailgun(t)
+				cfg := writeConfig(t, "from = \"ops@example.com\"\n"+tc.config)
+				args := append([]string{"-c", cfg, "--to", "a@example.com", "--subject", "A < B", format}, tc.args...)
+				body := "Hello"
+				if format == "--html" {
+					body = "<p>Hello</p>"
+				}
+				code, _, stderr := runMock(t, m, body, args...)
+				if code != ExitOK {
+					t.Fatalf("exit %d: %s", code, stderr)
+				}
+				html := m.LastRequest(t).Field("html")
+				if tc.custom && (!strings.Contains(html, "A &lt; B") || !strings.Contains(html, "color:#123456")) {
+					t.Errorf("custom rendering/inlining failed: %s", html)
+				}
+				if !tc.custom && !strings.Contains(html, cardMarker) {
+					t.Error("built-in override not applied")
+				}
+				if text := m.LastRequest(t).Field("text"); strings.TrimSpace(text) != "Hello" {
+					t.Errorf("text = %q", text)
+				}
+			})
 		}
 	}
 }

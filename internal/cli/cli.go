@@ -73,6 +73,8 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 			return ExitOK
 		case "send":
 			return runSend(args[1:], rc, stdout, stderr)
+		case "export-templates":
+			return runExportTemplates(args[1:], stdout, stderr)
 		case "resend":
 			if wantsHelp(args[1:]) {
 				printOutput(stdout, resendUsage)
@@ -148,6 +150,9 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 // with --md or --html (FR-1); with --txt or --html-raw they would be
 // silently ignored, so they fail loudly instead.
 func checkFlags(opts *SendOptions) error {
+	if opts.Template != "" && opts.TemplateFile != "" {
+		return errors.New("--template-file is mutually exclusive with --template")
+	}
 	if opts.Template != "" && !render.Valid(opts.Template) {
 		return fmt.Errorf("--template: unknown template %q: must be one of %s", opts.Template, config.TemplateList())
 	}
@@ -156,6 +161,9 @@ func checkFlags(opts *SendOptions) error {
 	}
 	if opts.Template != "" {
 		return fmt.Errorf("--template requires --md or --html")
+	}
+	if opts.TemplateFile != "" {
+		return errors.New("--template-file requires --md or --html")
 	}
 	if opts.Preheader != "" {
 		return fmt.Errorf("--preheader requires --md or --html")
@@ -178,22 +186,23 @@ func (s *stringSlice) Set(v string) error {
 
 // SendOptions holds the parsed flags of the send subcommand.
 type SendOptions struct {
-	To         []string // --to, repeatable, at least one required
-	Cc         []string // --cc, repeatable
-	Bcc        []string // --bcc, repeatable
-	From       string   // --from
-	Subject    string   // --subject, required
-	Format     string   // one of "txt" (default), "md", "html", "html-raw"
-	File       string   // --file
-	Message    string   // --message / --m / -m
-	MessageSet bool     // explicit body, even when empty
-	Template   string   // --template; empty: the config's template
-	Preheader  string   // --preheader
-	Footer     string   // --footer
-	Attach     []string // --attach, repeatable
-	Test       bool     // --test
-	NoDefer    bool     // --no-defer
-	Config     string   // -c / --config
+	To           []string // --to, repeatable, at least one required
+	Cc           []string // --cc, repeatable
+	Bcc          []string // --bcc, repeatable
+	From         string   // --from
+	Subject      string   // --subject, required
+	Format       string   // one of "txt" (default), "md", "html", "html-raw"
+	File         string   // --file
+	Message      string   // --message / --m / -m
+	MessageSet   bool     // explicit body, even when empty
+	Template     string   // --template; empty: the config's template
+	TemplateFile string   // --template-file; custom template
+	Preheader    string   // --preheader
+	Footer       string   // --footer
+	Attach       []string // --attach, repeatable
+	Test         bool     // --test
+	NoDefer      bool     // --no-defer
+	Config       string   // -c / --config
 }
 
 // ParseSendFlags parses the flags of the send subcommand. It returns
@@ -203,6 +212,7 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 	var txt, md, html, htmlRaw bool
 	var configShort string
 	var fileSet bool
+	var templateSet, templateFileSet bool
 
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -220,6 +230,7 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 	fs.StringVar(&opts.Message, "message", "", "")
 	fs.StringVar(&opts.Message, "m", "", "")
 	fs.StringVar(&opts.Template, "template", "", "")
+	fs.StringVar(&opts.TemplateFile, "template-file", "", "")
 	fs.StringVar(&opts.Preheader, "preheader", "", "")
 	fs.StringVar(&opts.Footer, "footer", "", "")
 	fs.Var((*stringSlice)(&opts.Attach), "attach", "")
@@ -239,10 +250,23 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 		switch f.Name {
 		case "file":
 			fileSet = true
+		case "template-file":
+			templateFileSet = true
+			if opts.TemplateFile == "" {
+				err = errors.New("--template-file: empty path")
+			}
+		case "template":
+			templateSet = true
 		case "message", "m":
 			opts.MessageSet = true
 		}
 	})
+	if templateSet && templateFileSet {
+		return SendOptions{}, false, errors.New("--template-file is mutually exclusive with --template")
+	}
+	if err != nil {
+		return SendOptions{}, false, err
+	}
 	if fileSet && opts.MessageSet {
 		return SendOptions{}, false, errors.New("conflicting body sources: use either --file or --message")
 	}

@@ -25,6 +25,35 @@ template = "plain"
 
 All templates support dark mode and small screens, and they render in Outlook.
 
+## Custom templates
+
+Export editable, self-contained copies of all four built-ins:
+
+```shell
+mailfire export-templates ./my-templates
+mailfire --md --template-file ./my-templates/card.html --to user@example.com --subject "Report" --file report.md
+```
+
+The export command creates the folder and refuses to overwrite existing template files.
+Edit the HTML and CSS (including `.content table`, `th` and `td` rules), or write your own file.
+Custom templates use Go `text/template` syntax. Available fields are `.Subject`, `.Lang`
+(defaults to `en`), `.Preheader`, `.Body` and `.Footer`. Escape plain text with `{{html .Subject}}`
+and `{{html .Preheader}}`; insert HTML with `{{.Body}}` and `{{.Footer}}`.
+Use `{{with .Footer}}...{{.}}...{{end}}` for optional blocks. Outlook conditional comments
+are preserved, and CSS is inlined just as for built-in templates.
+
+To configure a custom default:
+
+```toml
+[sending]
+template_file = "./my-templates/card.html"
+```
+
+`template_file` and `template` are mutually exclusive in config, as are `--template-file`
+and `--template` on the command line. Either flag overrides the configured default.
+Paths support `~`; relative paths are resolved from the current working directory.
+The flag requires `--md` or `--html`; configured defaults apply only to those formats.
+
 ## Fonts
 
 The fonts come with the operating system, so nothing is downloaded. Each font list starts with fonts that are installed
