@@ -22,7 +22,8 @@ Install `curl`, CA certificates and GnuPG first if needed.
 
 ```shell
 gpg --dearmor < mailfire.key | sudo tee /usr/share/keyrings/mailfire.gpg > /dev/null
-echo 'deb [signed-by=/usr/share/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/any-distro any-version main' | sudo tee /etc/apt/sources.list.d/mailfire.list
+. /etc/os-release
+echo "deb [signed-by=/usr/share/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/mailfire.list
 sudo apt update
 sudo apt install mailfire
 mailfire version

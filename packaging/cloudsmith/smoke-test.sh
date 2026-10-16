@@ -6,6 +6,7 @@ base=https://dl.cloudsmith.io/public/thorstenkramm/mailfire
 fingerprint=6479EED42348F9DA69632428B43413AD5FA82F43
 
 if command -v apt-get >/dev/null; then
+  export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq
   apt-get install -y -qq ca-certificates curl gnupg
 else
@@ -17,7 +18,10 @@ test "$actual" = "$fingerprint"
 
 if command -v apt-get >/dev/null; then
   gpg --batch --yes --dearmor -o /usr/share/keyrings/mailfire.gpg /tmp/mailfire.key
-  echo "deb [signed-by=/usr/share/keyrings/mailfire.gpg] $base/deb/any-distro any-version main" > /etc/apt/sources.list.d/mailfire.list
+  # Cloudsmith expands any-distro uploads into distribution-specific APT indexes.
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  echo "deb [signed-by=/usr/share/keyrings/mailfire.gpg] $base/deb/$ID $VERSION_CODENAME main" > /etc/apt/sources.list.d/mailfire.list
   apt-get update -qq
   apt-get install -y "mailfire=$version"
 else
