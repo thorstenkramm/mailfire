@@ -63,8 +63,65 @@ Linux, macOS (amd64 and arm64) and Windows (amd64), `.deb` and `.rpm` packages, 
 
 Homebrew and Scoop publishing are planned for a later release.
 
-**APT / DNF:** use the signed public [Linux package repositories](docs/linux-repositories.md)
-for installation and automatic package-manager upgrades.
+### Debian / Ubuntu: Cloudsmith APT repository
+
+Install and update Mailfire through our public Cloudsmith repository (amd64 and arm64).
+No Cloudsmith account or API key is needed.
+
+First, install the repository signing key:
+
+```shell
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+sudo install -d -m 0755 /etc/apt/keyrings
+(
+  set -eu
+  key=$(mktemp)
+  trap 'rm -f "$key" "$key.gpg"' EXIT
+  curl -fsSL https://dl.cloudsmith.io/public/thorstenkramm/mailfire/gpg.B43413AD5FA82F43.key -o "$key"
+  fingerprint=$(gpg --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" {print $10; exit}')
+  test "$fingerprint" = '6479EED42348F9DA69632428B43413AD5FA82F43'
+  gpg --batch --yes --dearmor --output "$key.gpg" "$key"
+  sudo install -m 0644 "$key.gpg" /etc/apt/keyrings/mailfire.gpg
+  rm -f "$key.gpg"
+)
+```
+
+Then choose **one** source format. These commands detect the Debian/Ubuntu release
+from `/etc/os-release`.
+
+**Modern deb822 format (`mailfire.sources`, recommended):**
+
+```shell
+. /etc/os-release
+sudo tee /etc/apt/sources.list.d/mailfire.sources > /dev/null <<EOF
+Types: deb
+URIs: https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID
+Suites: $VERSION_CODENAME
+Components: main
+Signed-By: /etc/apt/keyrings/mailfire.gpg
+EOF
+```
+
+**Traditional one-line format (`mailfire.list`):**
+
+```shell
+. /etc/os-release
+echo "deb [signed-by=/etc/apt/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/mailfire.list
+```
+
+Finally, install Mailfire:
+
+```shell
+sudo apt update
+sudo apt install mailfire
+mailfire version
+```
+
+Future versions are available through normal APT upgrades. For Fedora/RPM setup,
+removal, and downgrade instructions, see [Linux package repositories](docs/linux-repositories.md).
+
+### Manual download
 
 **Debian / Ubuntu** and **Fedora / RHEL** (download the package from the release page):
 

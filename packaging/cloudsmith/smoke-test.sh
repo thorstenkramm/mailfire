@@ -7,6 +7,8 @@ fingerprint=6479EED42348F9DA69632428B43413AD5FA82F43
 
 if command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
+  # Minimal Ubuntu images discard man pages; retain ours for package checks.
+  echo 'path-include=/usr/share/man/*' > /etc/dpkg/dpkg.cfg.d/zz-mailfire-smoke
   apt-get update -qq
   apt-get install -y -qq ca-certificates curl gnupg
 else
