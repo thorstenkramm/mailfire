@@ -24,7 +24,8 @@ The following formats are supported:
 
 The body is read from stdin, or from a file with `--file <path>`. On success, the Mailgun message ID is printed.
 
-For `--md` and `--html`, a multipart/alternative message with an HTML and a plain-text part is sent.
+For `--md`, `--html`, and `--html-raw`, a multipart/alternative message with an HTML and a plain-text part
+(derived from the body) is sent.
 Local images referenced in Markdown (`![alt](path/to/image.png)`) are attached and shown inline;
 remote image URLs are left untouched. `--preheader <text>` sets the hidden inbox preview text and
 `--footer <path>` appends an HTML fragment as footer (both for `--md` and `--html` only).
@@ -38,6 +39,7 @@ Recipients are given with repeatable `--to`, `--cc`, and `--bcc` flags (`user@ex
 `Name <user@example.com>`). Comma-separated lists are not supported, as commas are legal in display names.
 
 Check your setup safely with `--test`: Mailgun accepts and validates the request but delivers nothing.
+The message ID is then printed as `accepted in test mode, message id <id> (validated only, nothing was delivered)`.
 ```shell
 mailfire --test --to user@example.com --subject "Test" <<< "Hello"
 ```
@@ -191,6 +193,12 @@ immediately instead.
 | 3    | Authentication error (API key rejected: 401/403 from Mailgun)          |
 | 4    | Send failed and message was **deferred** for later resend              |
 | 5    | Send failed and was **not** deferred (`--no-defer` or `defer = false`) |
+
+Exit code 5 is also used when Mailgun rejects a message permanently (any other 4xx response), when a
+`--test` send fails with a retryable error (test sends are never deferred), and when the message cannot be
+stored in `defer_dir`. `mailfire validate` exits with 4 when Mailgun cannot be reached reliably (retry
+later) and with 2 when Mailgun does not know the domain. `mailfire resend` returns the most severe outcome
+of all attempts, ranked 3, 5, 4, 0; a message that fails with 4 stays deferred.
 
 Errors are written to stderr in plain language, naming the failing step.
 

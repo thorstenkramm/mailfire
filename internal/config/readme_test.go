@@ -11,7 +11,8 @@ import (
 
 const readmePath = "../../README.md"
 
-// readmeConfigExample extracts the ```toml block from README.md.
+// readmeConfigExample extracts the ```toml block from README.md, with
+// line endings normalized to LF.
 func readmeConfigExample(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(readmePath)
@@ -19,7 +20,7 @@ func readmeConfigExample(t *testing.T) string {
 		t.Skipf("README.md not available (%v); skipping docs test", err)
 	}
 	const marker = "```toml\n"
-	s := string(data)
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
 	start := strings.Index(s, marker)
 	if start < 0 {
 		t.Fatal("README.md has no toml block")
@@ -40,7 +41,7 @@ func loadExample(t *testing.T, content string) *Config {
 	}
 	cfg, err := Load(path, io.Discard)
 	if err != nil {
-		t.Fatalf("README config example does not load: %v\n%s", err, content)
+		t.Fatalf("documented config example does not load: %v\n%s", err, content)
 	}
 	return cfg
 }
@@ -85,6 +86,35 @@ func TestREADMEConfigExampleCommentedLogfile(t *testing.T) {
 	}
 	if found == 0 {
 		t.Error("README example documents no #logfile line")
+	}
+}
+
+// TestManPageConfigExampleLoads keeps the example in docs/mailfire.1
+// valid: it is a separate copy and would otherwise drift silently. The
+// example uses no roff escapes, so the .nf block is the TOML verbatim.
+func TestManPageConfigExampleLoads(t *testing.T) {
+	data, err := os.ReadFile("../../docs/mailfire.1")
+	if err != nil {
+		t.Skipf("docs/mailfire.1 not available (%v); skipping docs test", err)
+	}
+	const marker = ".SS Example\n.nf\n"
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
+	start := strings.Index(s, marker)
+	if start < 0 {
+		t.Fatalf("man page has no %q block", marker)
+	}
+	s = s[start+len(marker):]
+	end := strings.Index(s, "\n.fi\n")
+	if end < 0 {
+		t.Fatal("man page example is not terminated by .fi")
+	}
+	example := s[:end+1]
+	if strings.Contains(example, `\`) {
+		t.Fatalf("man page example contains roff escapes; extend this test to unescape them:\n%s", example)
+	}
+	cfg := loadExample(t, example)
+	if cfg.Region != "eu" || cfg.Domain != "example.com" || cfg.Logfile == "" || !cfg.Defer {
+		t.Errorf("unexpected values from man page example: %+v", cfg)
 	}
 }
 

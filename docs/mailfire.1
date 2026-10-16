@@ -11,7 +11,7 @@ mailfire \- send email from the command line via the Mailgun API
 .IR path ]
 .br
 .B mailfire resend
-.RB [ \-\-list " | " \-\-force " | " \fIid\fR...]
+.RB [ \-\-list " | " \-\-force " | " \fIid\fR...]\&
 .RB [ \-c
 .IR path ]
 .br
@@ -72,7 +72,8 @@ Accepts
 .B user@example.com
 or
 .BR "Name <user@example.com>" .
-Comma-separated lists are not supported, because commas are legal in display names.
+Comma-separated lists are not supported,
+because commas are legal in display names.
 .TP
 .BI \-\-cc " addr"
 Carbon copy recipient, repeatable.
@@ -104,9 +105,11 @@ are attached and displayed inline; remote image URLs are left untouched.
 .TP
 .B \-\-html
 Body is an HTML fragment, wrapped in the built-in template.
+A plain-text alternative is derived from it.
 .TP
 .B \-\-html\-raw
 Body is a complete HTML document, sent as-is.
+A plain-text alternative is derived from it.
 .PP
 Exactly one of the four body format flags may be given.
 .TP
@@ -326,6 +329,18 @@ Sending failed and the message was not deferred
 .RB ( \-\-no\-defer
 or
 .BR "defer = false" ).
+.PP
+Exit status 5 is also used when Mailgun rejects a message permanently
+(any other 4xx response), when a
+.B \-\-test
+send fails with a retryable error (test sends are never deferred),
+and when the message cannot be stored in the defer directory.
+.B validate
+exits with 4 when Mailgun cannot be reached reliably (the check can be
+retried later), and with 2 when Mailgun does not know the domain.
+.B resend
+returns the most severe outcome of all attempts, ranked 3, 5, 4, 0;
+a message that fails with 4 stays deferred.
 .PP
 Errors are written to standard error in plain language, naming the failing step.
 .SH EXAMPLES

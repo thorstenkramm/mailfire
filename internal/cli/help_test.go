@@ -9,7 +9,8 @@ import (
 const readmePath = "../../README.md"
 
 // readmeHelpBlock extracts the text block that follows "$ mailfire --help"
-// in README.md, as the exact bytes mailfire --help must print.
+// in README.md, as the text mailfire --help must print. Line endings are
+// normalized to LF, so a CRLF checkout (core.autocrlf) still matches.
 func readmeHelpBlock(t *testing.T) string {
 	t.Helper()
 	data, err := os.ReadFile(readmePath)
@@ -17,7 +18,7 @@ func readmeHelpBlock(t *testing.T) string {
 		t.Skipf("README.md not available (%v); skipping docs pin test", err)
 	}
 	const marker = "```text\n$ mailfire --help\n"
-	s := string(data)
+	s := strings.ReplaceAll(string(data), "\r\n", "\n")
 	start := strings.Index(s, marker)
 	if start < 0 {
 		t.Fatalf("README.md has no %q block", marker)
@@ -30,18 +31,45 @@ func readmeHelpBlock(t *testing.T) string {
 	return s[:end]
 }
 
+// trimTrailingSpace removes trailing blanks from every line. Editors
+// commonly add or strip them in Markdown, and they are invisible in the
+// rendered README, so they must not decide the comparison.
+func trimTrailingSpace(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		lines[i] = strings.TrimRight(l, " \t")
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestUsageMatchesREADME(t *testing.T) {
-	want := readmeHelpBlock(t)
+	want := trimTrailingSpace(readmeHelpBlock(t))
 	for _, args := range [][]string{{"--help"}, {"-h"}} {
 		code, stdout, stderr := run(t, args...)
 		if code != ExitOK {
 			t.Errorf("Run(%v) = exit %d, want %d", args, code, ExitOK)
 		}
-		if stdout != want {
+		if trimTrailingSpace(stdout) != want {
 			t.Errorf("Run(%v) output differs from the README help block\n--- README ---\n%s\n--- mailfire ---\n%s", args, want, stdout)
 		}
 		if stderr != "" {
 			t.Errorf("Run(%v): stderr = %q, want empty", args, stderr)
+		}
+	}
+}
+
+// TestUsageMatchesREADME ignores trailing blanks, so pin them here: the
+// help texts themselves must not carry any, and must end in a newline.
+func TestHelpTextsAreClean(t *testing.T) {
+	for name, text := range map[string]string{
+		"usageText": usageText, "sendUsage": sendUsage, "resendUsage": resendUsage,
+		"validateUsage": validateUsage, "versionUsage": versionUsage,
+	} {
+		if text != trimTrailingSpace(text) {
+			t.Errorf("%s has trailing whitespace", name)
+		}
+		if !strings.HasSuffix(text, "\n") || strings.HasSuffix(text, "\n\n") {
+			t.Errorf("%s must end in exactly one newline", name)
 		}
 	}
 }
