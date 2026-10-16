@@ -214,7 +214,10 @@ func TestSendAttachmentErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.name == "unreadable" {
-				if _, err := os.Open(tc.path); err == nil {
+				if f, err := os.Open(tc.path); err == nil {
+					if err := f.Close(); err != nil {
+						t.Fatal(err)
+					}
 					t.Skip("running with read access to 0000 files (e.g. as root)")
 				}
 			}
