@@ -8,3 +8,5 @@ coverage.out
 mailfire.log
 /deferred/
 /dist/
+.cloudsmith
+__pycache__/

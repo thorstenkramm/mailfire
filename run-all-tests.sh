@@ -45,6 +45,9 @@ if [[ "$unbalanced" -ne 0 ]]; then
   exit 1
 fi
 
+python3 -m unittest discover -s packaging/cloudsmith -v
+bash -n packaging/cloudsmith/smoke-test.sh
+
 echo "Running code duplication search ..."
 # Shared with CI: only generated output goldens are excluded, not templates
 # or the independently maintained testdata/report.body.html fixture.

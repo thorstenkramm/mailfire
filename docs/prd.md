@@ -260,6 +260,18 @@ Errors are written to stderr in plain language, with the failing step named (e.g
 
 ## 9. Milestones
 
+### Linux distribution requirements (task 22)
+
+- Publish stable GitHub release DEB/RPM packages to the public Cloudsmith repository
+  `thorstenkramm/mailfire`, for amd64 and arm64, without rebuilding the assets.
+- Verify GitHub SHA-256 checksums before upload; preserve original-hash provenance
+  when Cloudsmith signs RPMs. Never overwrite an existing version with different input.
+- Provide signed APT/DNF installation, native architecture smoke tests, and manual
+  retry of a partially published release. Downloads require no credentials.
+- Homebrew distribution is macOS-only; its implementation is a later part of task 22.
+
+### Delivery milestones
+
 1. **MVP:** `send` with `--txt`, config loading, Mailgun API call, exit codes.
 2. **Formats:** `--md`, `--html`, `--html-raw`, template rendering, CSS
    inlining, multipart/alternative, attachments, preheader, footer.

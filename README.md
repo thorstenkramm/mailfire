@@ -63,6 +63,9 @@ Linux, macOS (amd64 and arm64) and Windows (amd64), `.deb` and `.rpm` packages, 
 
 Homebrew and Scoop publishing are planned for a later release.
 
+**APT / DNF:** use the signed public [Linux package repositories](docs/linux-repositories.md)
+for installation and automatic package-manager upgrades.
+
 **Debian / Ubuntu** and **Fedora / RHEL** (download the package from the release page):
 
 ```shell
