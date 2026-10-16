@@ -7,3 +7,4 @@ mailfire.conf
 coverage.out
 mailfire.log
 /deferred/
+/dist/

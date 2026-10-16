@@ -1,0 +1,141 @@
+# GoReleaser configuration, run by .github/workflows/release.yml on v* tags.
+# Local dry run: goreleaser release --snapshot --clean --skip=publish
+version: 2
+
+project_name: mailfire
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: mailfire
+    main: .
+    binary: mailfire
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    flags:
+      - -trimpath
+    # Same variables and value formats as the Makefile (LDFLAGS). {{.Version}}
+    # has the leading "v" of the tag removed.
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.buildDate={{ time "2006-01-02" }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: mailfire
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - src: README.md
+      - src: docs/mailfire.1
+        dst: man/
+        strip_parent: true
+      - src: packaging/completions/mailfire.bash
+        dst: completions/
+        strip_parent: true
+      - src: packaging/completions/mailfire.zsh
+        dst: completions/
+        strip_parent: true
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  use: git
+  filters:
+    exclude:
+      - '^docs?:'
+      - '^test:'
+      - '^ci:'
+      - "Merge (pull request|branch)"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Other changes
+      order: 999
+
+nfpms:
+  - id: packages
+    package_name: mailfire
+    ids: [mailfire]
+    vendor: Thorsten Kramm
+    homepage: https://github.com/thorstenkramm/mailfire
+    maintainer: Thorsten Kramm <thorsten@kramm.info>
+    description: Send email from the command line via the Mailgun API
+    formats: [deb, rpm]
+    bindir: /usr/bin
+    contents:
+      - src: docs/mailfire.1
+        dst: /usr/share/man/man1/mailfire.1
+        file_info:
+          mode: 0644
+      - src: packaging/completions/mailfire.bash
+        dst: /usr/share/bash-completion/completions/mailfire
+        file_info:
+          mode: 0644
+      - src: packaging/completions/mailfire.zsh
+        dst: /usr/share/zsh/site-functions/_mailfire
+        file_info:
+          mode: 0644
+
+# Homebrew formula. Assumes the tap repository github.com/thorstenkramm/homebrew-tap
+# exists; the workflow pushes to it with the HOMEBREW_TAP_GITHUB_TOKEN secret
+# (a PAT with contents:write on that repository).
+brews:
+  - name: mailfire
+    ids: [mailfire]
+    repository:
+      owner: thorstenkramm
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/thorstenkramm/mailfire
+    description: Send email from the command line via the Mailgun API
+    install: |
+      bin.install "mailfire"
+      man1.install "man/mailfire.1"
+      bash_completion.install "completions/mailfire.bash" => "mailfire"
+      zsh_completion.install "completions/mailfire.zsh" => "_mailfire"
+    test: |
+      assert_match "mailfire", shell_output("#{bin}/mailfire version")
+
+# Scoop manifest. Assumes the bucket repository
+# github.com/thorstenkramm/scoop-bucket exists; the workflow pushes to it with
+# the SCOOP_BUCKET_GITHUB_TOKEN secret.
+scoops:
+  - name: mailfire
+    ids: [mailfire]
+    repository:
+      owner: thorstenkramm
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    homepage: https://github.com/thorstenkramm/mailfire
+    description: Send email from the command line via the Mailgun API
+
+release:
+  github:
+    owner: thorstenkramm
+    name: mailfire
+  # Tags such as v0.1.0-rc1 are published as pre-releases.
+  prerelease: auto

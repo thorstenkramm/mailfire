@@ -44,6 +44,40 @@ The message ID is then printed as `accepted in test mode, message id <id> (valid
 mailfire --test --to user@example.com --subject "Test" <<< "Hello"
 ```
 
+## Installation
+
+Every [GitHub release](https://github.com/thorstenkramm/mailfire/releases) ships static binaries for
+Linux, macOS (amd64 and arm64) and Windows (amd64), `.deb` and `.rpm` packages, and a `checksums.txt`.
+
+**Homebrew** (macOS and Linux):
+
+```shell
+brew install thorstenkramm/tap/mailfire
+```
+
+**Scoop** (Windows):
+
+```powershell
+scoop bucket add thorstenkramm https://github.com/thorstenkramm/scoop-bucket
+scoop install mailfire
+```
+
+**Debian / Ubuntu** and **Fedora / RHEL** (download the package from the release page):
+
+```shell
+sudo dpkg -i mailfire_<version>_linux_amd64.deb
+sudo rpm -i mailfire_<version>_linux_amd64.rpm
+```
+
+**Binary**: download the archive for your platform, verify it against `checksums.txt` (`sha256sum -c
+--ignore-missing checksums.txt`), and put `mailfire` into a directory on your `PATH`.
+
+The packages install the man page (`man mailfire`) and bash/zsh completions. From an archive or
+a source checkout, use `packaging/completions/mailfire.bash` (`source` it from `~/.bashrc`) and
+`packaging/completions/mailfire.zsh` (save it as `_mailfire` in a directory on your `fpath`).
+
+Or build from source with `make build` (Go required).
+
 ## Configuration
 
 `mailfire` looks for its configuration in the following location in the given order. First hit wins.
