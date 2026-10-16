@@ -207,4 +207,4 @@ Errors are written to stderr in plain language, naming the failing step.
 A man page is available as [docs/mailfire.1](docs/mailfire.1); view it with `man ./docs/mailfire.1`.
 The packages install it as `mailfire(1)`.
 
-The requirements are specified in detail in [tmp/prd.md](tmp/prd.md).
+The requirements are specified in detail in [docs/prd.md](docs/prd.md).
