@@ -36,6 +36,7 @@ package logging
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -263,7 +264,7 @@ func (l *Logger) marshal(a Attempt) ([]byte, error) {
 // maxSize. The file is rewritten in place (truncate to zero, then write
 // the surviving tail); with O_APPEND the rewritten content lands at the
 // start of the now-empty file.
-func (l *Logger) truncateLocked() error {
+func (l *Logger) truncateLocked() (err error) {
 	fi, err := l.f.Stat()
 	if err != nil {
 		return fmt.Errorf("logging: stat %s: %w", l.path, err)
@@ -279,7 +280,21 @@ func (l *Logger) truncateLocked() error {
 		return fmt.Errorf("logging: reading %s: %w", l.path, err)
 	}
 	keep := keepNewest(data, l.maxSize)
-	if err := l.f.Truncate(0); err != nil {
+	// Windows append handles lack the write-data access needed to truncate.
+	// Keep O_APPEND for writes, and use a separate handle for truncation.
+	f, err := os.OpenFile(l.path, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("logging: opening for truncation %s: %w", l.path, err)
+	}
+	defer func() { err = errors.Join(err, f.Close()) }()
+	current, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("logging: stat for truncation %s: %w", l.path, err)
+	}
+	if !os.SameFile(fi, current) {
+		return fmt.Errorf("logging: logfile replaced before truncation: %s", l.path)
+	}
+	if err := f.Truncate(0); err != nil {
 		return fmt.Errorf("logging: truncating %s: %w", l.path, err)
 	}
 	if _, err := l.f.Write(keep); err != nil {

@@ -68,7 +68,7 @@ func expandPath(p string, getenv func(string) string) string {
 	if p == "~" {
 		return home
 	}
-	return home + p[1:]
+	return filepath.Join(home, p[2:])
 }
 
 // warnIfPermissive writes a warning to stderr when the config file is

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,7 +36,7 @@ func readLog(t *testing.T, path string) []map[string]any {
 // logfile path and level ("" = default information).
 func loggingConfig(t *testing.T, logfile, level string) string {
 	t.Helper()
-	extra := "from = \"ops@example.com\"\n\n[logging]\nlogfile = \"" + logfile + "\"\n"
+	extra := "from = \"ops@example.com\"\n\n[logging]\nlogfile = " + strconv.Quote(logfile) + "\n"
 	if level != "" {
 		extra += "loglevel = \"" + level + "\"\n"
 	}

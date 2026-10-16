@@ -235,11 +235,23 @@ type entry struct {
 // eviction order: invalid entries first (by name), then valid messages
 // oldest first (by timestamp, ID as tiebreak). A missing directory scans
 // as empty.
-func (s *Store) scan() ([]entry, error) {
-	dirs, err := os.ReadDir(s.Dir)
+func (s *Store) scan() (result []entry, err error) {
+	dir, err := os.Open(s.Dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("deferral: reading %s: %w", s.Dir, err)
+	}
+	defer func() { err = errors.Join(err, dir.Close()) }()
+	fi, err := dir.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("deferral: stat %s: %w", s.Dir, err)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("deferral: reading %s: not a directory", s.Dir)
+	}
+	dirs, err := dir.ReadDir(-1)
 	if err != nil {
 		return nil, fmt.Errorf("deferral: reading %s: %w", s.Dir, err)
 	}

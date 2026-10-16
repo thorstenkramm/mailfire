@@ -81,18 +81,22 @@ func loadErr(t *testing.T, flagPath string) string {
 	return err.Error()
 }
 
-// isolate points HOME at an empty temp dir and chdirs into another empty
-// temp dir, so search-order tests are hermetic.
+// isolate redirects user configuration/data locations to temporary directories.
 func isolate(t *testing.T) (home, cwd string) {
 	t.Helper()
 	home = t.TempDir()
 	cwd = t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "local"))
+	t.Setenv("PROGRAMDATA", filepath.Join(home, "program"))
 	t.Chdir(cwd)
 	return home, cwd
 }
 
 func TestLoadExplicitPath(t *testing.T) {
+	home, _ := isolate(t)
 	path := writeConfig(t, t.TempDir(), validTOML)
 	cfg := loadOK(t, path)
 
@@ -110,10 +114,6 @@ func TestLoadExplicitPath(t *testing.T) {
 	}
 	if cfg.From != "Ops Bot <ops@example.com>" {
 		t.Errorf("From = %q", cfg.From)
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
 	}
 	if want := filepath.Join(home, "logs", "mailfire.log"); cfg.Logfile != want {
 		t.Errorf("Logfile = %q, want %q (~ not expanded)", cfg.Logfile, want)
@@ -155,7 +155,11 @@ func TestLoadDefaults(t *testing.T) {
 	if !cfg.Defer {
 		t.Error("Defer = false, want true (default)")
 	}
-	if want := filepath.Join(home, ".local", "share", "mailfire"); cfg.DeferDir != want {
+	want := filepath.Join(home, ".local", "share", "mailfire")
+	if runtime.GOOS == "windows" {
+		want = filepath.Join(home, "local", "mailfire")
+	}
+	if cfg.DeferDir != want {
 		t.Errorf("DeferDir = %q, want %q", cfg.DeferDir, want)
 	}
 	if cfg.DeferMaxSize != DefaultMaxSize {
@@ -171,6 +175,10 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadSearchOrder(t *testing.T) {
 	home, cwd := isolate(t)
+	homeConfig := filepath.Join(home, ".config", "mailfire")
+	if runtime.GOOS == "windows" {
+		homeConfig = filepath.Join(home, "roaming", "mailfire")
+	}
 
 	domain := func(cfg *Config) string { return cfg.Domain }
 	mk := func(dir, name, domain string) string {
@@ -196,7 +204,7 @@ func TestLoadSearchOrder(t *testing.T) {
 				t.Error(err)
 			}
 		}()
-		mk(filepath.Join(home, ".config", "mailfire"), "mailfire.conf", "home.example.com")
+		mk(homeConfig, "mailfire.conf", "home.example.com")
 		if got := domain(load(t)); got != "cwd.example.com" {
 			t.Errorf("domain = %q, want config from current directory", got)
 		}
@@ -363,13 +371,13 @@ func TestSearchPaths(t *testing.T) {
 		return func(k string) string { return m[k] }
 	}
 	unix := searchPaths("linux", env(map[string]string{"HOME": "/home/u"}))
-	want := []string{".mailfire.conf", "/home/u/.config/mailfire/mailfire.conf", "/etc/mailfire/mailfire.conf"}
+	want := []string{".mailfire.conf", filepath.Join("/home/u", ".config", "mailfire", "mailfire.conf"), filepath.Join("/etc", "mailfire", "mailfire.conf")}
 	if strings.Join(unix, "|") != strings.Join(want, "|") {
 		t.Errorf("unix searchPaths = %v, want %v", unix, want)
 	}
 
 	win := searchPaths("windows", env(map[string]string{"APPDATA": "/roaming", "PROGRAMDATA": "/prog"}))
-	wantWin := []string{".mailfire.conf", "/roaming/mailfire/mailfire.conf", "/prog/mailfire/mailfire.conf"}
+	wantWin := []string{".mailfire.conf", filepath.Join("/roaming", "mailfire", "mailfire.conf"), filepath.Join("/prog", "mailfire", "mailfire.conf")}
 	if strings.Join(win, "|") != strings.Join(wantWin, "|") {
 		t.Errorf("windows searchPaths = %v, want %v", win, wantWin)
 	}
@@ -379,13 +387,13 @@ func TestDefaultDeferDir(t *testing.T) {
 	env := func(m map[string]string) func(string) string {
 		return func(k string) string { return m[k] }
 	}
-	if got := defaultDeferDir("darwin", env(map[string]string{"HOME": "/home/u"})); got != "/home/u/.local/share/mailfire" {
+	if got := defaultDeferDir("darwin", env(map[string]string{"HOME": "/home/u"})); got != filepath.Join("/home/u", ".local", "share", "mailfire") {
 		t.Errorf("unix defaultDeferDir = %q", got)
 	}
-	if got := defaultDeferDir("windows", env(map[string]string{"LOCALAPPDATA": "/local"})); got != "/local/mailfire" {
+	if got := defaultDeferDir("windows", env(map[string]string{"LOCALAPPDATA": "/local"})); got != filepath.Join("/local", "mailfire") {
 		t.Errorf("windows defaultDeferDir = %q", got)
 	}
-	if got := defaultDeferDir("windows", env(map[string]string{"APPDATA": "/roaming"})); got != "/roaming/mailfire" {
+	if got := defaultDeferDir("windows", env(map[string]string{"APPDATA": "/roaming"})); got != filepath.Join("/roaming", "mailfire") {
 		t.Errorf("windows fallback defaultDeferDir = %q", got)
 	}
 }
@@ -398,9 +406,9 @@ func TestExpandPath(t *testing.T) {
 		return ""
 	}
 	for _, tc := range []struct{ in, want string }{
-		{"~/logs/mailfire.log", "/home/u/logs/mailfire.log"},
+		{"~/logs/mailfire.log", filepath.Join("/home/u", "logs", "mailfire.log")},
 		{"~", "/home/u"},
-		{`~\docs`, `/home/u\docs`},
+		{`~\docs`, filepath.Join("/home/u", "docs")},
 		{"/abs/path", "/abs/path"},
 		{"rel/path", "rel/path"},
 		{"~other/x", "~other/x"}, // only own home is expanded
@@ -417,8 +425,8 @@ func TestExpandPath(t *testing.T) {
 
 	// The exported wrapper uses the process environment.
 	t.Setenv("HOME", "/home/env")
-	if got := ExpandPath("~/body.txt"); got != "/home/env/body.txt" {
-		t.Errorf("ExpandPath = %q, want %q", got, "/home/env/body.txt")
+	if got := ExpandPath("~/body.txt"); got != filepath.Join("/home/env", "body.txt") {
+		t.Errorf("ExpandPath = %q, want %q", got, filepath.Join("/home/env", "body.txt"))
 	}
 }
 
@@ -573,7 +581,7 @@ func TestLoadNoHomeDeferDir(t *testing.T) {
 
 func TestSearchPathsSkipUnsetEnv(t *testing.T) {
 	noEnv := func(string) string { return "" }
-	if got := searchPaths("linux", noEnv); strings.Join(got, "|") != ".mailfire.conf|/etc/mailfire/mailfire.conf" {
+	if got := searchPaths("linux", noEnv); strings.Join(got, "|") != ".mailfire.conf|"+filepath.Join("/etc", "mailfire", "mailfire.conf") {
 		t.Errorf("unix searchPaths without HOME = %v", got)
 	}
 	if got := searchPaths("windows", noEnv); strings.Join(got, "|") != ".mailfire.conf" {

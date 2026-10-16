@@ -298,6 +298,36 @@ func TestTruncationDropsOldest(t *testing.T) {
 	}
 }
 
+func TestTruncationRejectsChangedPath(t *testing.T) {
+	for _, missing := range []bool{false, true} {
+		l, original := openLogger(t, LevelInformation, 1)
+		other := filepath.Join(t.TempDir(), "other.log")
+		const content = "must not be truncated\n"
+		if !missing {
+			if err := os.WriteFile(other, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// Simulate the pathname no longer referring to the open logfile,
+		// without relying on OS-specific rename-sharing permissions.
+		l.path = other
+		if err := l.Log(successAttempt()); err == nil {
+			t.Fatal("truncation accepted a changed logfile path")
+		}
+		if entries := readEntries(t, original); len(entries) != 1 {
+			t.Fatalf("original log lost its appended entry: %v", entries)
+		}
+		data, err := os.ReadFile(other)
+		if missing {
+			if !os.IsNotExist(err) {
+				t.Fatalf("missing path was created: %v", err)
+			}
+		} else if err != nil || string(data) != content {
+			t.Fatalf("unrelated file changed: %q, %v", data, err)
+		}
+	}
+}
+
 func TestTruncationKeepsOversizedNewestLine(t *testing.T) {
 	// A single line larger than maxSize is never dropped: the newest
 	// entry wins over the size bound.
