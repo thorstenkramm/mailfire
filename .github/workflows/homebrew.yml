@@ -1,0 +1,67 @@
+name: Homebrew
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing stable GitHub release (e.g. v0.1.0)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_GITHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-publish
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Generate and validate candidate cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          brew tap-new --no-git thorstenkramm/tap
+          tap=$(brew --repository thorstenkramm/tap)
+          mkdir -p "$tap/Casks"
+          python3 packaging/homebrew/release.py "$RELEASE_TAG" "$tap/Casks/mailfire.rb"
+          brew style "$tap/Casks/mailfire.rb"
+          brew audit --cask thorstenkramm/tap/mailfire
+          brew install --cask thorstenkramm/tap/mailfire
+          mailfire version | grep -F "${RELEASE_TAG#v}"
+          mailfire --help > /dev/null
+          test -f "$(brew --prefix)/share/man/man1/mailfire.1"
+          test -f "$(brew --prefix)/etc/bash_completion.d/mailfire"
+          test -f "$(brew --prefix)/share/zsh/site-functions/_mailfire"
+          brew uninstall --cask thorstenkramm/tap/mailfire
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Publish verified cask
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 packaging/homebrew/release.py "$RELEASE_TAG" "$RUNNER_TEMP/mailfire.rb" --publish
