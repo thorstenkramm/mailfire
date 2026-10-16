@@ -22,7 +22,7 @@ func runVersion(args []string, stdout, stderr io.Writer, info BuildInfo) int {
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "mailfire: version: %v\n\n", err)
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, versionUsage)
 		return ExitUsage
 	}
 	fmt.Fprintf(stdout, "mailfire %s (commit %s, built %s)\n", info.Version, info.Commit, info.BuildDate)

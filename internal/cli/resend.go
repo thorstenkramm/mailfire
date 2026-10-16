@@ -127,7 +127,7 @@ func runResend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	opts, err := parseResendFlags(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "mailfire: resend: %v\n\n", err)
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, resendUsage)
 		return ExitUsage
 	}
 	cfg, err := config.Load(opts.Config, stderr)

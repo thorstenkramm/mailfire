@@ -36,7 +36,7 @@ func runValidate(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	configPath, err := parseValidateFlags(args)
 	if err != nil {
 		fmt.Fprintf(stderr, "mailfire: validate: %v\n\n", err)
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, validateUsage)
 		return ExitUsage
 	}
 	return validate(configPath, rc, stdout, stderr)

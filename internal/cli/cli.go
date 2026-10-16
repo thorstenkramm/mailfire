@@ -33,46 +33,6 @@ const (
 	ExitSendFail = 5 // Send failed, message not deferred.
 )
 
-// usageText mirrors the CLI reference in PRD §7 and README.md.
-const usageText = `mailfire — send email from the command line via the Mailgun API
-
-Usage:
-  mailfire [send] [flags]     compose and send an email (default)
-  mailfire validate           check config and Mailgun credentials
-  mailfire resend [--list | --force | <id>...]
-                              retry deferred messages
-  mailfire version            show version information
-
-Flags (send):
-  --to <addr>        recipient, repeatable (required)
-  --cc <addr>        cc recipient, repeatable
-  --bcc <addr>       bcc recipient, repeatable
-  --from <addr>      sender, overrides config ("Name <user@example.com>")
-  --subject <text>   subject line (required)
-  --txt              body is plain text (default)
-  --md               body is Markdown, rendered into the built-in template
-  --html             body is an HTML fragment, wrapped in the template
-  --html-raw         body is a complete HTML document, sent as-is
-  --file <path>      read body from file instead of stdin
-  --preheader <txt>  inbox preview text (HTML formats only)
-  --footer <path>    HTML fragment appended as footer (HTML formats only)
-  --attach <path>    attach a file, repeatable
-  --test             use Mailgun test mode: validate the request, deliver nothing
-  --no-defer         fail immediately instead of deferring on error
-  -c, --config <p>   use this config file
-  -h, --help         show help
-
-Flags (resend):
-  --list             show deferred messages (ID, date, to, subject, size)
-  --force            resend even messages younger than the cooldown
-  -c, --config <p>   use this config file
-  -h, --help         show help
-
-Flags (validate):
-  -c, --config <p>   use this config file
-  -h, --help         show help
-`
-
 // Option customizes Run's behavior. Options exist mainly so tests can
 // inject the body reader and point the Mailgun client at a mock server.
 type Option func(*runContext)
@@ -114,19 +74,19 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 			return runSend(args[1:], rc, stdout, stderr)
 		case "resend":
 			if wantsHelp(args[1:]) {
-				fmt.Fprint(stdout, usageText)
+				fmt.Fprint(stdout, resendUsage)
 				return ExitOK
 			}
 			return runResend(args[1:], rc, stdout, stderr)
 		case "validate":
 			if wantsHelp(args[1:]) {
-				fmt.Fprint(stdout, usageText)
+				fmt.Fprint(stdout, validateUsage)
 				return ExitOK
 			}
 			return runValidate(args[1:], rc, stdout, stderr)
 		case "version":
 			if wantsHelp(args[1:]) {
-				fmt.Fprint(stdout, usageText)
+				fmt.Fprint(stdout, versionUsage)
 				return ExitOK
 			}
 			return runVersion(args[1:], stdout, stderr, info)
@@ -161,12 +121,12 @@ func wantsHelp(args []string) bool {
 func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	opts, showHelp, err := ParseSendFlags(args)
 	if showHelp {
-		fmt.Fprint(stdout, usageText)
+		fmt.Fprint(stdout, sendUsage)
 		return ExitOK
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "mailfire: send: %v\n\n", err)
-		fmt.Fprint(stderr, usageText)
+		fmt.Fprint(stderr, sendUsage)
 		return ExitUsage
 	}
 	if err := checkFlags(&opts); err != nil {

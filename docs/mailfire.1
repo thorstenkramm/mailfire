@@ -1,0 +1,391 @@
+.TH MAILFIRE 1 "October 16, 2026" "mailfire" "User Commands"
+.SH NAME
+mailfire \- send email from the command line via the Mailgun API
+.SH SYNOPSIS
+.B mailfire
+.RB [ send ]
+.RI [ flags ]
+.br
+.B mailfire validate
+.RB [ \-c
+.IR path ]
+.br
+.B mailfire resend
+.RB [ \-\-list " | " \-\-force " | " \fIid\fR...]
+.RB [ \-c
+.IR path ]
+.br
+.B mailfire version
+.br
+.B mailfire
+.BR \-h " | " \-\-help
+.SH DESCRIPTION
+.B mailfire
+is a client for the Mailgun HTTP API that sends email from the command line.
+The message body is read from standard input, or from a file with
+.BR \-\-file .
+Plain text, Markdown, and HTML bodies are supported; Markdown and HTML
+are rendered into a built-in, responsive email template.
+.PP
+Without a subcommand,
+.B send
+is assumed.
+On success the Mailgun message ID is printed to standard output.
+.PP
+If sending fails because of a network error, a Mailgun server error, or rate
+limiting, the composed message is stored for later retrying with
+.B mailfire resend
+(unless deferral is disabled).
+.SH SUBCOMMANDS
+.TP
+.B send
+Compose and send an email.
+This is the default subcommand.
+.TP
+.B validate
+Check, step by step, that the configuration file is found and valid TOML,
+that all mandatory keys are well-formed, and that the API key and domain are
+accepted by Mailgun.
+No mail is sent.
+.TP
+.B resend
+Retry deferred messages, oldest first.
+A message is removed only after successful delivery.
+Messages deferred less than
+.B resend_cooldown
+ago are skipped unless
+.B \-\-force
+is given.
+.TP
+.B version
+Print the version, commit, and build date.
+.PP
+Every subcommand accepts
+.BR \-h " and " \-\-help .
+.SH OPTIONS
+.SS Flags of send
+.TP
+.BI \-\-to " addr"
+Recipient, repeatable.
+Required, at least once.
+Accepts
+.B user@example.com
+or
+.BR "Name <user@example.com>" .
+Comma-separated lists are not supported, because commas are legal in display names.
+.TP
+.BI \-\-cc " addr"
+Carbon copy recipient, repeatable.
+.TP
+.BI \-\-bcc " addr"
+Blind carbon copy recipient, repeatable.
+.TP
+.BI \-\-from " addr"
+Sender; overrides the
+.B from
+setting of the configuration file.
+Required if the configuration file does not set
+.BR from .
+.TP
+.BI \-\-subject " text"
+Subject line.
+Required.
+.TP
+.B \-\-txt
+Body is plain text.
+This is the default.
+.TP
+.B \-\-md
+Body is Markdown, rendered into the built-in template.
+A plain-text alternative is sent as well.
+Local images referenced as
+.B ![alt](path/to/image.png)
+are attached and displayed inline; remote image URLs are left untouched.
+.TP
+.B \-\-html
+Body is an HTML fragment, wrapped in the built-in template.
+.TP
+.B \-\-html\-raw
+Body is a complete HTML document, sent as-is.
+.PP
+Exactly one of the four body format flags may be given.
+.TP
+.BI \-\-file " path"
+Read the body from a file instead of standard input.
+.TP
+.BI \-\-preheader " text"
+Hidden inbox preview text.
+Only with
+.B \-\-md
+or
+.BR \-\-html .
+.TP
+.BI \-\-footer " path"
+HTML fragment appended as footer.
+Only with
+.B \-\-md
+or
+.BR \-\-html .
+.TP
+.BI \-\-attach " path"
+Attach a file, repeatable.
+.TP
+.B \-\-test
+Use Mailgun test mode: the API validates the request, but nothing is delivered.
+Test sends are never deferred.
+.TP
+.B \-\-no\-defer
+Fail immediately instead of storing the message for a later resend.
+.TP
+.BI \-c ", " \-\-config " path"
+Use this configuration file instead of searching the default locations.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.SS Flags of resend
+.TP
+.B \-\-list
+Show deferred messages (ID, date, to, subject, size) without sending.
+.TP
+.B \-\-force
+Resend even messages younger than the cooldown.
+.TP
+.BI \-c ", " \-\-config " path"
+Use this configuration file.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.PP
+Without further arguments all eligible deferred messages are retried;
+with one or more
+.I id
+arguments only those messages are retried.
+.B \-\-list
+cannot be combined with IDs.
+.SS Flags of validate
+.TP
+.BI \-c ", " \-\-config " path"
+Use this configuration file.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.SH CONFIGURATION
+.B mailfire
+reads a TOML configuration file.
+The first existing file of the following locations is used:
+.PP
+Linux and macOS:
+.RS
+.nf
+\&./.mailfire.conf
+$HOME/.config/mailfire/mailfire.conf
+/etc/mailfire/mailfire.conf
+.fi
+.RE
+.PP
+Windows:
+.RS
+.nf
+\&.\e.mailfire.conf
+%APPDATA%\emailfire\emailfire.conf
+%PROGRAMDATA%\emailfire\emailfire.conf
+.fi
+.RE
+.PP
+The option
+.B \-\-config
+overrides the search.
+Strings must be quoted.
+On Linux and macOS a warning is printed when the file is accessible by group
+or others; fix it with
+.BR "chmod 600" .
+.PP
+A system-wide configuration is usually insecure, because anyone who can read
+it can use the API key.
+.SS [mailgun]
+.TP
+.B api_key
+String, mandatory.
+The Mailgun API key.
+.TP
+.B region
+String, mandatory.
+Either
+.B us
+or
+.BR eu .
+.SS [sending]
+.TP
+.B domain
+String, mandatory.
+The sending domain as configured at Mailgun.
+.TP
+.B from
+String, optional.
+Default sender, either
+.B user@example.com
+or
+.BR "My Name <user@example.com>" .
+Can be overridden with
+.BR \-\-from .
+If not set,
+.B \-\-from
+is mandatory.
+.SS [logging]
+.TP
+.B logfile
+String, optional.
+Logging is disabled unless a logfile is given.
+One JSON object per sending attempt is written per line.
+.TP
+.B loglevel
+String, optional, default
+.BR information .
+.RS
+.TP
+.B error
+Failed attempts only: time, message ID, recipients, status code.
+.TP
+.B information
+Time, message ID, recipients, subject, status code.
+.TP
+.B debug
+Time, message ID, sender, recipients, subject, message size, status code,
+API response body.
+.RE
+.TP
+.B max_size
+String, optional, default
+.BR 50M .
+When exceeded, the oldest log lines are removed.
+Accepts a number of bytes or a K, M, or G suffix.
+.SS [defer]
+.TP
+.B defer
+Boolean, optional, default
+.BR true .
+Store messages whose delivery failed for a later retry.
+.TP
+.B defer_dir
+String, optional.
+Directory for deferred messages; created on demand.
+Defaults to
+.I $HOME/.local/share/mailfire
+(\fI%LOCALAPPDATA%\emailfire\fR on Windows).
+.TP
+.B max_size
+String, optional, default
+.BR 50M .
+When exceeded, the oldest deferred messages are removed.
+.TP
+.B resend_cooldown
+Duration string, optional, default
+.BR 5m .
+Messages younger than this are skipped by
+.BR "mailfire resend" .
+.SS Example
+.nf
+[mailgun]
+  api_key = "<your-api-key>"
+  region = "eu"
+
+[sending]
+  domain = "example.com"
+  from = "My Name <user@example.com>"
+
+[logging]
+  logfile = "~/logs/mailfire.log"
+  loglevel = "information"
+  max_size = "100M"
+
+[defer]
+  defer = true
+  max_size = "100M"
+  resend_cooldown = "5m"
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+Success (sent, validated, resent, or information shown).
+.TP
+.B 1
+Usage error: missing flags, unknown subcommand, conflicting formats.
+.TP
+.B 2
+Configuration error: missing file, invalid TOML, missing or invalid keys.
+.TP
+.B 3
+Authentication error: the API key was rejected (401 or 403 from Mailgun).
+.TP
+.B 4
+Sending failed and the message was deferred for a later
+.BR "mailfire resend" .
+.TP
+.B 5
+Sending failed and the message was not deferred
+.RB ( \-\-no\-defer
+or
+.BR "defer = false" ).
+.PP
+Errors are written to standard error in plain language, naming the failing step.
+.SH EXAMPLES
+Send a Markdown message from standard input:
+.PP
+.nf
+mailfire \-\-md \-\-to user@example.com \-\-subject "Have a nice day" <<EOF
+# This is an Email
+
+It is written in markdown. It's delivered as HTML.
+EOF
+.fi
+.PP
+Send files as attachments:
+.PP
+.nf
+mailfire \-\-to user@example.com \-\-subject "The files" \e
+  \-\-attach ~/doc1.pdf \-\-attach ~/image.png
+.fi
+.PP
+Verify configuration and payload without delivering anything:
+.PP
+.nf
+mailfire \-\-test \-\-to user@example.com \-\-subject "Test" <<< "Hello"
+.fi
+.PP
+Check configuration and credentials:
+.PP
+.nf
+mailfire validate
+.fi
+.PP
+List, then retry deferred messages:
+.PP
+.nf
+mailfire resend \-\-list
+mailfire resend
+.fi
+.SH FILES
+.TP
+.I ./.mailfire.conf
+.TQ
+.I $HOME/.config/mailfire/mailfire.conf
+.TQ
+.I /etc/mailfire/mailfire.conf
+Configuration file locations on Linux and macOS, in search order.
+.TP
+.I %APPDATA%\emailfire\emailfire.conf
+.TQ
+.I %PROGRAMDATA%\emailfire\emailfire.conf
+Configuration file locations on Windows, after
+.IR .\e.mailfire.conf .
+.TP
+.I $HOME/.local/share/mailfire
+Default directory for deferred messages
+.RI ( %LOCALAPPDATA%\emailfire
+on Windows).
+.SH SEE ALSO
+Project home and full documentation:
+.UR https://github.com/thorstenkramm/mailfire
+.UE
+.SH AUTHOR
+Thorsten Kramm.
