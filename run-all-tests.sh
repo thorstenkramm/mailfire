@@ -46,13 +46,9 @@ if [[ "$unbalanced" -ne 0 ]]; then
 fi
 
 echo "Running code duplication search ..."
-# These four files are byte-for-byte rendered-output goldens maintained by
-# testutil.Golden (-update), not independently maintained implementations.
-# Keep templates/*.html and testdata/report.body.html in the scan.
-npx --yes jscpd@5.1.2 --min-lines 10 --min-tokens 50 --threshold 0 \
-  --reporters console --no-tips \
-  --ignore "**/*_test.go,**/vendor/**,**/_bmad/**,**/.cache/**,**/_bmad-output/**,**/.agents/**,**/internal/cli/testdata/note_inlined.html,**/internal/cli/testdata/preheader_footer_inlined.html,**/internal/render/testdata/note.*.html,**/internal/render/testdata/report.*.html" \
-  --format go,markup .
+# Shared with CI: only generated output goldens are excluded, not templates
+# or the independently maintained testdata/report.body.html fixture.
+npx --yes jscpd@5.1.2 --config .jscpd.json --no-tips .
 
 if command -v govulncheck >/dev/null 2>&1; then
   echo "Running Go vulnerability scan ..."

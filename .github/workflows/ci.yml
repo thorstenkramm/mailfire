@@ -42,11 +42,7 @@ jobs:
 
       # Match run-all-tests.sh: exclude generated golden snapshots, not templates.
       - name: jscpd
-        run: |
-          npx --yes jscpd@5.1.2 --min-lines 10 --min-tokens 50 --threshold 0 \
-            --reporters console --no-tips \
-            --ignore "**/*_test.go,**/vendor/**,**/_bmad/**,**/.cache/**,**/_bmad-output/**,**/.agents/**,**/internal/cli/testdata/note_inlined.html,**/internal/cli/testdata/preheader_footer_inlined.html,**/internal/render/testdata/note.html,**/internal/render/testdata/report.html" \
-            --format go,markup .
+        run: npx --yes jscpd@5.1.2 --config .jscpd.json --no-tips .
 
       - name: Trivy
         run: |

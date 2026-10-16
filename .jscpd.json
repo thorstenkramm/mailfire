@@ -1,0 +1,25 @@
+{
+  "minLines": 10,
+  "minTokens": 50,
+  "threshold": 0,
+  "reporters": ["console"],
+  "format": ["go", "markup"],
+  "ignore": [
+    "**/*_test.go",
+    "**/vendor/**",
+    "**/_bmad/**",
+    "**/.cache/**",
+    "**/_bmad-output/**",
+    "**/.agents/**",
+    "**/internal/cli/testdata/note_inlined.html",
+    "**/internal/cli/testdata/preheader_footer_inlined.html",
+    "**/internal/render/testdata/note.card.html",
+    "**/internal/render/testdata/note.card-serif.html",
+    "**/internal/render/testdata/note.plain.html",
+    "**/internal/render/testdata/note.plain-serif.html",
+    "**/internal/render/testdata/report.card.html",
+    "**/internal/render/testdata/report.card-serif.html",
+    "**/internal/render/testdata/report.plain.html",
+    "**/internal/render/testdata/report.plain-serif.html"
+  ]
+}
