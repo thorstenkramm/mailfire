@@ -13,6 +13,48 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  quality:
+    name: lint, duplication and security (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: golangci-lint
+        run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2 run ./...
+
+      - name: Check duplication marker balance
+        shell: bash
+        run: |
+          unbalanced=0
+          while IFS= read -r file; do
+            starts=$(grep -c 'jscpd:ignore-start' "$file" || true)
+            ends=$(grep -c 'jscpd:ignore-end' "$file" || true)
+            if [[ "$starts" -ne "$ends" ]]; then
+              echo "::error file=$file::Unbalanced duplication markers ($starts starts, $ends ends)"
+              unbalanced=1
+            fi
+          done < <(git ls-files -- '*.go')
+          exit "$unbalanced"
+
+      # Match run-all-tests.sh: exclude generated golden snapshots, not templates.
+      - name: jscpd
+        run: |
+          npx --yes jscpd@5.1.2 --min-lines 10 --min-tokens 50 --threshold 0 \
+            --reporters console --no-tips \
+            --ignore "**/*_test.go,**/vendor/**,**/_bmad/**,**/.cache/**,**/_bmad-output/**,**/.agents/**,**/internal/cli/testdata/note_inlined.html,**/internal/cli/testdata/preheader_footer_inlined.html,**/internal/render/testdata/note.html,**/internal/render/testdata/report.html" \
+            --format go,markup .
+
+      - name: Trivy
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace \
+            aquasec/trivy:0.74.0 fs . \
+            --skip-dirs .agents --ignorefile .trivyignore.yaml --exit-code 1
+
   test:
     name: test (${{ matrix.os }})
     strategy:
