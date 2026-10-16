@@ -427,7 +427,7 @@ func TestCrashMidSaveNeverListedButEvicted(t *testing.T) {
 			if _, err := os.Stat(crashed); !os.IsNotExist(err) {
 				t.Error("crashed save still on disk")
 			}
-			if list, _ := s.List(); len(list) != 1 || list[0].ID != meta.ID {
+			if list, err := s.List(); err != nil || len(list) != 1 || list[0].ID != meta.ID {
 				t.Errorf("List = %+v, want only %s", list, meta.ID)
 			}
 		})
@@ -586,7 +586,7 @@ func TestEvictionSparesNewer(t *testing.T) {
 	if len(drops) != 1 || drops[0].ID != older.ID {
 		t.Errorf("drops = %+v, want only %s", drops, older.ID)
 	}
-	if list, _ := s.List(); len(list) != 2 || list[0].ID != mine.ID || list[1].ID != newer.ID {
+	if list, err := s.List(); err != nil || len(list) != 2 || list[0].ID != mine.ID || list[1].ID != newer.ID {
 		t.Errorf("List = %+v, want [%s %s]", list, mine.ID, newer.ID)
 	}
 }
@@ -600,7 +600,7 @@ func TestWriteFileSyncExclusive(t *testing.T) {
 	if err := writeFileSync(path, []byte("two")); err == nil {
 		t.Fatal("second write over an existing file succeeded")
 	}
-	if got, _ := os.ReadFile(path); string(got) != "one" {
+	if got, err := os.ReadFile(path); err != nil || string(got) != "one" {
 		t.Errorf("content = %q, want the original", got)
 	}
 }

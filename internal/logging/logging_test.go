@@ -2,6 +2,7 @@ package logging
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -19,7 +20,12 @@ func openLogger(t *testing.T, level string, maxSize int64) (*Logger, string) {
 	if err != nil {
 		t.Fatalf("Open(%q, %q, %d): %v", path, level, maxSize, err)
 	}
-	t.Cleanup(func() { l.Close() })
+	t.Cleanup(func() {
+		// Write-error tests deliberately close the underlying file first.
+		if err := l.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+			t.Error(err)
+		}
+	})
 	return l, path
 }
 
@@ -137,7 +143,11 @@ func TestFieldValues(t *testing.T) {
 		t.Errorf("timestamp = %v, want RFC3339 2026-10-15T12:30:00Z", e["timestamp"])
 	}
 	// The timestamp must parse as RFC3339.
-	if _, err := time.Parse(time.RFC3339, e["timestamp"].(string)); err != nil {
+	stamp, ok := e["timestamp"].(string)
+	if !ok {
+		t.Fatalf("timestamp is not a string: %v", e["timestamp"])
+	}
+	if _, err := time.Parse(time.RFC3339, stamp); err != nil {
 		t.Errorf("timestamp %q does not parse as RFC3339: %v", e["timestamp"], err)
 	}
 	if e["message_id"] != "<abc123@mg.example.com>" {
@@ -159,7 +169,7 @@ func TestFieldValues(t *testing.T) {
 	if e["status"] != float64(200) {
 		t.Errorf("status = %v, want 200", e["status"])
 	}
-	if !strings.Contains(e["response"].(string), "Queued") {
+	if response, ok := e["response"].(string); !ok || !strings.Contains(response, "Queued") {
 		t.Errorf("response = %v, want the API response body", e["response"])
 	}
 }
@@ -337,7 +347,11 @@ func TestOpenCreatesParentDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	defer l.Close()
+	defer func() {
+		if err := l.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := l.Log(successAttempt()); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
@@ -484,13 +498,17 @@ func TestTruncationExactlyAtMaxSize(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if fi, _ := os.Stat(path); fi.Size() != maxSize {
+	if fi, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if fi.Size() != maxSize {
 		t.Fatalf("size = %d, want exactly %d (no truncation at the limit)", fi.Size(), maxSize)
 	}
 	if err := l.Log(successAttempt()); err != nil {
 		t.Fatal(err)
 	}
-	if fi, _ := os.Stat(path); fi.Size() != maxSize {
+	if fi, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if fi.Size() != maxSize {
 		t.Errorf("size = %d, want %d (oldest of three equal lines dropped)", fi.Size(), maxSize)
 	}
 }
@@ -520,7 +538,7 @@ func TestTruncationManyAppends(t *testing.T) {
 		entries := readEntries(t, path)
 		for j, e := range entries {
 			want := i - (len(entries) - 1 - j)
-			if !strings.HasPrefix(e["subject"].(string), fmt.Sprintf("n=%d ", want)) {
+			if subject, ok := e["subject"].(string); !ok || !strings.HasPrefix(subject, fmt.Sprintf("n=%d ", want)) {
 				t.Fatalf("append %d: entry %d subject %q, want n=%d", i, j, e["subject"], want)
 			}
 		}

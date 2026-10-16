@@ -60,8 +60,10 @@ type Data struct {
 // fail, so a render-time error is impossible.
 func Base(d Data) string {
 	var buf bytes.Buffer
-	// Execute can only fail on writer errors, and bytes.Buffer never
-	// fails; parse errors were already caught at init by template.Must.
-	_ = base.Execute(&buf, d)
+	// With this fixed template and Data type, an execution failure is a
+	// programming error. Do not silently return a partially rendered email.
+	if err := base.Execute(&buf, d); err != nil {
+		panic(err)
+	}
 	return buf.String()
 }

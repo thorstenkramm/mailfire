@@ -173,7 +173,9 @@ func TestDeferNetworkError(t *testing.T) {
 		t.Fatal(err)
 	}
 	url := "http://" + l.Addr().String()
-	l.Close()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg, deferDir := deferConfig(t, "")
 	var stdout, stderr bytes.Buffer

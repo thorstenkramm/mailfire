@@ -154,7 +154,10 @@ func TestLoggingDebugLevel(t *testing.T) {
 	if size, ok := e["size"].(float64); !ok || size <= 0 {
 		t.Errorf("size = %v, want the encoded message size > 0", e["size"])
 	}
-	resp, _ := e["response"].(string)
+	resp, ok := e["response"].(string)
+	if !ok {
+		t.Fatalf("response is not a string: %v", e["response"])
+	}
 	if !strings.Contains(resp, "Queued. Thank you.") || !strings.Contains(resp, "abc123") {
 		t.Errorf("response = %q, want the API response body", resp)
 	}

@@ -531,7 +531,9 @@ func TestResendMixedOutcomes(t *testing.T) {
 				call++
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(resp.Status)
-				fmt.Fprint(w, resp.Body)
+				if _, err := fmt.Fprint(w, resp.Body); err != nil {
+					t.Error(err)
+				}
 			})
 			cfg, deferDir := deferConfig(t, "")
 			for i := range len(tc.replies) {
@@ -695,9 +697,14 @@ func TestResendConcurrentRemoval(t *testing.T) {
 	second := seedDeferred(t, deferDir, "b@example.com", "second", time.Hour)
 	m.SendHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The "other process" resends and removes the second message.
-		os.RemoveAll(filepath.Join(deferDir, second.ID))
+		if err := os.RemoveAll(filepath.Join(deferDir, second.ID)); err != nil {
+			t.Error(err)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"id":"<x@mg.example.com>","message":"Queued. Thank you."}`)
+		if _, err := fmt.Fprint(w, `{"id":"<x@mg.example.com>","message":"Queued. Thank you."}`); err != nil {
+			t.Error(err)
+		}
 	})
 
 	code, stdout, stderr := runMock(t, m, "", "resend", "-c", cfg)
@@ -805,9 +812,15 @@ func TestListCell(t *testing.T) {
 func TestStoredFrom(t *testing.T) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
-	w.WriteField("to", "a@example.com")
-	w.WriteField("from", "Ops <ops@example.com>")
-	w.Close()
+	if err := w.WriteField("to", "a@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("from", "Ops <ops@example.com>"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if got := storedFrom(w.FormDataContentType(), buf.Bytes()); got != "Ops <ops@example.com>" {
 		t.Errorf("storedFrom = %q, want the from field", got)
 	}

@@ -21,10 +21,10 @@ func runVersion(args []string, stdout, stderr io.Writer, info BuildInfo) int {
 		err = fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: version: %v\n\n", err)
-		fmt.Fprint(stderr, versionUsage)
+		printfOutput(stderr, "mailfire: version: %v\n\n", err)
+		printOutput(stderr, versionUsage)
 		return ExitUsage
 	}
-	fmt.Fprintf(stdout, "mailfire %s (commit %s, built %s)\n", info.Version, info.Commit, info.BuildDate)
+	printfOutput(stdout, "mailfire %s (commit %s, built %s)\n", info.Version, info.Commit, info.BuildDate)
 	return ExitOK
 }

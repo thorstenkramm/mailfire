@@ -126,13 +126,13 @@ func parseResendFlags(args []string) (resendOptions, error) {
 func runResend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	opts, err := parseResendFlags(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: resend: %v\n\n", err)
-		fmt.Fprint(stderr, resendUsage)
+		printfOutput(stderr, "mailfire: resend: %v\n\n", err)
+		printOutput(stderr, resendUsage)
 		return ExitUsage
 	}
 	cfg, err := config.Load(opts.Config, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+		printfOutput(stderr, "mailfire: %v\n", err)
 		return ExitConfig
 	}
 	store := &deferral.Store{Dir: cfg.DeferDir}
@@ -150,7 +150,7 @@ func resendList(store *deferral.Store, stdout, stderr io.Writer) int {
 		return code
 	}
 	if len(msgs) == 0 {
-		fmt.Fprintln(stdout, "no deferred messages")
+		printlnOutput(stdout, "no deferred messages")
 		return ExitOK
 	}
 	header := [5]string{"ID", "DATE", "TO", "SUBJECT", "SIZE"}
@@ -176,7 +176,7 @@ func resendList(store *deferral.Store, stdout, stderr io.Writer) int {
 	// Padding is computed in runes (fmt's width counts runes, too), so
 	// non-ASCII subjects stay aligned.
 	printRow := func(row [5]string) {
-		fmt.Fprintf(stdout, "%-*s  %-*s  %-*s  %-*s  %*s\n",
+		printfOutput(stdout, "%-*s  %-*s  %-*s  %-*s  %*s\n",
 			widths[0], row[0], widths[1], row[1], widths[2], row[2],
 			widths[3], row[3], widths[4], row[4])
 	}
@@ -221,32 +221,29 @@ func resendSend(cfg *config.Config, store *deferral.Store, opts *resendOptions,
 	}
 	selected, err := selectMessages(msgs, opts.IDs)
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: resend: %v\n", err)
+		printfOutput(stderr, "mailfire: resend: %v\n", err)
 		return ExitUsage
 	}
 	if len(selected) == 0 {
-		fmt.Fprintln(stdout, "no deferred messages")
+		printlnOutput(stdout, "no deferred messages")
 		return ExitOK
 	}
 
 	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, rc.clientOpts...)
 	if err != nil {
 		// Cannot happen: config.Load already validated these fields.
-		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+		printfOutput(stderr, "mailfire: %v\n", err)
 		return ExitConfig
 	}
 
 	// As in send, the logfile is opened before any attempt: an unusable
 	// path is a configuration error and aborts the run.
-	var logger *logging.Logger
-	if cfg.Logfile != "" {
-		logger, err = logging.Open(cfg.Logfile, cfg.LogLevel, cfg.LogMaxSize)
-		if err != nil {
-			fmt.Fprintf(stderr, "mailfire: %v\n", err)
-			return ExitConfig
-		}
-		defer logger.Close()
+	logger, err := openLogger(cfg)
+	if err != nil {
+		printfOutput(stderr, "mailfire: %v\n", err)
+		return ExitConfig
 	}
+	defer closeLogger(logger, stderr)
 
 	now := time.Now()
 	var sent, skipped, failed int
@@ -256,7 +253,7 @@ func resendSend(cfg *config.Config, store *deferral.Store, opts *resendOptions,
 			skipped++
 			age := now.Sub(meta.Timestamp).Round(time.Second)
 			eligible := meta.Timestamp.Add(cfg.ResendCooldown)
-			fmt.Fprintf(stdout, "%s: skipped (deferred %s ago; eligible at %s, in %s; use --force to resend now)\n",
+			printfOutput(stdout, "%s: skipped (deferred %s ago; eligible at %s, in %s; use --force to resend now)\n",
 				meta.ID, age, eligible.UTC().Format("2006-01-02 15:04:05")+" UTC",
 				eligible.Sub(now).Round(time.Second))
 			continue
@@ -274,7 +271,7 @@ func resendSend(cfg *config.Config, store *deferral.Store, opts *resendOptions,
 			worst = code
 		}
 	}
-	fmt.Fprintf(stdout, "resend: %d sent, %d skipped, %d failed\n", sent, skipped, failed)
+	printfOutput(stdout, "resend: %d sent, %d skipped, %d failed\n", sent, skipped, failed)
 	return worst
 }
 
@@ -288,7 +285,7 @@ func listDeferred(store *deferral.Store, stderr io.Writer) ([]deferral.Metadata,
 	}
 	msgs, err := store.List()
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: resend: %v\n", err)
+		printfOutput(stderr, "mailfire: resend: %v\n", err)
 		return nil, ExitSendFail
 	}
 	return msgs, ExitOK
@@ -336,12 +333,12 @@ func resendOne(client *mailgun.Client, store *deferral.Store, logger *logging.Lo
 	dir := filepath.Join(store.Dir, meta.ID)
 	body, err := os.ReadFile(filepath.Join(dir, deferral.BodyFile))
 	if errors.Is(err, fs.ErrNotExist) {
-		fmt.Fprintf(stdout, "%s: skipped (no longer in defer_dir; resent or removed by another process)\n", meta.ID)
+		printfOutput(stdout, "%s: skipped (no longer in defer_dir; resent or removed by another process)\n", meta.ID)
 		return ExitOK, true
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: resend: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
-		fmt.Fprintf(stdout, "%s: failed (stored request unreadable; message kept)\n", meta.ID)
+		printfOutput(stderr, "mailfire: resend: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
+		printfOutput(stdout, "%s: failed (stored request unreadable; message kept)\n", meta.ID)
 		return ExitSendFail, false
 	}
 	resp, err := client.SendRaw(context.Background(), meta.ContentType, body)
@@ -367,23 +364,23 @@ func reportResend(store *deferral.Store, meta deferral.Metadata, resp *mailgun.S
 			// Delivered but not removed: the next resend would send a
 			// duplicate. The send still counts as sent — removing is
 			// housekeeping — but the leftover is reported loudly.
-			fmt.Fprintf(stderr, "mailfire: resend: %s: delivered, but removing from defer_dir failed: %v\n", meta.ID, rerr)
-			fmt.Fprintf(stdout, "%s: sent, message id %s (warning: not removed from defer_dir)\n", meta.ID, resp.ID)
+			printfOutput(stderr, "mailfire: resend: %s: delivered, but removing from defer_dir failed: %v\n", meta.ID, rerr)
+			printfOutput(stdout, "%s: sent, message id %s (warning: not removed from defer_dir)\n", meta.ID, resp.ID)
 			return ExitOK
 		}
-		fmt.Fprintf(stdout, "%s: sent, message id %s\n", meta.ID, resp.ID)
+		printfOutput(stdout, "%s: sent, message id %s\n", meta.ID, resp.ID)
 		return ExitOK
 	}
-	fmt.Fprintf(stderr, "mailfire: resend: %s: %v\n", meta.ID, err)
+	printfOutput(stderr, "mailfire: resend: %s: %v\n", meta.ID, err)
 	switch {
 	case mailgun.IsAuth(err):
-		fmt.Fprintf(stdout, "%s: failed (authentication error; message kept)\n", meta.ID)
+		printfOutput(stdout, "%s: failed (authentication error; message kept)\n", meta.ID)
 		return ExitAuth
 	case mailgun.IsDeferrable(err):
-		fmt.Fprintf(stdout, "%s: failed (retryable; message kept for the next resend)\n", meta.ID)
+		printfOutput(stdout, "%s: failed (retryable; message kept for the next resend)\n", meta.ID)
 		return ExitDeferred
 	default:
-		fmt.Fprintf(stdout, "%s: failed (permanent; message kept — inspect it in %s and remove it manually)\n",
+		printfOutput(stdout, "%s: failed (permanent; message kept — inspect it in %s and remove it manually)\n",
 			meta.ID, store.Dir)
 		return ExitSendFail
 	}

@@ -49,7 +49,11 @@ func TestSaveReadOnlyDir(t *testing.T) {
 	if err := os.Chmod(s.Dir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(s.Dir, 0o700) })
+	t.Cleanup(func() {
+		if err := os.Chmod(s.Dir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
 
 	meta, err := s.Save([]string{"a@example.com"}, "s", plantBody, testContentType)
 	if err == nil {
@@ -88,7 +92,11 @@ func TestEvictionFailureKeepsMessage(t *testing.T) {
 	if err := os.Chmod(oldDir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(oldDir, 0o700) })
+	t.Cleanup(func() {
+		if err := os.Chmod(oldDir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
 
 	meta, err := s.Save([]string{"a@example.com"}, "s", plantBody, testContentType)
 	if err == nil {

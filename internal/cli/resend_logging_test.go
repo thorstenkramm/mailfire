@@ -52,7 +52,7 @@ func TestResendLogsAttempts(t *testing.T) {
 	if e["message_id"] != "<abc123@mg.example.com>" || e["subject"] != sent.Subject || e["status"] != float64(200) {
 		t.Errorf("entry = %v, want the resent message's outcome", e)
 	}
-	if to, _ := e["to"].([]any); len(to) != 1 || to[0] != "a@example.com" {
+	if to, ok := e["to"].([]any); !ok || len(to) != 1 || to[0] != "a@example.com" {
 		t.Errorf("to = %v, want [a@example.com]", e["to"])
 	}
 }
@@ -79,7 +79,7 @@ func TestResendLogsDebugFields(t *testing.T) {
 	if e["size"] != float64(meta.Size) {
 		t.Errorf("size = %v, want %d", e["size"], meta.Size)
 	}
-	if r, _ := e["response"].(string); !strings.Contains(r, "Queued") {
+	if r, ok := e["response"].(string); !ok || !strings.Contains(r, "Queued") {
 		t.Errorf("response = %v, want the Mailgun response body", e["response"])
 	}
 	if _, ok := e["test"]; ok {
@@ -106,7 +106,10 @@ func TestResendLogsFailuresAtErrorLevel(t *testing.T) {
 	if e := entries[0]; e["status"] != float64(401) || e["message_id"] != "" {
 		t.Errorf("entry = %v, want status 401 and empty message_id", e)
 	}
-	data, _ := os.ReadFile(logfile)
+	data, err := os.ReadFile(logfile)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if strings.Contains(string(data), "test-key-not-real") {
 		t.Errorf("logfile leaks the API key:\n%s", data)
 	}

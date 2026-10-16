@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,6 +83,8 @@ func warnIfPermissive(goos, path string, stderr io.Writer) {
 		return
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
-		fmt.Fprintf(stderr, "mailfire: warning: config file %s has permissions %04o; it contains your API key, consider: chmod 600 %s\n", path, perm, path)
+		if _, err := fmt.Fprintf(stderr, "mailfire: warning: config file %s has permissions %04o; it contains your API key, consider: chmod 600 %s\n", path, perm, path); err != nil {
+			log.Printf("mailfire: writing permission warning: %v", err)
+		}
 	}
 }

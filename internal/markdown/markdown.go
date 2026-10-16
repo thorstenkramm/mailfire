@@ -47,7 +47,9 @@ var md = goldmark.New(goldmark.WithExtensions(
 // cannot fail (same reasoning as render.Base).
 func HTML(src string) string {
 	var buf bytes.Buffer
-	_ = md.Convert([]byte(normalize(src)), &buf)
+	if err := md.Convert([]byte(normalize(src)), &buf); err != nil {
+		panic(err) // Built-in renderers only return writer errors; bytes.Buffer cannot fail.
+	}
 	return buf.String()
 }
 
@@ -76,7 +78,9 @@ func unescape(b []byte) string {
 	var buf bytes.Buffer
 	bw := bufio.NewWriter(&buf)
 	gmhtml.DefaultWriter.Write(bw, b)
-	_ = bw.Flush()
+	if err := bw.Flush(); err != nil {
+		panic(err) // The underlying bytes.Buffer cannot fail.
+	}
 	return html.UnescapeString(buf.String())
 }
 

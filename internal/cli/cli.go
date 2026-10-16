@@ -68,32 +68,32 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help":
-			fmt.Fprint(stdout, usageText)
+			printOutput(stdout, usageText)
 			return ExitOK
 		case "send":
 			return runSend(args[1:], rc, stdout, stderr)
 		case "resend":
 			if wantsHelp(args[1:]) {
-				fmt.Fprint(stdout, resendUsage)
+				printOutput(stdout, resendUsage)
 				return ExitOK
 			}
 			return runResend(args[1:], rc, stdout, stderr)
 		case "validate":
 			if wantsHelp(args[1:]) {
-				fmt.Fprint(stdout, validateUsage)
+				printOutput(stdout, validateUsage)
 				return ExitOK
 			}
 			return runValidate(args[1:], rc, stdout, stderr)
 		case "version":
 			if wantsHelp(args[1:]) {
-				fmt.Fprint(stdout, versionUsage)
+				printOutput(stdout, versionUsage)
 				return ExitOK
 			}
 			return runVersion(args[1:], stdout, stderr, info)
 		default:
 			if !strings.HasPrefix(args[0], "-") {
-				fmt.Fprintf(stderr, "mailfire: unknown subcommand %q\n\n", args[0])
-				fmt.Fprint(stderr, usageText)
+				printfOutput(stderr, "mailfire: unknown subcommand %q\n\n", args[0])
+				printOutput(stderr, usageText)
 				return ExitUsage
 			}
 			return runSend(args, rc, stdout, stderr)
@@ -121,21 +121,21 @@ func wantsHelp(args []string) bool {
 func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	opts, showHelp, err := ParseSendFlags(args)
 	if showHelp {
-		fmt.Fprint(stdout, sendUsage)
+		printOutput(stdout, sendUsage)
 		return ExitOK
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: send: %v\n\n", err)
-		fmt.Fprint(stderr, sendUsage)
+		printfOutput(stderr, "mailfire: send: %v\n\n", err)
+		printOutput(stderr, sendUsage)
 		return ExitUsage
 	}
 	if err := checkFlags(&opts); err != nil {
-		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
+		printfOutput(stderr, "mailfire: send: %v\n", err)
 		return ExitUsage
 	}
 	cfg, err := config.Load(opts.Config, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+		printfOutput(stderr, "mailfire: %v\n", err)
 		return ExitConfig
 	}
 	return send(cfg, &opts, rc, stdout, stderr)

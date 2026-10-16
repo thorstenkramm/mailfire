@@ -33,7 +33,11 @@ func TestDeferEvictionFailureStillExits4(t *testing.T) {
 	if err := os.Chmod(oldDir, 0o500); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(oldDir, 0o700) })
+	t.Cleanup(func() {
+		if err := os.Chmod(oldDir, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
 
 	code, _, stderr := runMock(t, m, "body",
 		"-c", cfg, "--to", "a@example.com", "--subject", "s")

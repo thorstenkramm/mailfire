@@ -35,8 +35,8 @@ import (
 func runValidate(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	configPath, err := parseValidateFlags(args)
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: validate: %v\n\n", err)
-		fmt.Fprint(stderr, validateUsage)
+		printfOutput(stderr, "mailfire: validate: %v\n\n", err)
+		printOutput(stderr, validateUsage)
 		return ExitUsage
 	}
 	return validate(configPath, rc, stdout, stderr)
@@ -77,7 +77,7 @@ func validate(flagPath string, rc *runContext, stdout, stderr io.Writer) int {
 	if err := config.CheckSyntax(path); err != nil {
 		return validateFail(stdout, stderr, "config file", err, ExitConfig)
 	}
-	fmt.Fprintf(stdout, "ok   config file found and parses as valid TOML: %s\n", path)
+	printfOutput(stdout, "ok   config file found and parses as valid TOML: %s\n", path)
 
 	// Step 2: mandatory keys present and well-formed. config.Load
 	// re-reads the file (cheap, and it applies defaults) and names the
@@ -90,7 +90,7 @@ func validate(flagPath string, rc *runContext, stdout, stderr io.Writer) int {
 	if cfg.From != "" {
 		keys += fmt.Sprintf(", from %q", cfg.From)
 	}
-	fmt.Fprintf(stdout, "ok   mandatory keys present and well-formed (%s)\n", keys)
+	printfOutput(stdout, "ok   mandatory keys present and well-formed (%s)\n", keys)
 
 	// Step 3: API key and domain verified against Mailgun.
 	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, rc.clientOpts...)
@@ -115,7 +115,7 @@ func validate(flagPath string, rc *runContext, stdout, stderr io.Writer) int {
 			return validateFail(stdout, stderr, "API key and domain", err, ExitConfig)
 		}
 	}
-	fmt.Fprintf(stdout, "ok   API key and domain verified with Mailgun: domain %q is %s\n",
+	printfOutput(stdout, "ok   API key and domain verified with Mailgun: domain %q is %s\n",
 		info.Name, info.State)
 	return ExitOK
 }
@@ -123,7 +123,7 @@ func validate(flagPath string, rc *runContext, stdout, stderr io.Writer) int {
 // validateFail reports a failed step: the FAIL line goes to stdout (the
 // per-step report, PRD FR-5) and the error detail to stderr (PRD §8).
 func validateFail(stdout, stderr io.Writer, step string, err error, code int) int {
-	fmt.Fprintf(stdout, "FAIL %s: %v\n", step, err)
-	fmt.Fprintf(stderr, "mailfire: validate: %v\n", err)
+	printfOutput(stdout, "FAIL %s: %v\n", step, err)
+	printfOutput(stderr, "mailfire: validate: %v\n", err)
 	return code
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -223,7 +224,7 @@ func recordRequest(r *http.Request) RecordedRequest {
 	mr := multipart.NewReader(bytes.NewReader(body), params["boundary"])
 	for {
 		part, err := mr.NextPart()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
@@ -273,5 +274,8 @@ func writeResponse(w http.ResponseWriter, r *http.Request, resp Response) {
 		status = http.StatusOK
 	}
 	w.WriteHeader(status)
-	_, _ = io.WriteString(w, resp.Body)
+	if _, err := io.WriteString(w, resp.Body); err != nil {
+		// Timeout/cancellation tests may disconnect before the reply.
+		log.Printf("mock Mailgun: writing response: %v", err)
+	}
 }

@@ -28,7 +28,7 @@ import (
 func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr io.Writer) int {
 	msg, err := compose(cfg, opts, rc.stdin)
 	if err != nil {
-		fmt.Fprintf(stderr, "mailfire: send: %v\n", err)
+		printfOutput(stderr, "mailfire: send: %v\n", err)
 		return ExitUsage
 	}
 	// Attachment and inline-image files stay open until the message is
@@ -39,21 +39,18 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, rc.clientOpts...)
 	if err != nil {
 		// Cannot happen: config.Load already validated these fields.
-		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+		printfOutput(stderr, "mailfire: %v\n", err)
 		return ExitConfig
 	}
 
 	// The logfile is opened before any send attempt (FR-3): an unusable
 	// path is a configuration error and aborts the run.
-	var logger *logging.Logger
-	if cfg.Logfile != "" {
-		logger, err = logging.Open(cfg.Logfile, cfg.LogLevel, cfg.LogMaxSize)
-		if err != nil {
-			fmt.Fprintf(stderr, "mailfire: %v\n", err)
-			return ExitConfig
-		}
-		defer logger.Close()
+	logger, err := openLogger(cfg)
+	if err != nil {
+		printfOutput(stderr, "mailfire: %v\n", err)
+		return ExitConfig
 	}
+	defer closeLogger(logger, stderr)
 
 	resp, err := client.SendMessage(context.Background(), msg)
 	if logger != nil {
@@ -66,9 +63,9 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 		// Test mode (FR-1, Decision Q5): Mailgun accepted and validated
 		// the request but delivers nothing — say so explicitly, so the
 		// message id is not mistaken for proof of delivery.
-		fmt.Fprintf(stdout, "accepted in test mode, message id %s (validated only, nothing was delivered)\n", resp.ID)
+		printfOutput(stdout, "accepted in test mode, message id %s (validated only, nothing was delivered)\n", resp.ID)
 	} else {
-		fmt.Fprintln(stdout, resp.ID)
+		printlnOutput(stdout, resp.ID)
 	}
 	return ExitOK
 }
@@ -88,7 +85,7 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 	}
 	fromAddr, err := parseAddress(from)
 	if err != nil {
-		return nil, fmt.Errorf("invalid sender %q: %v", from, err)
+		return nil, fmt.Errorf("invalid sender %q: %w", from, err)
 	}
 
 	to, err := parseAddresses("--to", opts.To)
@@ -276,24 +273,23 @@ func openRegular(kind, p string) (*os.File, error) {
 	path := config.ExpandPath(p)
 	fi, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %v", kind, path, err)
+		return nil, fmt.Errorf("%s %s: %w", kind, path, err)
 	}
 	if err := checkRegular(kind, path, fi); err != nil {
 		return nil, err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("%s %s: %v", kind, path, err)
+		return nil, fmt.Errorf("%s %s: %w", kind, path, err)
 	}
 	fi, err = f.Stat()
 	if err == nil {
 		err = checkRegular(kind, path, fi)
 	} else {
-		err = fmt.Errorf("%s %s: %v", kind, path, err)
+		err = fmt.Errorf("%s %s: %w", kind, path, err)
 	}
 	if err != nil {
-		f.Close()
-		return nil, err
+		return nil, errors.Join(err, f.Close())
 	}
 	return f, nil
 }
@@ -314,7 +310,7 @@ func checkRegular(kind, path string, fi os.FileInfo) error {
 func closeFiles(files []mailgun.File) {
 	for _, f := range files {
 		if c, ok := f.Reader.(io.Closer); ok {
-			c.Close()
+			closeReported(c, os.Stderr)
 		}
 	}
 }
@@ -341,7 +337,7 @@ func parseAddresses(flagName string, values []string) ([]string, error) {
 	for _, v := range values {
 		addr, err := parseAddress(v)
 		if err != nil {
-			return nil, fmt.Errorf("invalid %s address %q: %v", flagName, v, err)
+			return nil, fmt.Errorf("invalid %s address %q: %w", flagName, v, err)
 		}
 		addrs = append(addrs, addr)
 	}
@@ -358,14 +354,14 @@ func readBody(file string, stdin io.Reader) (string, error) {
 	if file == "" {
 		data, err := io.ReadAll(stdin)
 		if err != nil {
-			return "", fmt.Errorf("reading body from stdin: %v", err)
+			return "", fmt.Errorf("reading body from stdin: %w", err)
 		}
 		return string(data), nil
 	}
 	path := config.ExpandPath(file)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("reading body file %s: %v", path, err)
+		return "", fmt.Errorf("reading body file %s: %w", path, err)
 	}
 	return string(data), nil
 }
@@ -380,10 +376,10 @@ func readFooter(p string) (render.HTML, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
 	data, err := io.ReadAll(f)
+	err = errors.Join(err, f.Close())
 	if err != nil {
-		return "", fmt.Errorf("footer %s: %v", f.Name(), err)
+		return "", fmt.Errorf("footer %s: %w", f.Name(), err)
 	}
 	return render.HTML(data), nil
 }
@@ -427,7 +423,7 @@ func logOutcome(logger *logging.Logger, a logging.Attempt,
 		a.Response = sendErr.Error()
 	}
 	if err := logger.Log(a); err != nil {
-		fmt.Fprintf(stderr, "mailfire: %v\n", err)
+		printfOutput(stderr, "mailfire: %v\n", err)
 	}
 }
 
@@ -439,7 +435,7 @@ func logOutcome(logger *logging.Logger, a logging.Attempt,
 // would carry o:testmode=yes into a resend (FR-1, Decision Q5).
 func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message,
 	logger *logging.Logger, sendErr error, stderr io.Writer) int {
-	fmt.Fprintf(stderr, "mailfire: send: %v\n", sendErr)
+	printfOutput(stderr, "mailfire: send: %v\n", sendErr)
 	switch {
 	case mailgun.IsAuth(sendErr):
 		return ExitAuth
@@ -448,13 +444,13 @@ func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message
 		// retrying cannot succeed, so nothing is ever stored.
 		return ExitSendFail
 	case opts.Test:
-		fmt.Fprintf(stderr, "mailfire: send: --test sends are never deferred (test mode only validates the request); the message was NOT saved\n")
+		printfOutput(stderr, "mailfire: send: --test sends are never deferred (test mode only validates the request); the message was NOT saved\n")
 		return ExitSendFail
 	case opts.NoDefer:
-		fmt.Fprintf(stderr, "mailfire: send: not deferring (--no-defer); the message was NOT saved\n")
+		printfOutput(stderr, "mailfire: send: not deferring (--no-defer); the message was NOT saved\n")
 		return ExitSendFail
 	case !cfg.Defer:
-		fmt.Fprintf(stderr, "mailfire: send: not deferring (defer = false in %s); the message was NOT saved\n", cfg.Path)
+		printfOutput(stderr, "mailfire: send: not deferring (defer = false in %s); the message was NOT saved\n", cfg.Path)
 		return ExitSendFail
 	}
 	return deferMessage(cfg, msg, logger, stderr)
@@ -469,36 +465,36 @@ func deferMessage(cfg *config.Config, msg *mailgun.Message, logger *logging.Logg
 	if msg.TestMode {
 		// Cannot happen: reportSendError never defers --test sends. Guard
 		// anyway — a stored body would carry o:testmode=yes into resend.
-		fmt.Fprintf(stderr, "mailfire: defer: test-mode sends are never deferred; the message was NOT saved\n")
+		printfOutput(stderr, "mailfire: defer: test-mode sends are never deferred; the message was NOT saved\n")
 		return ExitSendFail
 	}
 	if len(msg.Encoded) == 0 || msg.EncodedType == "" {
 		// Cannot happen: a deferrable failure implies the request was
 		// encoded (encoding errors are permanent). Guard anyway —
 		// storing nothing would silently lose the mail.
-		fmt.Fprintf(stderr, "mailfire: defer: no encoded request to store; the message was NOT saved and is lost\n")
+		printfOutput(stderr, "mailfire: defer: no encoded request to store; the message was NOT saved and is lost\n")
 		return ExitSendFail
 	}
 	store := &deferral.Store{Dir: cfg.DeferDir, MaxSize: cfg.DeferMaxSize}
 	store.OnDrop = func(meta deferral.Metadata) {
-		fmt.Fprintf(stderr, "mailfire: defer: dropped %s (to %s, subject %q, %d bytes): defer_dir exceeds max_size\n",
+		printfOutput(stderr, "mailfire: defer: dropped %s (to %s, subject %q, %d bytes): defer_dir exceeds max_size\n",
 			meta.ID, strings.Join(meta.To, ", "), meta.Subject, meta.Size)
 		if logger != nil {
 			d := logging.Drop{Time: time.Now(), ID: meta.ID, To: meta.To, Subject: meta.Subject, Size: meta.Size}
 			if err := logger.LogDrop(d); err != nil {
-				fmt.Fprintf(stderr, "mailfire: %v\n", err)
+				printfOutput(stderr, "mailfire: %v\n", err)
 			}
 		}
 	}
 	meta, err := store.Save(msg.To, msg.Subject, msg.Encoded, msg.EncodedType)
 	if err != nil {
 		if meta.ID == "" {
-			fmt.Fprintf(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)
+			printfOutput(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)
 			return ExitSendFail
 		}
 		// The message is stored; only the max_size cleanup failed.
-		fmt.Fprintf(stderr, "mailfire: defer: %v\n", err)
+		printfOutput(stderr, "mailfire: defer: %v\n", err)
 	}
-	fmt.Fprintf(stderr, "mailfire: defer: message saved as %s in %s; retry with: mailfire resend\n", meta.ID, cfg.DeferDir)
+	printfOutput(stderr, "mailfire: defer: message saved as %s in %s; retry with: mailfire resend\n", meta.ID, cfg.DeferDir)
 	return ExitDeferred
 }

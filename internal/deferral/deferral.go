@@ -133,22 +133,18 @@ func (s *Store) Save(to []string, subject string, body []byte, contentType strin
 	// itself appears atomically via rename. A failed write removes the
 	// incomplete directory.
 	if err := writeFileSync(filepath.Join(dir, BodyFile), body); err != nil {
-		os.RemoveAll(dir)
-		return Metadata{}, fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, BodyFile), err)
+		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, BodyFile), err), os.RemoveAll(dir))
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
-		os.RemoveAll(dir)
-		return Metadata{}, fmt.Errorf("deferral: encoding metadata: %w", err)
+		return Metadata{}, errors.Join(fmt.Errorf("deferral: encoding metadata: %w", err), os.RemoveAll(dir))
 	}
 	tmp := filepath.Join(dir, metaTmpFile)
 	if err := writeFileSync(tmp, append(data, '\n')); err != nil {
-		os.RemoveAll(dir)
-		return Metadata{}, fmt.Errorf("deferral: writing %s: %w", tmp, err)
+		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", tmp, err), os.RemoveAll(dir))
 	}
 	if err := os.Rename(tmp, filepath.Join(dir, MetaFile)); err != nil {
-		os.RemoveAll(dir)
-		return Metadata{}, fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, MetaFile), err)
+		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, MetaFile), err), os.RemoveAll(dir))
 	}
 
 	if err := s.enforceMaxSize(meta.ID); err != nil {
@@ -199,12 +195,10 @@ func writeFileSync(path string, data []byte) error {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
+		return errors.Join(err, f.Close())
 	}
 	return f.Close()
 }

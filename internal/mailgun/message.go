@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -191,7 +192,13 @@ func (c *Client) do(req *http.Request, op string) ([]byte, int, error) {
 	if err != nil {
 		return nil, 0, c.transportError(op, err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// The response determines delivery, not transport cleanup. Never
+			// return a retryable error after a successful response.
+			log.Printf("mailfire: closing response: %s", c.redact(err.Error()))
+		}
+	}()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody))
 	if err != nil {

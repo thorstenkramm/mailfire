@@ -111,7 +111,10 @@ func TestLoadExplicitPath(t *testing.T) {
 	if cfg.From != "Ops Bot <ops@example.com>" {
 		t.Errorf("From = %q", cfg.From)
 	}
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if want := filepath.Join(home, "logs", "mailfire.log"); cfg.Logfile != want {
 		t.Errorf("Logfile = %q, want %q (~ not expanded)", cfg.Logfile, want)
 	}
@@ -188,7 +191,11 @@ func TestLoadSearchOrder(t *testing.T) {
 
 	t.Run("current directory wins over home", func(t *testing.T) {
 		cwdPath := mk(cwd, ".mailfire.conf", "cwd.example.com")
-		defer os.Remove(cwdPath)
+		defer func() {
+			if err := os.Remove(cwdPath); err != nil {
+				t.Error(err)
+			}
+		}()
 		mk(filepath.Join(home, ".config", "mailfire"), "mailfire.conf", "home.example.com")
 		if got := domain(load(t)); got != "cwd.example.com" {
 			t.Errorf("domain = %q, want config from current directory", got)
@@ -532,7 +539,7 @@ func TestLoadEmptyFile(t *testing.T) {
 }
 
 func TestLoadIgnoresUnknownKeys(t *testing.T) {
-	path := writeConfig(t, t.TempDir(), minimalTOML+"colour = \"blue\"\n[extra]\nx = 1\n")
+	path := writeConfig(t, t.TempDir(), minimalTOML+"color = \"blue\"\n[extra]\nx = 1\n")
 	loadOK(t, path)
 }
 

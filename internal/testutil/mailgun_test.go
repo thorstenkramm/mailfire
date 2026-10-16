@@ -173,7 +173,9 @@ func TestMockMailgun(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				_ = resp.Body.Close()
+				if err := resp.Body.Close(); err != nil {
+					t.Error(err)
+				}
 				rec := m.LastRequest(t)
 				if string(rec.Body) != tc.body {
 					t.Errorf("Body = %q, want %q", rec.Body, tc.body)
@@ -195,7 +197,9 @@ func TestMockMailgun(t *testing.T) {
 		m := testutil.NewMockMailgun(t)
 		m.SendHandler = func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusTeapot)
-			_, _ = w.Write([]byte(`{"message":"teapot"}`))
+			if _, err := w.Write([]byte(`{"message":"teapot"}`)); err != nil {
+				t.Error(err)
+			}
 		}
 		c := newClient(t, m, key)
 		if err := sendTestMessage(c); err == nil {

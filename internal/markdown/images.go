@@ -97,24 +97,30 @@ func ImagePath(dest string) string {
 func HTMLWithImages(src string, replace func(dest string) string) string {
 	src = normalize(src)
 	doc := md.Parser().Parse(text.NewReader([]byte(src)))
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if err := ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if img, ok := n.(*ast.Image); ok && entering && IsLocalImage(string(img.Destination)) {
 			img.Destination = []byte(replace(string(img.Destination)))
 		}
 		return ast.WalkContinue, nil
-	})
+	}); err != nil {
+		panic(err) // The visitor always returns nil.
+	}
 	var buf bytes.Buffer
-	_ = md.Renderer().Render(&buf, []byte(src), doc)
+	if err := md.Renderer().Render(&buf, []byte(src), doc); err != nil {
+		panic(err) // Built-in renderers only return writer errors; bytes.Buffer cannot fail.
+	}
 	return buf.String()
 }
 
 // walkImages parses src and calls f for every image node.
 func walkImages(src string, f func(*ast.Image)) {
 	doc := md.Parser().Parse(text.NewReader([]byte(src)))
-	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if err := ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
 		if img, ok := n.(*ast.Image); ok && entering {
 			f(img)
 		}
 		return ast.WalkContinue, nil
-	})
+	}); err != nil {
+		panic(err) // The visitor always returns nil.
+	}
 }

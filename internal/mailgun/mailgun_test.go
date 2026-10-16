@@ -230,7 +230,9 @@ func TestSendMessageSuccess(t *testing.T) {
 func TestSendMessageRawBodyRedacted(t *testing.T) {
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"<x@mg>","message":"echo `+testAPIKey+`","rawbody":"injected","statuscode":999}`)
+		if _, err := io.WriteString(w, `{"id":"<x@mg>","message":"echo `+testAPIKey+`","rawbody":"injected","statuscode":999}`); err != nil {
+			t.Error(err)
+		}
 	}))
 	resp, err := c.SendMessage(context.Background(), &Message{
 		From: "a@example.com", To: []string{"b@example.com"}, Subject: "s", Text: "t",
@@ -337,7 +339,9 @@ func TestErrorNeverContainsAPIKey(t *testing.T) {
 	// message; the client must redact it.
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"message":"invalid key ` + testAPIKey + ` supplied"}`))
+		if _, err := w.Write([]byte(`{"message":"invalid key ` + testAPIKey + ` supplied"}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	msg := &Message{From: "ops@example.com", To: []string{"a@example.com"},
 		Subject: "s", Text: "b"}
@@ -513,7 +517,7 @@ func TestSendMessageUnreadableAttachment(t *testing.T) {
 }
 
 func TestAsWithForeignError(t *testing.T) {
-	if _, ok := As(io.EOF); ok {
+	if got, ok := As(io.EOF); ok || got != nil {
 		t.Error("As(io.EOF) = true, want false")
 	}
 	for _, pred := range []func(error) bool{IsAuth, IsPermanent, IsDeferrable} {
@@ -614,7 +618,9 @@ func TestSendMessageContextDeadlineIsDeferrable(t *testing.T) {
 func TestTruncatedResponseBodyIsDeferrable(t *testing.T) {
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1000")
-		_, _ = w.Write([]byte(`{"id":`))
+		if _, err := w.Write([]byte(`{"id":`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	_, err := c.SendMessage(context.Background(), simpleMessage())
 	if err == nil || !IsDeferrable(err) {
@@ -630,7 +636,9 @@ func TestRedactsEncodedKeyForms(t *testing.T) {
 	var echo string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(echo))
+		if _, err := w.Write([]byte(echo)); err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 	c, err := New(key, testDomain, "us", WithBaseURL(srv.URL))
@@ -669,7 +677,9 @@ func TestErrorMessageTruncatedAfterRedaction(t *testing.T) {
 	msg := strings.Repeat("x", maxErrorMessage-5) + testAPIKey + strings.Repeat("y", 500)
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"message":"` + msg + `"}`))
+		if _, err := w.Write([]byte(`{"message":"` + msg + `"}`)); err != nil {
+			t.Error(err)
+		}
 	}))
 	_, err := c.SendMessage(context.Background(), simpleMessage())
 	if err == nil {

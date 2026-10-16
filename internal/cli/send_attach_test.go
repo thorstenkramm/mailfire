@@ -197,7 +197,11 @@ func TestSendAttachmentErrors(t *testing.T) {
 	if err := os.Chmod(unreadable, 0o000); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(unreadable, 0o600) })
+	t.Cleanup(func() {
+		if err := os.Chmod(unreadable, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
 
 	for _, tc := range []struct {
 		name string
@@ -311,7 +315,10 @@ func TestOpenAttachmentsLifecycle(t *testing.T) {
 	if err != nil || len(files) != 1 {
 		t.Fatalf("openAttachments = %v, %v", files, err)
 	}
-	f := files[0].Reader.(*os.File)
+	f, isFile := files[0].Reader.(*os.File)
+	if !isFile {
+		t.Fatalf("reader type = %T, want *os.File", files[0].Reader)
+	}
 	closeFiles(files)
 	if _, err := f.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
 		t.Errorf("read after closeFiles: err = %v, want os.ErrClosed", err)
