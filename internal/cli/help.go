@@ -25,6 +25,8 @@ Flags (send):
   --html             body is an HTML fragment, wrapped in the template
   --html-raw         body is a complete HTML document, sent as-is
   --file <path>      read body from file instead of stdin
+  --message <text>   explicit body; aliases --m, -m (conflicts with --file)
+  --template <name>  HTML template: card, card-serif, plain, plain-serif
   --preheader <txt>  inbox preview text (HTML formats only)
   --footer <path>    HTML fragment appended as footer (HTML formats only)
   --attach <path>    attach a file, repeatable
@@ -39,7 +41,9 @@ Flags (send):
 var sendUsage = `Usage:
   mailfire [send] [flags]
 
-Compose and send an email. The body is read from stdin unless --file is given.
+Compose and send an email. Read piped stdin unless --file or --message is given.
+Terminal stdin is never read. An empty body requires at least one attachment.
+Sender and recipient domains must be dotted DNS names (no DNS lookup).
 
 ` + usageText[strings.Index(usageText, "Flags (send):"):]
 

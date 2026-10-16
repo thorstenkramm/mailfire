@@ -13,6 +13,7 @@ import (
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
 // BuildInfo carries version details injected at build time via -ldflags -X.
@@ -142,13 +143,19 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 }
 
 // checkFlags rejects flag combinations that are usage errors (exit 1),
-// before any config is loaded or body read. --preheader and --footer
-// only take effect when the body is wrapped in the base template, i.e.
+// before any config is loaded or body read. --template, --preheader and
+// --footer only take effect when the body is wrapped in a template, i.e.
 // with --md or --html (FR-1); with --txt or --html-raw they would be
 // silently ignored, so they fail loudly instead.
 func checkFlags(opts *SendOptions) error {
+	if opts.Template != "" && !render.Valid(opts.Template) {
+		return fmt.Errorf("--template: unknown template %q: must be one of %s", opts.Template, config.TemplateList())
+	}
 	if opts.Format == "md" || opts.Format == "html" {
 		return nil
+	}
+	if opts.Template != "" {
+		return fmt.Errorf("--template requires --md or --html")
 	}
 	if opts.Preheader != "" {
 		return fmt.Errorf("--preheader requires --md or --html")
@@ -171,19 +178,22 @@ func (s *stringSlice) Set(v string) error {
 
 // SendOptions holds the parsed flags of the send subcommand.
 type SendOptions struct {
-	To        []string // --to, repeatable, at least one required
-	Cc        []string // --cc, repeatable
-	Bcc       []string // --bcc, repeatable
-	From      string   // --from
-	Subject   string   // --subject, required
-	Format    string   // one of "txt" (default), "md", "html", "html-raw"
-	File      string   // --file
-	Preheader string   // --preheader
-	Footer    string   // --footer
-	Attach    []string // --attach, repeatable
-	Test      bool     // --test
-	NoDefer   bool     // --no-defer
-	Config    string   // -c / --config
+	To         []string // --to, repeatable, at least one required
+	Cc         []string // --cc, repeatable
+	Bcc        []string // --bcc, repeatable
+	From       string   // --from
+	Subject    string   // --subject, required
+	Format     string   // one of "txt" (default), "md", "html", "html-raw"
+	File       string   // --file
+	Message    string   // --message / --m / -m
+	MessageSet bool     // explicit body, even when empty
+	Template   string   // --template; empty: the config's template
+	Preheader  string   // --preheader
+	Footer     string   // --footer
+	Attach     []string // --attach, repeatable
+	Test       bool     // --test
+	NoDefer    bool     // --no-defer
+	Config     string   // -c / --config
 }
 
 // ParseSendFlags parses the flags of the send subcommand. It returns
@@ -192,6 +202,7 @@ type SendOptions struct {
 func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) {
 	var txt, md, html, htmlRaw bool
 	var configShort string
+	var fileSet bool
 
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -206,6 +217,9 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 	fs.BoolVar(&html, "html", false, "")
 	fs.BoolVar(&htmlRaw, "html-raw", false, "")
 	fs.StringVar(&opts.File, "file", "", "")
+	fs.StringVar(&opts.Message, "message", "", "")
+	fs.StringVar(&opts.Message, "m", "", "")
+	fs.StringVar(&opts.Template, "template", "", "")
 	fs.StringVar(&opts.Preheader, "preheader", "", "")
 	fs.StringVar(&opts.Footer, "footer", "", "")
 	fs.Var((*stringSlice)(&opts.Attach), "attach", "")
@@ -221,6 +235,20 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 		return SendOptions{}, false, err
 	}
 
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "file":
+			fileSet = true
+		case "message", "m":
+			opts.MessageSet = true
+		}
+	})
+	if fileSet && opts.MessageSet {
+		return SendOptions{}, false, errors.New("conflicting body sources: use either --file or --message")
+	}
+	if fileSet && opts.File == "" {
+		return SendOptions{}, false, errors.New("--file: empty path")
+	}
 	if opts.Format, err = resolveFormat(txt, md, html, htmlRaw); err != nil {
 		return SendOptions{}, false, err
 	}

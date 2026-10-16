@@ -22,13 +22,24 @@ The following formats are supported:
 - `--html`, HTML inserted into the built-in template, you don't have to care about the frame around your HTML
 - `--html-raw`, raw HTML submitted, no base frame layout around it
 
-The body is read from stdin, or from a file with `--file <path>`. On success, the Mailgun message ID is printed.
+The body is read from piped stdin, a regular file with `--file <path>`, or an explicit string with `--message <text>` (aliases `--m` and `-m`). File and message flags are mutually exclusive, even with empty values; either ignores stdin. Terminal stdin is never read. An empty body is allowed only with `--attach`; otherwise the error is `mail body missing: use stdin, --file or --message`. On success, the Mailgun message ID is printed.
+
+For example: `mailfire --to user@example.com --subject "Your file" --message "See attached" --attach report.pdf`. Omit `--message` for an attachment-only mail from a terminal; piped input is still read when supplied.
+
+Before sending, sender and all `--to`/`--cc`/`--bcc` mailboxes are checked for a dotted DNS domain with valid, nonempty labels (no leading/trailing hyphens). Quoted names/local parts, plus addresses and Unicode mailboxes are supported. These are syntax checks, without DNS lookups or delivery guarantees. Invalid input fails locally and is never deferred.
 
 For `--md`, `--html`, and `--html-raw`, a multipart/alternative message with an HTML and a plain-text part
 (derived from the body) is sent.
 Local images referenced in Markdown (`![alt](path/to/image.png)`) are attached and shown inline;
 remote image URLs are left untouched. `--preheader <text>` sets the hidden inbox preview text and
 `--footer <path>` appends an HTML fragment as footer (both for `--md` and `--html` only).
+
+`--md` and `--html` bodies are wrapped in one of four built-in templates: `card` (default), `card-serif`,
+`plain` and `plain-serif`. Pick one per email with `--template <name>`, or change the default with
+`template` in the `[sending]` section of the config file. Markdown supports
+[GitHub-style alerts](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#alerts)
+(`> [!NOTE]`, `> [!TIP]`, `> [!IMPORTANT]`, `> [!WARNING]`, `> [!CAUTION]`).
+See [templates.md](templates.md) for screenshots.
 
 Sending attachments:
 ```shell
@@ -119,6 +130,11 @@ this check is skipped — file access is governed by NTFS ACLs, not POSIX permis
   ## Formats: "user@example.com" or "My Name <user@example.com>" 
   from = "My Name <user@example.com>"
 
+  ## Email template for --md and --html, string, optional, default 'card'
+  ## One of: card, card-serif, plain, plain-serif (see templates.md)
+  ## Can be overwritten per email with --template
+  template = "card"
+
 [logging]
   ## Logfile, string, optional
   ## By default, logging is disabled
@@ -188,6 +204,8 @@ Flags (send):
   --html             body is an HTML fragment, wrapped in the template
   --html-raw         body is a complete HTML document, sent as-is
   --file <path>      read body from file instead of stdin
+  --message <text>   explicit body; aliases --m, -m (conflicts with --file)
+  --template <name>  HTML template: card, card-serif, plain, plain-serif
   --preheader <txt>  inbox preview text (HTML formats only)
   --footer <path>    HTML fragment appended as footer (HTML formats only)
   --attach <path>    attach a file, repeatable

@@ -5,17 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/mail"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/mattn/go-isatty"
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/htmltext"
 	"github.com/thorstenkramm/mailfire/internal/inliner"
 	"github.com/thorstenkramm/mailfire/internal/logging"
+	"github.com/thorstenkramm/mailfire/internal/mailbox"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/markdown"
 	"github.com/thorstenkramm/mailfire/internal/render"
@@ -107,14 +108,15 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, errors.New("invalid --subject: must not contain line breaks")
 	}
 
-	body, err := readBody(opts.File, stdin)
+	body := opts.Message
+	if !opts.MessageSet {
+		body, err = readBody(opts.File, stdin)
+	}
 	if err != nil {
 		return nil, err
 	}
-	// Mailgun requires a text or html part and answers an empty body with
-	// a 400; fail locally with a clear message instead.
-	if body == "" {
-		return nil, errors.New("empty message body: pipe the body on stdin or use --file")
+	if body == "" && len(opts.Attach) == 0 {
+		return nil, errors.New("mail body missing: use stdin, --file or --message")
 	}
 
 	// Bodies piped on Windows or saved by Windows editors use CRLF line
@@ -135,6 +137,12 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	// --template overrides the config's template (default "card").
+	template := cfg.Template
+	if opts.Template != "" {
+		template = opts.Template
 	}
 
 	msg := &mailgun.Message{
@@ -165,6 +173,7 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 			})
 		}
 		html, err := inliner.Inline(render.Base(render.Data{
+			Template:  template,
 			Subject:   opts.Subject,
 			Preheader: opts.Preheader,
 			Body:      render.HTML(fragment),
@@ -184,6 +193,7 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		// existing style attributes win over inlined rules). The
 		// template's CSS is inlined after rendering (FR-7).
 		html, err := inliner.Inline(render.Base(render.Data{
+			Template:  template,
 			Subject:   opts.Subject,
 			Preheader: opts.Preheader,
 			Body:      render.HTML(body),
@@ -319,12 +329,14 @@ func closeFiles(files []mailgun.File) {
 // "user@example.com" stays as-is, `"Doe, John" <john@example.com>` keeps
 // its (quoted) display name.
 func parseAddress(s string) (string, error) {
-	addr, err := mail.ParseAddress(s)
+	addr, err := mailbox.Parse(s)
 	if err != nil {
 		return "", err
 	}
 	if addr.Name == "" {
-		return addr.Address, nil
+		// String re-quotes local parts when needed; strip only its outer
+		// angle brackets to preserve the bare-mailbox convention.
+		return strings.TrimSuffix(strings.TrimPrefix(addr.String(), "<"), ">"), nil
 	}
 	return addr.String(), nil
 }
@@ -346,24 +358,39 @@ func parseAddresses(flagName string, values []string) ([]string, error) {
 
 // readBody reads the message body from file (~ is expanded) or, when file
 // is empty, from stdin. --file wins: stdin is not read at all then.
-//
-// TODO(review 04): when stdin is an interactive terminal, ReadAll waits
-// for Ctrl-D without a prompt. Detecting a TTY (and erroring or hinting)
-// is a UX decision beyond this task's scope.
 func readBody(file string, stdin io.Reader) (string, error) {
 	if file == "" {
+		if readerIsTerminal(stdin) {
+			return "", nil
+		}
 		data, err := io.ReadAll(stdin)
 		if err != nil {
 			return "", fmt.Errorf("reading body from stdin: %w", err)
 		}
 		return string(data), nil
 	}
-	path := config.ExpandPath(file)
-	data, err := os.ReadFile(path)
+	f, err := openRegular("reading body file", file)
 	if err != nil {
-		return "", fmt.Errorf("reading body file %s: %w", path, err)
+		return "", err
+	}
+	data, err := io.ReadAll(f)
+	err = errors.Join(err, f.Close())
+	if err != nil {
+		return "", fmt.Errorf("reading body file %s: %w", f.Name(), err)
 	}
 	return string(data), nil
+}
+
+// readerIsTerminal distinguishes interactive input from empty pipes/files.
+// The optional method allows tests to model a terminal without a real TTY.
+func readerIsTerminal(r io.Reader) bool {
+	if terminal, ok := r.(interface{ IsTerminal() bool }); ok {
+		return terminal.IsTerminal()
+	}
+	if f, ok := r.(interface{ Fd() uintptr }); ok {
+		return isatty.IsTerminal(f.Fd())
+	}
+	return false
 }
 
 // readFooter reads the --footer HTML fragment (~ expanded). The content

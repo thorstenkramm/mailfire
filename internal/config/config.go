@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/mail"
 	"os"
 	"regexp"
 	"runtime"
@@ -21,6 +20,8 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/thorstenkramm/mailfire/internal/mailbox"
+	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
 // Defaults per PRD FR-2.
@@ -41,8 +42,9 @@ type Config struct {
 	Region string // "us" or "eu"
 
 	// [sending]
-	Domain string // required
-	From   string // optional; valid mailbox ("user@example.com" or "Name <user@example.com>")
+	Domain   string // required
+	From     string // optional; valid mailbox ("user@example.com" or "Name <user@example.com>")
+	Template string // email template for --md and --html; default render.DefaultTemplate
 
 	// [logging]
 	Logfile    string // optional; logging disabled when empty
@@ -65,8 +67,9 @@ type rawConfig struct {
 		Region string `toml:"region"`
 	} `toml:"mailgun"`
 	Sending struct {
-		Domain string `toml:"domain"`
-		From   string `toml:"from"`
+		Domain   string `toml:"domain"`
+		From     string `toml:"from"`
+		Template string `toml:"template"`
 	} `toml:"sending"`
 	Logging struct {
 		Logfile string `toml:"logfile"`
@@ -297,9 +300,17 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 
 	cfg.From = strings.TrimSpace(raw.Sending.From)
 	if cfg.From != "" {
-		if _, err := mail.ParseAddress(cfg.From); err != nil {
+		if _, err := mailbox.Parse(cfg.From); err != nil {
 			return nil, keyErr("sending.from", fmt.Sprintf("invalid address %q: expected \"user@example.com\" or \"Name <user@example.com>\"", cfg.From))
 		}
+	}
+
+	cfg.Template = strings.ToLower(strings.TrimSpace(raw.Sending.Template))
+	if cfg.Template == "" {
+		cfg.Template = render.DefaultTemplate
+	}
+	if !render.Valid(cfg.Template) {
+		return nil, keyErr("sending.template", fmt.Sprintf("invalid value %q: must be one of %s", cfg.Template, TemplateList()))
 	}
 
 	cfg.Logfile = expandPath(strings.TrimSpace(raw.Logging.Logfile), getenv)
@@ -341,6 +352,16 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		cfg.ResendCooldown = d
 	}
 	return cfg, nil
+}
+
+// TemplateList returns the template names quoted and comma separated,
+// for error messages: "card", "card-serif", "plain", or "plain-serif".
+func TemplateList() string {
+	q := make([]string, len(render.Names))
+	for i, n := range render.Names {
+		q[i] = strconv.Quote(n)
+	}
+	return strings.Join(q[:len(q)-1], ", ") + ", or " + q[len(q)-1]
 }
 
 // keyError formats a validation error naming the config file, the line

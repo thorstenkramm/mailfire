@@ -10,7 +10,7 @@
 <!--[if mso]>
 <noscript><xml><o:OfficeDocumentSettings><o:AllowPNG/><o:PixelsPerInch>96</o:PixelsPerInch></o:OfficeDocumentSettings></xml></noscript>
 <style>
-  td, th, p, li, h1, h2, h3, h4, h5, h6, blockquote { font-family: Cambria, Georgia, serif !important; }
+  td, th, p, li, h1, h2, h3, h4, h5, h6, blockquote { font-family: 'Segoe UI', Arial, sans-serif !important; }
   pre, code { font-family: Consolas, 'Courier New', monospace !important; }
   ul, ol { margin-left: 26px !important; padding-left: 0 !important; }
 </style>
@@ -24,21 +24,21 @@
 
   /* Body content. Text colour is set once on .content and inherited,
      so colours written into --html input survive. */
-  .content h1, .content h2, .content h3, .content h4, .content h5, .content h6 { font-weight: bold; }
-  .content h1 { margin: 0 0 20px; font-size: 30px; line-height: 37px; letter-spacing: -0.01em; }
+  .content h1, .content h2, .content h3, .content h4, .content h5, .content h6 { font-weight: 600; }
+  .content h1 { margin: 0 0 20px; font-size: 26px; line-height: 33px; font-weight: 600; letter-spacing: -0.01em; }
   .content h2 { margin: 36px 0 12px; font-size: 22px; line-height: 29px; }
   .content h3 { margin: 28px 0 8px; font-size: 19px; line-height: 26px; }
   .content h4, .content h5, .content h6 { margin: 24px 0 6px; font-size: 17px; line-height: 26px; }
   .content h5, .content h6 { font-style: italic; }
   .content p { margin: 0 0 18px; }
-  .content a { color: #b23b12; text-decoration: underline; text-underline-offset: 2px; }
+  .content a { color: #2b4c7e; text-decoration: underline; text-underline-offset: 2px; }
   .content ul, .content ol { margin: 0 0 18px; padding: 0 0 0 26px; }
   .content li { margin: 0 0 6px; }
   .content li p { margin: 0 0 6px; }
   .content li ul, .content li ol { margin: 6px 0 0; }
   .content blockquote { margin: 0 0 18px; padding: 0 0 0 18px; border-left: 3px solid #d6d7dc; color: #55575e; font-style: italic; }
   .content blockquote p { margin: 0 0 10px; }
-  .content code { padding: 1px 5px; border-radius: 4px; background-color: #f0f0f2; font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 15px; }
+  .content code { padding: 1px 5px; border-radius: 4px; background-color: #f0f1f3; font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 0.88em; }
   .content pre { margin: 0 0 20px; padding: 14px 16px; border-radius: 6px; background-color: #f5f5f7; font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; line-height: 21px; white-space: pre-wrap; word-wrap: break-word; }
   .content pre code { padding: 0; border-radius: 0; background-color: transparent; font-size: 14px; }
   .content table { width: 100%; margin: 6px 0 24px; border-collapse: collapse; border-top: 2px solid #24252a; border-bottom: 2px solid #24252a; font-size: 15px; line-height: 22px; font-variant-numeric: tabular-nums; }
@@ -49,42 +49,74 @@
   .content hr { height: 0; margin: 32px 0; border: 0; border-top: 1px solid #e2e3e7; }
   .content img { max-width: 100%; height: auto; }
   .content blockquote > :last-child, .content li > :last-child { margin-bottom: 0; }
-  .footer-text a { color: #62656d; text-decoration: underline; }
+
+  /* GitHub Flavored Markdown alerts (internal/markdown/alerts.go). The
+     selectors are deliberately specific so they win over the generic
+     .content table/td/p rules when inlined. */
+  .content table.alert { width: 100%; margin: 0 0 18px; border: 0; border-collapse: separate; font-size: inherit; line-height: inherit; }
+  .content table.alert td.alert-body { padding: 12px 16px; border-left: 4px solid #d6d7dc; vertical-align: top; }
+  .content table.alert td.alert-body p { margin: 8px 0 0; }
+  .content table.alert td.alert-body ul, .content table.alert td.alert-body ol, .content table.alert td.alert-body pre { margin: 8px 0 0; }
+  .content table.alert td.alert-body p.alert-title { margin: 0; font-size: 15px; font-weight: 600; }
+  .content table.alert-note td.alert-body { border-left-color: #0969da; background-color: #eef5fd; }
+  .content table.alert-note td.alert-body p.alert-title { color: #0969da; }
+  .content table.alert-tip td.alert-body { border-left-color: #1a7f37; background-color: #edf7f0; }
+  .content table.alert-tip td.alert-body p.alert-title { color: #1a7f37; }
+  .content table.alert-important td.alert-body { border-left-color: #8250df; background-color: #f4f0fd; }
+  .content table.alert-important td.alert-body p.alert-title { color: #8250df; }
+  .content table.alert-warning td.alert-body { border-left-color: #9a6700; background-color: #fbf5e6; }
+  .content table.alert-warning td.alert-body p.alert-title { color: #9a6700; }
+  .content table.alert-caution td.alert-body { border-left-color: #d1242f; background-color: #fdf0f0; }
+  .content table.alert-caution td.alert-body p.alert-title { color: #c21f2a; }
+
+  .footer-text a { color: #5b616b; text-decoration: underline; }
 
   @media (prefers-color-scheme: dark) {
-    .body, .page { background-color: #16171a !important; }
+    .body, .page { background-color: #111214 !important; }
+    .card { background-color: #1e1f23 !important; }
     .content { color: #e4e5e9 !important; }
-    .content a { color: #ff8c5a !important; }
+    .content a { color: #8ab4f8 !important; }
     .content blockquote { color: #a7aab2 !important; border-left-color: #3b3d43 !important; }
-    .content code { background-color: #25272c !important; }
-    .content pre { background-color: #1f2125 !important; }
+    .content code { background-color: #2a2c31 !important; }
+    .content pre { background-color: #24262b !important; }
     .content pre code { background-color: transparent !important; }
     .content table, .content th { border-color: #e4e5e9 !important; }
     .content hr { border-top-color: #2e3035 !important; }
+    .content table.alert-note td.alert-body { border-left-color: #4493f8 !important; background-color: #12233a !important; }
+    .content table.alert-note td.alert-body p.alert-title { color: #4493f8 !important; }
+    .content table.alert-tip td.alert-body { border-left-color: #3fb950 !important; background-color: #12281a !important; }
+    .content table.alert-tip td.alert-body p.alert-title { color: #3fb950 !important; }
+    .content table.alert-important td.alert-body { border-left-color: #ab7df8 !important; background-color: #241a38 !important; }
+    .content table.alert-important td.alert-body p.alert-title { color: #ab7df8 !important; }
+    .content table.alert-warning td.alert-body { border-left-color: #d29922 !important; background-color: #2e2510 !important; }
+    .content table.alert-warning td.alert-body p.alert-title { color: #d29922 !important; }
+    .content table.alert-caution td.alert-body { border-left-color: #f85149 !important; background-color: #331719 !important; }
+    .content table.alert-caution td.alert-body p.alert-title { color: #f85149 !important; }
     .footer-text { color: #a7aab2 !important; border-top-color: #2e3035 !important; }
     .footer-text a { color: #a7aab2 !important; }
   }
 
   @media screen and (max-width: 600px) {
-    .gutter { padding: 28px 18px 36px !important; }
+    .gutter { padding: 24px 8px 32px 8px !important; }
+    .card { padding: 28px 22px !important; }
     .content { font-size: 16px !important; line-height: 26px !important; }
     .content h1 { font-size: 26px !important; line-height: 32px !important; }
     .content h2 { font-size: 21px !important; line-height: 28px !important; }
   }
 </style>
 </head>
-<body class="body" style="-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;width:100%;margin:0;padding:0;word-spacing:normal;background-color:#ffffff">
+<body class="body" style="-webkit-text-size-adjust:100%;-ms-text-size-adjust:100%;width:100%;margin:0;padding:0;word-spacing:normal;background-color:#edeef0">
 <div role="article" aria-roledescription="email" aria-label="Have a nice day" lang="en">
-<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" style="mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;background-color:#ffffff">
+<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" style="mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;background-color:#edeef0">
   <tbody><tr>
-    <td class="gutter" align="left" style="mso-table-lspace:0pt;mso-table-rspace:0pt;padding:40px 24px 48px 24px">
-      <!--[if mso]><table role="presentation" width="640" align="left" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
-      <table role="presentation" class="column" width="100%" cellpadding="0" cellspacing="0" border="0" style="mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;max-width:640px">
+    <td class="gutter" align="center" style="mso-table-lspace:0pt;mso-table-rspace:0pt;padding:40px 16px 48px 16px">
+      <!--[if mso]><table role="presentation" width="600" align="center" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+      <table role="presentation" class="column" width="100%" cellpadding="0" cellspacing="0" border="0" style="mso-table-lspace:0pt;mso-table-rspace:0pt;width:100%;max-width:600px">
         <tbody><tr>
-          <td class="content" style="mso-table-lspace:0pt;mso-table-rspace:0pt;font-family:Charter,&#39;Bitstream Charter&#39;,&#39;Sitka Text&#39;,Cambria,Georgia,serif;font-size:17px;line-height:28px;color:#24252a">
-<h1 style="font-weight:bold;margin:0 0 20px;font-size:30px;line-height:37px;letter-spacing:-0.01em">This is an Email</h1>
+          <td class="card content" style="mso-table-lspace:0pt;mso-table-rspace:0pt;padding:40px 44px;border-radius:6px;background-color:#ffffff;font-family:system-ui, -apple-system, &#39;Segoe UI&#39;, Roboto, &#39;Helvetica Neue&#39;, &#39;Noto Sans&#39;, &#39;Liberation Sans&#39;, Arial, sans-serif;font-size:16px;line-height:26px;color:#1f2328">
+<h1 style="margin:0 0 20px;font-size:26px;line-height:33px;font-weight:600;letter-spacing:-0.01em">This is an Email</h1>
 <p style="margin:0 0 18px">It is written in markdown. It’s delivered as HTML.</p>
-<p style="margin:0 0 18px"><a href="https://github.com/thorstenkramm/mailfire" style="color:#b23b12;text-decoration:underline;text-underline-offset:2px">mailfire</a></p>
+<p style="margin:0 0 18px"><a href="https://github.com/thorstenkramm/mailfire" style="color:#2b4c7e;text-decoration:underline;text-underline-offset:2px">mailfire</a></p>
 
           </td>
         </tr>

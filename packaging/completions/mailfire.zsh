@@ -16,7 +16,11 @@ _mailfire_send() {
         '(--txt --html --html-raw)--md[body is Markdown]' \
         '(--txt --md --html-raw)--html[body is an HTML fragment]' \
         '(--txt --md --html)--html-raw[body is a complete HTML document]' \
-        '--file=[read body from file]:file:_files' \
+        '(--message --m -m)--file=[read body from file]:file:_files' \
+        '(--file)--message=[explicit body]:text:' \
+        '(--file)--m=[explicit body]:text:' \
+        '(--file)-m[explicit body]:text:' \
+        '--template=[email template]:template:(card card-serif plain plain-serif)' \
         '--preheader=[inbox preview text]:text:' \
         '--footer=[HTML fragment appended as footer]:file:_files' \
         '*--attach=[attach a file, repeatable]:file:_files' \

@@ -271,7 +271,7 @@ func TestSendEmptyBody(t *testing.T) {
 			if code != ExitUsage {
 				t.Errorf("exit = %d, want %d", code, ExitUsage)
 			}
-			if !strings.Contains(stderr, "empty message body") {
+			if !strings.Contains(stderr, "mail body missing: use stdin, --file or --message") {
 				t.Errorf("stderr missing empty-body message:\n%s", stderr)
 			}
 		})
@@ -427,11 +427,11 @@ See [the dashboard](https://example.com/dash).
 		`<html lang="en"`,
 		`<title>Backup report</title>`,
 		`<!--[if mso]>`,
-		`class="content"`,
+		`class="card content"`,
 		// the <style> block survives inlining (dark mode, small screens)
 		`@media (prefers-color-scheme: dark)`,
 		// rendered markdown, with inlined styles
-		`<h1 style="font-weight:bold;margin:0 0 20px;font-size:30px;line-height:37px;letter-spacing:-0.01em">Report</h1>`,
+		`<h1 style="margin:0 0 20px;font-size:26px;line-height:33px;font-weight:600;letter-spacing:-0.01em">Report</h1>`,
 		"<strong>finished</strong>",
 		`>files01</code>`,
 		"<ul style=\"margin:0 0 18px;padding:0 0 0 26px\">\n<li style=\"margin:0 0 6px\">alpha ok</li>",
@@ -440,7 +440,7 @@ See [the dashboard](https://example.com/dash).
 		">beta</td>",
 		"<blockquote style=",
 		`>restic check`,
-		`<a href="https://example.com/dash" style="color:#b23b12;text-decoration:underline;text-underline-offset:2px">the dashboard</a>`,
+		`<a href="https://example.com/dash" style="color:#2b4c7e;text-decoration:underline;text-underline-offset:2px">the dashboard</a>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("html part missing %q", want)
@@ -471,8 +471,8 @@ See [the dashboard](https://example.com/dash).
 
 // TestSendMarkdownNoteGolden sends the README example with --md and
 // compares the html part byte-for-byte against testdata/note_inlined.html:
-// the render package's golden (internal/render/testdata/note.html, a copy
-// of the design preview tmp/preview/note.html) after CSS inlining. The
+// the render package's golden for the default template
+// (internal/render/testdata/note.card.html) after CSS inlining. The
 // render golden stays untouched — rendering != inlining.
 func TestSendMarkdownNoteGolden(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
@@ -492,11 +492,11 @@ func TestSendMarkdownNoteGolden(t *testing.T) {
 	// style attributes and the original <style> block survives with the
 	// dark-mode media query intact (FR-7).
 	for _, want := range []string{
-		`<h1 style="font-weight:bold;margin:0 0 20px;font-size:30px;line-height:37px;letter-spacing:-0.01em">`,
+		`<h1 style="margin:0 0 20px;font-size:26px;line-height:33px;font-weight:600;letter-spacing:-0.01em">`,
 		`<p style="margin:0 0 18px">`,
-		`<td class="content" style=`,
+		`<td class="card content" style=`,
 		`  @media (prefers-color-scheme: dark) {`,
-		`    .content a { color: #ff8c5a !important; }`,
+		`    .content a { color: #8ab4f8 !important; }`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("inlined html part missing %q", want)

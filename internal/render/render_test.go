@@ -16,29 +16,76 @@ const noteBody = `<h1>This is an Email</h1>
 <p><a href="https://github.com/thorstenkramm/mailfire">mailfire</a></p>
 `
 
-// TestBaseNote renders the README example and compares it against the
-// reference rendering (testdata/note.html is a copy of the design preview).
+// TestBaseNote renders the README example in every template and compares
+// it against the reference renderings (testdata/note.<template>.html).
 // It covers: default Lang, no preheader, no footer.
 func TestBaseNote(t *testing.T) {
-	got := Base(Data{Subject: "Have a nice day", Body: noteBody})
-	testutil.GoldenString(t, "note.html", got)
+	for _, name := range Names {
+		t.Run(name, func(t *testing.T) {
+			got := Base(Data{Template: name, Subject: "Have a nice day", Body: noteBody})
+			testutil.GoldenString(t, "note."+name+".html", got)
+		})
+	}
 }
 
-// TestBaseReport renders a full report body with preheader and footer and
-// compares it against the reference rendering (testdata/report.html is a
-// copy of the design preview).
+// TestBaseReport renders a full report body with preheader and footer in
+// every template and compares it against the reference renderings
+// (testdata/report.<template>.html).
 func TestBaseReport(t *testing.T) {
 	body, err := os.ReadFile("testdata/report.body.html")
 	if err != nil {
 		t.Fatalf("reading report body: %v", err)
 	}
-	got := Base(Data{
-		Subject:   "Nightly backup finished",
-		Preheader: "All five hosts were backed up; files01 needed a retry.",
-		Body:      HTML(body),
-		Footer:    `Sent automatically by the nightly backup job on ops01. <a href="https://example.com/backups/settings">Change who gets this report</a>.`,
-	})
-	testutil.GoldenString(t, "report.html", got)
+	for _, name := range Names {
+		t.Run(name, func(t *testing.T) {
+			got := Base(Data{
+				Template:  name,
+				Subject:   "Nightly backup finished",
+				Preheader: "All five hosts were backed up; files01 needed a retry.",
+				Body:      HTML(body),
+				Footer:    `Sent automatically by the nightly backup job on ops01. <a href="https://example.com/backups/settings">Change who gets this report</a>.`,
+			})
+			testutil.GoldenString(t, "report."+name+".html", got)
+		})
+	}
+}
+
+// TestBaseDefaultTemplate: an empty Template renders DefaultTemplate.
+func TestBaseDefaultTemplate(t *testing.T) {
+	d := Data{Subject: "s", Body: "<p>hi</p>\n"}
+	got := Base(d)
+	d.Template = DefaultTemplate
+	if want := Base(d); got != want {
+		t.Error("empty Template does not render DefaultTemplate")
+	}
+	if DefaultTemplate != "card" {
+		t.Errorf("DefaultTemplate = %q, want card", DefaultTemplate)
+	}
+}
+
+func TestValid(t *testing.T) {
+	for _, name := range Names {
+		if !Valid(name) {
+			t.Errorf("Valid(%q) = false", name)
+		}
+	}
+	for _, name := range []string{"", "base", "Card", "card-sans"} {
+		if Valid(name) {
+			t.Errorf("Valid(%q) = true", name)
+		}
+	}
+	if len(Names) != len(looks) {
+		t.Errorf("Names lists %d templates, looks defines %d", len(Names), len(looks))
+	}
+}
+
+func TestBaseUnknownTemplatePanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("unknown template did not panic")
+		}
+	}()
+	Base(Data{Template: "nope", Subject: "s"})
 }
 
 func TestBaseEscapesSubject(t *testing.T) {
@@ -123,9 +170,11 @@ func TestBasePreheaderAbsent(t *testing.T) {
 }
 
 func TestBaseFooterAbsent(t *testing.T) {
-	got := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
-	if strings.Contains(got, `padding:36px 0 0 0;`) {
-		t.Error("footer block rendered although Footer is empty")
+	for _, name := range Names {
+		got := Base(Data{Template: name, Subject: "s", Body: "<p>hi</p>\n"})
+		if strings.Contains(got, `class="footer-text"`) {
+			t.Errorf("%s: footer block rendered although Footer is empty", name)
+		}
 	}
 }
 
@@ -133,14 +182,29 @@ func TestBaseFooterAbsent(t *testing.T) {
 // text/template: html/template would strip these comments and break
 // Outlook rendering.
 func TestBaseKeepsMSOConditionals(t *testing.T) {
-	got := Base(Data{Subject: "s", Body: "<p>hi</p>\n"})
-	for _, want := range []string{
-		"<!--[if mso]>",
-		"<!--[if mso]><table role=\"presentation\" width=\"640\"",
-		"<!--[if mso]></td></tr></table><![endif]-->",
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("output missing Outlook conditional %q", want)
+	for name, width := range map[string]string{"card": "600", "plain": "640"} {
+		got := Base(Data{Template: name, Subject: "s", Body: "<p>hi</p>\n"})
+		for _, want := range []string{
+			"<!--[if mso]>",
+			"<!--[if mso]><table role=\"presentation\" width=\"" + width + "\"",
+			"<!--[if mso]></td></tr></table><![endif]-->",
+		} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: output missing Outlook conditional %q", name, want)
+			}
+		}
+	}
+}
+
+// TestBaseAlertStyles: every template styles all five alert types, in
+// light and dark mode.
+func TestBaseAlertStyles(t *testing.T) {
+	for _, name := range Names {
+		got := Base(Data{Template: name, Subject: "s", Body: "<p>hi</p>\n"})
+		for _, kind := range []string{"note", "tip", "important", "warning", "caution"} {
+			if n := strings.Count(got, ".content table.alert-"+kind+" td.alert-body p.alert-title"); n != 2 {
+				t.Errorf("%s: %s alert title styled %d times, want 2 (light + dark)", name, kind, n)
+			}
 		}
 	}
 }

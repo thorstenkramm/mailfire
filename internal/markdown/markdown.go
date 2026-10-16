@@ -4,7 +4,8 @@
 // same source.
 //
 // Rendering uses goldmark with CommonMark plus GFM-style tables,
-// strikethrough and autolinks (extension.Linkify), and the typographer
+// strikethrough, autolinks (extension.Linkify) and alerts (alerts.go),
+// and the typographer
 // extension for smart punctuation — the design preview
 // (tmp/preview/note.html) renders the README example with “It&rsquo;s”.
 //
@@ -38,6 +39,7 @@ var md = goldmark.New(goldmark.WithExtensions(
 	extension.Strikethrough,
 	extension.Linkify,
 	extension.Typographer,
+	alerts{},
 ))
 
 // HTML renders the Markdown source src to an HTML fragment, ready to be
@@ -133,12 +135,10 @@ func (w *writer) block(n ast.Node) {
 	case *ast.CodeBlock:
 		w.code(n.Lines())
 	case *ast.Blockquote:
-		inner := &writer{src: w.src}
-		inner.blocks(n)
-		for _, line := range strings.SplitAfter(strings.TrimRight(inner.buf.String(), "\n"), "\n") {
-			w.buf.WriteString("> ")
-			w.buf.WriteString(line)
-		}
+		w.quote("", n)
+	case *Alert:
+		// "> NOTE" above the content keeps the alert type visible.
+		w.quote(strings.ToUpper(n.AlertKind)+"\n", n)
 	case *ast.List:
 		w.list(n)
 	case *ast.ListItem:
@@ -159,6 +159,17 @@ func (w *writer) block(n ast.Node) {
 		// Unknown block: keep whatever inline content it has.
 		w.inline(n)
 		w.buf.WriteByte('\n')
+	}
+}
+
+// quote writes the blocks of n prefixed with "> ", preceded by the
+// optional header line.
+func (w *writer) quote(header string, n ast.Node) {
+	inner := &writer{src: w.src}
+	inner.blocks(n)
+	for _, line := range strings.SplitAfter(strings.TrimRight(header+inner.buf.String(), "\n"), "\n") {
+		w.buf.WriteString("> ")
+		w.buf.WriteString(line)
 	}
 }
 

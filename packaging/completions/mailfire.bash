@@ -20,8 +20,13 @@ _mailfire() {
             COMPREPLY=($(compgen -f -- "$cur"))
             return 0
             ;;
+        --template)
+            # shellcheck disable=SC2207
+            COMPREPLY=($(compgen -W "card card-serif plain plain-serif" -- "$cur"))
+            return 0
+            ;;
         # Flags taking a free-form value: nothing to complete.
-        --to | --cc | --bcc | --from | --subject | --preheader)
+        --to | --cc | --bcc | --from | --subject | --preheader | --message | --m | -m)
             return 0
             ;;
     esac
@@ -37,7 +42,7 @@ _mailfire() {
     case "$sub" in
         send)
             opts="--to --cc --bcc --from --subject --txt --md --html --html-raw
-                  --file --preheader --footer --attach --test --no-defer
+                  --file --message --m -m --template --preheader --footer --attach --test --no-defer
                   -c --config -h --help"
             ;;
         validate)

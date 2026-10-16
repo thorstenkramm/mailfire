@@ -22,7 +22,7 @@ echo "Running go vet ..."
 go vet ./...
 
 echo "Running golangci-lint ..."
-golangci-lint run ./...
+go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0 run ./...
 
 echo "Running Go race tests ..."
 go test -race ./...
@@ -48,10 +48,10 @@ fi
 echo "Running code duplication search ..."
 # These four files are byte-for-byte rendered-output goldens maintained by
 # testutil.Golden (-update), not independently maintained implementations.
-# Keep templates/base.html and testdata/report.body.html in the scan.
+# Keep templates/*.html and testdata/report.body.html in the scan.
 npx --yes jscpd@5.1.2 --min-lines 10 --min-tokens 50 --threshold 0 \
   --reporters console --no-tips \
-  --ignore "**/*_test.go,**/vendor/**,**/_bmad/**,**/.cache/**,**/_bmad-output/**,**/.agents/**,**/internal/cli/testdata/note_inlined.html,**/internal/cli/testdata/preheader_footer_inlined.html,**/internal/render/testdata/note.html,**/internal/render/testdata/report.html" \
+  --ignore "**/*_test.go,**/vendor/**,**/_bmad/**,**/.cache/**,**/_bmad-output/**,**/.agents/**,**/internal/cli/testdata/note_inlined.html,**/internal/cli/testdata/preheader_footer_inlined.html,**/internal/render/testdata/note.*.html,**/internal/render/testdata/report.*.html" \
   --format go,markup .
 
 if command -v govulncheck >/dev/null 2>&1; then

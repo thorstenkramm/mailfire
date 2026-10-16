@@ -12,6 +12,14 @@ import (
 
 const testAPIKey = "TEST-SECRET-API-KEY-9f8e7d6c"
 
+func TestSenderRequiresPublicDomainSyntax(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), strings.Replace(validTOML, "ops@example.com", "tk@system42", 1))
+	var stderr bytes.Buffer
+	if _, err := Load(path, &stderr); err == nil || !strings.Contains(err.Error(), "sending.from") {
+		t.Fatalf("invalid configured sender: %v", err)
+	}
+}
+
 // validTOML is a complete, valid configuration using the test API key.
 const validTOML = `
 [mailgun]

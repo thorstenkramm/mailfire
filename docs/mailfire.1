@@ -22,8 +22,10 @@ mailfire \- send email from the command line via the Mailgun API
 .SH DESCRIPTION
 .B mailfire
 is a client for the Mailgun HTTP API that sends email from the command line.
-The message body is read from standard input, or from a file with
-.BR \-\-file .
+The message body is read from piped standard input, a regular file with
+.BR \-\-file ,
+or an explicit string with
+.BR \-\-message .
 Plain text, Markdown, and HTML bodies are supported; Markdown and HTML
 are rendered into a built-in, responsive email template.
 .PP
@@ -115,6 +117,34 @@ Exactly one of the four body format flags may be given.
 .TP
 .BI \-\-file " path"
 Read the body from a file instead of standard input.
+Only regular files are accepted; named pipes and devices are refused.
+.TP
+.BI \-\-message " text"
+Use an explicit body string instead of standard input. Aliases:
+.BR \-\-m " and " \-m .
+Cannot be combined with \-\-file, even when either value is empty.
+Terminal standard input is never read. An empty body is permitted only
+with attachments; otherwise the error is
+"mail body missing: use stdin, --file or --message".
+Piped input is still read when attachments are supplied.
+.PP
+Sender and recipient mailboxes require dotted DNS domains with valid,
+nonempty labels and no leading or trailing hyphens. Quoted names and local
+parts, plus addresses and Unicode are supported. No DNS lookup is performed.
+Invalid input is rejected before sending and is never deferred.
+.TP
+.BI \-\-template " name"
+Email template:
+.BR card " (default), " card\-serif ", " plain " or " plain\-serif .
+Overrides
+.B template
+in the
+.B [sending]
+section of the configuration file.
+Only with
+.B \-\-md
+or
+.BR \-\-html .
 .TP
 .BI \-\-preheader " text"
 Hidden inbox preview text.
@@ -234,6 +264,17 @@ Can be overridden with
 If not set,
 .B \-\-from
 is mandatory.
+.TP
+.B template
+String, optional, default
+.BR card .
+Email template for
+.B \-\-md
+and
+.BR \-\-html :
+.BR card ", " card\-serif ", " plain " or " plain\-serif .
+Can be overridden with
+.BR \-\-template .
 .SS [logging]
 .TP
 .B logfile

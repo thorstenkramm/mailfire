@@ -7,9 +7,10 @@ package templates
 
 import "embed"
 
-// FS contains base.html, the email base template. Render it with
-// text/template, never html/template — html/template strips the
-// <!--[if mso]> comments Outlook needs.
+// FS contains the email templates: the layouts card.html and plain.html
+// and their shared parts in head.html. Render them with text/template,
+// never html/template — html/template strips the <!--[if mso]> comments
+// Outlook needs.
 //
-//go:embed base.html
+//go:embed card.html plain.html head.html
 var FS embed.FS

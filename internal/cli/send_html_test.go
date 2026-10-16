@@ -39,7 +39,7 @@ func TestSendHTMLFragment(t *testing.T) {
 		`<html lang="en"`,
 		`<title>Deploy status</title>`,
 		`<!--[if mso]>`,
-		`class="content"`,
+		`class="card content"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("html part missing template frame %q", want)
@@ -50,7 +50,7 @@ func TestSendHTMLFragment(t *testing.T) {
 	// text content is intact (entities are re-encoded by the inliner, so
 	// &quot; comes back as &#34;).
 	for _, want := range []string{
-		`<h2 style="font-weight:bold;margin:36px 0 12px;font-size:22px;line-height:29px;color:#b23b12">Deploy <em>done</em></h2>`,
+		`<h2 style="font-weight:600;margin:36px 0 12px;font-size:22px;line-height:29px;color:#b23b12">Deploy <em>done</em></h2>`,
 		`<p style="margin:0 0 18px">Host <strong>web01</strong>: all &#34;green&#34; &amp; running</p>`,
 	} {
 		if !strings.Contains(html, want) {
@@ -96,7 +96,7 @@ func TestSendHTMLRaw(t *testing.T) {
 	if html != doc {
 		t.Errorf("html part not byte-identical to input:\n--- got ---\n%q\n--- want ---\n%q", html, doc)
 	}
-	if strings.Contains(html, `class="content"`) {
+	if strings.Contains(html, `class="card content"`) {
 		t.Errorf("html part contains template frame, want raw document only")
 	}
 
@@ -133,7 +133,7 @@ func TestSendHTMLFromFile(t *testing.T) {
 	req := m.LastRequest(t)
 	html, text := req.Field("html"), req.Field("text")
 	if !strings.Contains(html, `<p style="margin:0 0 18px">from a <b>file</b></p>`) ||
-		!strings.Contains(html, `class="content"`) {
+		!strings.Contains(html, `class="card content"`) {
 		t.Errorf("html part missing fragment or template frame:\n%s", html)
 	}
 	if got, want := text, "from a file\n"; got != want {

@@ -320,7 +320,8 @@ func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
 			return nil, "", fmt.Errorf("encoding field %q: %w", f.name, err)
 		}
 	}
-	if msg.Text != "" {
+	// Attachment-only messages still need a body field in the API request.
+	if msg.Text != "" || msg.HTML == "" {
 		if err := writeFields("text", msg.Text); err != nil {
 			return nil, "", fmt.Errorf("encoding field %q: %w", "text", err)
 		}

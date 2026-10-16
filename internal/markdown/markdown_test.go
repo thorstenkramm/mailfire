@@ -15,9 +15,8 @@ It is written in markdown. It's delivered as HTML.
 `
 
 // TestHTMLNote renders the README example. The expected fragment is
-// identical to the body the render package's note.html golden carries,
-// so wrapping it in the base template reproduces the design preview
-// byte-for-byte.
+// identical to the body the render package's note.<template>.html
+// goldens carry.
 func TestHTMLNote(t *testing.T) {
 	want := `<h1>This is an Email</h1>
 <p>It is written in markdown. It&rsquo;s delivered as HTML.</p>

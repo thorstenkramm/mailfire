@@ -45,6 +45,23 @@ func TestSendAttachmentFIFO(t *testing.T) {
 	}
 }
 
+func TestBodyFIFO(t *testing.T) {
+	fifo := filepath.Join(t.TempDir(), "body-pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := readBody(fifo, unreadableInput{}); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("FIFO: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("body read blocked on FIFO")
+	}
+}
+
 // TestSendFooterFIFO: a named pipe as --footer is refused like an
 // attachment instead of blocking the send.
 func TestSendFooterFIFO(t *testing.T) {

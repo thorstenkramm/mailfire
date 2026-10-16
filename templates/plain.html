@@ -1,0 +1,29 @@
+{{- /*
+  Layout "plain" (templates plain and plain-serif): no background, left
+  aligned, flexible width up to 640px. The footer follows the body after a
+  thin rule. Shared head and preheader: head.html.
+*/ -}}
+{{template "head" .}}
+<body class="body" style="margin:0;padding:0;word-spacing:normal;background-color:#ffffff;">
+{{- template "preheader" .}}
+<div role="article" aria-roledescription="email" aria-label="{{html .Subject}}" lang="{{html (or .Lang "en")}}">
+<table role="presentation" class="page" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;background-color:#ffffff;">
+  <tr>
+    <td class="gutter" align="left" style="padding:40px 24px 48px 24px;">
+      <!--[if mso]><table role="presentation" width="640" align="left" cellpadding="0" cellspacing="0" border="0"><tr><td><![endif]-->
+      <table role="presentation" class="column" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;max-width:640px;">
+        <tr>
+          <td class="content" style="font-family:{{.S.Font}};font-size:{{.S.Size}};line-height:{{.S.LineHeight}};color:{{.S.Text}};">
+{{.Body}}
+          </td>
+        </tr>
+        {{- with .Footer}}
+        <tr>
+          <td style="padding:36px 0 0 0;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr><td class="footer-text" style="padding:14px 0 0 0;border-top:1px solid #e2e3e7;font-family:{{$.S.Font}};font-size:13px;line-height:20px;color:{{$.S.Muted}};">{{.}}</td></tr>
+            </table>
+          </td>
+        </tr>
+        {{- end}}
+{{template "close"}}

@@ -1,15 +1,15 @@
 // Package inliner inlines the CSS of a rendered HTML mail document into
 // element style attributes, so mail clients that strip <style> blocks
-// still render the base template's typography (FR-7).
+// still render the templates' typography (FR-7).
 //
 // Inlining is done with go-premailer (PRD §4). go-premailer removes every
 // <style> element it reads and re-serializes the rules it could not
 // inline (media queries, :root, ...) into a freshly generated <style>
 // block, reformatting them and forcing !important. That is not acceptable
-// here: the base template's <style> block must survive untouched, because
+// here: the template's <style> block must survive untouched, because
 // the dark-mode and small-screen media queries cannot be inlined and
 // clients that do support <style> need the original rules (see the header
-// comment of templates/base.html).
+// comment of templates/head.html).
 //
 // Inline therefore wraps go-premailer, working on the parsed document
 // only (no string surgery on the serialized HTML): before inlining, every

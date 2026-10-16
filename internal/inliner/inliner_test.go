@@ -8,28 +8,23 @@ import (
 	"github.com/PuerkitoBio/goquery"
 
 	"github.com/thorstenkramm/mailfire/internal/render"
-	"github.com/thorstenkramm/mailfire/templates"
 )
 
-// templateStyleBlock extracts the base template's (non-conditional)
-// <style> block, verbatim, from the embedded template source.
-func templateStyleBlock(t *testing.T) string {
+// templateStyleBlock extracts the rendered document's main
+// (non-conditional) <style> block, verbatim. The template files contain
+// template actions, so the block is taken from the render output.
+func templateStyleBlock(t *testing.T, doc string) string {
 	t.Helper()
-	src, err := templates.FS.ReadFile("base.html")
-	if err != nil {
-		t.Fatalf("reading base template: %v", err)
-	}
 	// The main block is the <style> element starting the :root rule; the
-	// other <style> occurrences in the source are the header comment and
-	// the <!--[if mso]> conditional.
-	start := strings.Index(string(src), "<style>\n  :root")
+	// other <style> element is the <!--[if mso]> conditional.
+	start := strings.Index(doc, "<style>\n  :root")
 	if start < 0 {
-		t.Fatal("base template main <style> block not found")
+		t.Fatal("main <style> block not found")
 	}
-	rest := string(src)[start:]
+	rest := doc[start:]
 	end := strings.Index(rest, "</style>")
 	if end < 0 {
-		t.Fatal("base template has no closing </style>")
+		t.Fatal("main <style> block has no closing </style>")
 	}
 	return rest[:end+len("</style>")]
 }
@@ -40,8 +35,9 @@ func templateStyleBlock(t *testing.T) string {
 // with the dark-mode and small-screen media queries untouched.
 func TestInlineBaseTemplate(t *testing.T) {
 	doc := render.Base(render.Data{
-		Subject: "Hi",
-		Body:    `<h1>Hello</h1>` + "\n" + `<p>Para with <a href="https://example.com">link</a></p>` + "\n",
+		Template: "plain-serif",
+		Subject:  "Hi",
+		Body:     `<h1>Hello</h1>` + "\n" + `<p>Para with <a href="https://example.com">link</a></p>` + "\n",
 	})
 	out, err := Inline(doc)
 	if err != nil {
@@ -50,13 +46,13 @@ func TestInlineBaseTemplate(t *testing.T) {
 
 	for _, want := range []string{
 		// inlined styles on content elements
-		`<h1 style="font-weight:bold;margin:0 0 20px;font-size:30px;line-height:37px;letter-spacing:-0.01em">Hello</h1>`,
+		`<h1 style="margin:0 0 20px;font-size:30px;line-height:37px;font-weight:normal;letter-spacing:-0.01em">Hello</h1>`,
 		`<p style="margin:0 0 18px">`,
 		`<td class="content" style=`,
-		`<a href="https://example.com" style="color:#b23b12;text-decoration:underline;text-underline-offset:2px">`,
+		`<a href="https://example.com" style="color:#7a2e1f;text-decoration:underline;text-underline-offset:2px">`,
 		// the original <style> block survives, dark mode intact
 		`  @media (prefers-color-scheme: dark) {`,
-		`    .content a { color: #ff8c5a !important; }`,
+		`    .content a { color: #f0a58a !important; }`,
 		`  @media screen and (max-width: 600px) {`,
 		// Outlook conditionals survive
 		`<!--[if mso]>`,
@@ -67,7 +63,7 @@ func TestInlineBaseTemplate(t *testing.T) {
 	}
 
 	// The original <style> block is byte-identical, not re-serialized.
-	if !strings.Contains(out, templateStyleBlock(t)) {
+	if !strings.Contains(out, templateStyleBlock(t, doc)) {
 		t.Error("inlined output does not contain the original <style> block verbatim")
 	}
 

@@ -18,7 +18,7 @@ pipable stdin, done.
 ### Goals
 
 - Send email from the command line via the Mailgun API with minimal ceremony.
-- Accept the message body on stdin or from a file (`--file`).
+- Accept the message body on stdin, from a file (`--file`), or an explicit string (`--message`, aliases `--m` and `-m`).
 - Render Markdown to a polished, responsive, dark-mode-aware HTML email.
 - Support attachments, multiple recipients (to/cc/bcc), and custom senders.
 - Defer failed sending attempts for later retry — never silently lose mail.
@@ -66,7 +66,9 @@ Authentication: HTTP Basic Auth, user `api`, password = API key.
 
 Synopsis: `mailfire [send] [flags]` (no subcommand defaults to `send`).
 
-- Body is read from stdin unless `--file <path>` is given.
+- Body is read from nonterminal stdin unless `--file <path>` or `--message <text>` is explicitly given. These flags are mutually exclusive even with empty values; both ignore stdin. Body files must be regular files, checked before opening to reject FIFOs without blocking.
+- Never read interactive terminal stdin. Empty bodies are allowed only with attachments; otherwise fail locally with `mail body missing: use stdin, --file or --message`. Piped stdin is still consumed with attachments. Attachment-only requests include an empty text field when there is no HTML body.
+- Validate every sender and recipient mailbox before dispatch: require a dotted DNS domain with valid nonempty labels, no leading/trailing hyphens. Preserve quoted display names/local parts, plus addresses and Unicode support. No DNS/network validation; syntax validity does not promise delivery. Usage errors are never deferred.
 - Exactly one body format per invocation:
     - `--txt` — plain text (default)
     - `--md` — Markdown, rendered to HTML and wrapped in the base template
@@ -110,7 +112,8 @@ Synopsis: `mailfire [send] [flags]` (no subcommand defaults to `send`).
 Schema (see README for the annotated example):
 
 - `[mailgun]` `api_key` (required), `region` (`us`|`eu`, required)
-- `[sending]` `domain` (required), `from` (optional; then `--from` is mandatory)
+- `[sending]` `domain` (required), `from` (optional; then `--from` is mandatory),
+  `template` (`card`|`card-serif`|`plain`|`plain-serif`, default `card`; see FR-7)
 - `[logging]` `logfile` (optional; logging disabled without it),
   `loglevel` (`error`|`information`|`debug`, default `information`),
   `max_size` (default `50M`)
@@ -161,7 +164,7 @@ Security:
 
 1. Config file found and parses as valid TOML.
 2. All mandatory keys present and well-formed (region ∈ {us, eu},
-   domain non-empty, from address parseable).
+   domain non-empty, from address valid under the shared mailbox syntax check).
 3. API key and domain valid against Mailgun, via
    `GET /v3/domains/{domain}` (Mailgun has no dedicated ping route; this
    endpoint authenticates the key and confirms the domain in one call).
@@ -174,12 +177,26 @@ Exit 0 if all checks pass, non-zero otherwise (see §8).
 `mailfire 0.3.1 (commit a1b2c3d, built 2026-10-15)`. Version is injected at
 build time via `-ldflags -X`.
 
-### FR-7 — Base template
+### FR-7 — Templates
 
-- Ships as an embedded `templates/base.html` rendered with `text/template`.
+- Ships four embedded templates rendered with `text/template`: two layouts,
+  `templates/card.html` (600 px white card centered on a gray page) and
+  `templates/plain.html` (no background, left aligned, flexible width up to
+  640 px), each in a sans-serif and a serif variant: `card` (default),
+  `card-serif`, `plain`, `plain-serif`. Shared head and styles live in
+  `templates/head.html`. Screenshots: `templates.md`.
+- The template is chosen per message with `--template <name>`, else by
+  `[sending] template`, else `card`. `--template` requires `--md` or `--html`.
+- Font stacks start with fonts preinstalled on macOS/iOS, Windows, Android
+  and Linux (system-ui/Segoe UI/Roboto, Charter/Sitka/Cambria); Arial and
+  Times New Roman are only last-resort fallbacks.
+- Markdown supports GitHub-style alerts (`> [!NOTE]`, `[!TIP]`,
+  `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`) at the top level, rendered as
+  one-cell tables styled by each template; the text part shows them as
+  `> NOTE` quotes.
 - Template fields: `Lang`, `Subject`, `Preheader`, `Body`, `Footer`.
 - Must render correctly in Outlook (MSO conditionals, table layout,
-  640 px column), dark mode (`prefers-color-scheme`), and small screens (≤ 600 px media query).
+  600/640 px column), dark mode (`prefers-color-scheme`), and small screens (≤ 600 px media query).
 - The `<style>` block is inlined with go-premailer before sending; the block
   itself remains for clients and media queries that need it.
 
@@ -216,6 +233,8 @@ Flags (send):
   --html             body is an HTML fragment, wrapped in the template
   --html-raw         body is a complete HTML document, sent as-is
   --file <path>      read body from file instead of stdin
+  --message <text>   explicit body; aliases --m, -m (conflicts with --file)
+  --template <name>  HTML template: card, card-serif, plain, plain-serif
   --preheader <txt>  inbox preview text (HTML formats only)
   --footer <path>    HTML fragment appended as footer (HTML formats only)
   --attach <path>    attach a file, repeatable

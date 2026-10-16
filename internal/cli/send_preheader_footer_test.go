@@ -49,7 +49,7 @@ func TestSendPreheaderFooterGolden(t *testing.T) {
 		// The footer block is the template row below the content; the
 		// fragment is inserted as is, the link's rule inlined.
 		`class="footer-text"`,
-		`<p>Sent by the nightly job on ops01. <a href="https://example.com/backups/settings" style="color:#62656d;text-decoration:underline">Change who gets this report</a>.</p>`,
+		`<p>Sent by the nightly job on ops01. <a href="https://example.com/backups/settings" style="color:#5b616b;text-decoration:underline">Change who gets this report</a>.</p>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("html part missing %q", want)
