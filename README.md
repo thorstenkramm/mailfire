@@ -14,6 +14,7 @@ It is written in markdown. It's delivered as HTML.
 
 [mailfire](https://github.com/thorstenkramm/mailfire)
 EOF
+
 ```
 
 The following formats are supported:
@@ -60,18 +61,7 @@ mailfire --test --to user@example.com --subject "Test" <<< "Hello"
 Every [GitHub release](https://github.com/thorstenkramm/mailfire/releases) ships static binaries for
 Linux, macOS (amd64 and arm64) and Windows (amd64), `.deb` and `.rpm` packages, and a `checksums.txt`.
 
-**Homebrew** (macOS and Linux):
-
-```shell
-brew install thorstenkramm/tap/mailfire
-```
-
-**Scoop** (Windows):
-
-```powershell
-scoop bucket add thorstenkramm https://github.com/thorstenkramm/scoop-bucket
-scoop install mailfire
-```
+Homebrew and Scoop publishing are planned for a later release.
 
 **Debian / Ubuntu** and **Fedora / RHEL** (download the package from the release page):
 
@@ -87,7 +77,7 @@ The packages install the man page (`man mailfire`) and bash/zsh completions. Fro
 a source checkout, use `packaging/completions/mailfire.bash` (`source` it from `~/.bashrc`) and
 `packaging/completions/mailfire.zsh` (save it as `_mailfire` in a directory on your `fpath`).
 
-Or build from source with `make build` (Go required).
+Or build from source with `make build` (Go 1.27.2 or newer required).
 
 ## Configuration
 
