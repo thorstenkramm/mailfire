@@ -110,16 +110,55 @@ EOF
 echo "deb [signed-by=/etc/apt/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/mailfire.list
 ```
 
-Finally, install Mailfire:
+For **either source format**, restrict this repository to the exact package name
+`mailfire` before installing. The first rule allows Mailfire; the second rejects
+every other package from this repository, including replacements for system packages.
+
+```shell
+sudo tee /etc/apt/preferences.d/mailfire > /dev/null <<'EOF'
+Package: mailfire
+Pin: release o=cloudsmith/thorstenkramm/mailfire
+Pin-Priority: 500
+
+Package: *
+Pin: release o=cloudsmith/thorstenkramm/mailfire
+Pin-Priority: -1
+EOF
+```
+
+This uses the repository's signed Release `Origin`, not the shared
+`dl.cloudsmith.io` hostname. Keep the `Signed-By`/`signed-by` setting above: it
+limits which key APT accepts for this source; pinning limits package selection.
+
+Finally, update the indexes, inspect the policy, and install Mailfire:
 
 ```shell
 sudo apt update
+apt-cache policy mailfire
 sudo apt install mailfire
 mailfire version
 ```
 
 Future versions are available through normal APT upgrades. For Fedora/RPM setup,
 removal, and downgrade instructions, see [Linux package repositories](docs/linux-repositories.md).
+
+### Fedora / RPM: restrict the Cloudsmith repository
+
+In the `[mailfire]` section of `/etc/yum.repos.d/mailfire.repo`, use the exact
+package allowlist below alongside signature verification:
+
+```ini
+includepkgs=mailfire
+gpgcheck=1
+repo_gpgcheck=1
+```
+
+`includepkgs=mailfire` excludes every other package name from this repository.
+Use the [complete RPM setup instructions](docs/linux-repositories.md#fedora--rpm)
+to configure the URL and signing key before running `sudo dnf install mailfire`.
+
+These restrictions apply to repository-based installs and updates, not manually
+downloaded packages installed with `dpkg -i` or `rpm -i`.
 
 ### Manual download
 

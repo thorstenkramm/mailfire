@@ -24,15 +24,36 @@ Install `curl`, CA certificates and GnuPG first if needed.
 gpg --dearmor < mailfire.key | sudo tee /usr/share/keyrings/mailfire.gpg > /dev/null
 . /etc/os-release
 echo "deb [signed-by=/usr/share/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/mailfire.list
+sudo tee /etc/apt/preferences.d/mailfire > /dev/null <<'EOF'
+Package: mailfire
+Pin: release o=cloudsmith/thorstenkramm/mailfire
+Pin-Priority: 500
+
+Package: *
+Pin: release o=cloudsmith/thorstenkramm/mailfire
+Pin-Priority: -1
+EOF
 sudo apt update
+apt-cache policy mailfire
 sudo apt install mailfire
 mailfire version
 ```
 
+The preferences allow only the exact package `mailfire` from this repository;
+all other package names receive priority `-1` and cannot be selected from it.
+The rules match the signed Release `Origin: cloudsmith/thorstenkramm/mailfire`,
+not the shared Cloudsmith hostname. They work with both traditional `.list`
+and deb822 `.sources` files (see the [README](../README.md#debian--ubuntu-cloudsmith-apt-repository)).
+Keep `signed-by` / `Signed-By` enabled as well: key trust and package selection
+are separate controls. `apt-cache policy mailfire` should show the Cloudsmith
+version at priority `500`; `apt-cache policy` shows the repository-wide `-1` default.
+
 Upgrade with `sudo apt update && sudo apt install --only-upgrade mailfire`.
 Remove with `sudo apt remove mailfire`. To stop using the repository, remove
 `/etc/apt/sources.list.d/mailfire.list` and `/usr/share/keyrings/mailfire.gpg`,
-then run `sudo apt update`.
+then remove `/etc/apt/preferences.d/mailfire` and run `sudo apt update`.
+If you used the README's setup, remove `mailfire.sources` (or `mailfire.list`)
+and `/etc/apt/keyrings/mailfire.gpg` instead of the source/key paths above.
 
 ## Fedora / RPM
 
@@ -46,6 +67,7 @@ sudo tee /etc/yum.repos.d/mailfire.repo > /dev/null <<'EOF'
 name=Mailfire
 baseurl=https://dl.cloudsmith.io/public/thorstenkramm/mailfire/rpm/any-distro/any-version/$basearch
 enabled=1
+includepkgs=mailfire
 gpgcheck=1
 repo_gpgcheck=1
 gpgkey=file:///etc/pki/rpm-gpg/mailfire.key
@@ -56,8 +78,17 @@ sudo dnf install mailfire
 mailfire version
 ```
 
+`includepkgs=mailfire` allows only that exact package name from this repository;
+other names are excluded, including when resolving dependencies. Keep both
+`gpgcheck=1` and `repo_gpgcheck=1` to verify packages and repository metadata.
+Do not use `--disableexcludes` to bypass the allowlist.
+
 Upgrade with `sudo dnf upgrade mailfire`; remove with `sudo dnf remove mailfire`.
 To stop using the repository, remove `/etc/yum.repos.d/mailfire.repo`.
+
+APT pinning and DNF's allowlist govern repository-based package selection. They
+do not sandbox Mailfire or restrict manually downloaded packages installed via
+`dpkg -i` or `rpm -i`.
 
 Packages do not own your configuration, credentials, logs or deferred messages;
 those remain after removal. Older versions remain available: list them with
