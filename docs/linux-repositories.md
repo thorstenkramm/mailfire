@@ -16,7 +16,12 @@ gpg --show-keys --with-fingerprint mailfire.key
 ```
 
 Expected fingerprint: `6479 EED4 2348 F9DA 6963 2428 B434 13AD 5FA8 2F43`.
-Install `curl`, CA certificates and GnuPG first if needed.
+Install `curl`, CA certificates, and GnuPG first if needed. On Debian/Ubuntu:
+
+```shell
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+```
 
 ## Debian / Ubuntu
 
@@ -43,17 +48,38 @@ The preferences allow only the exact package `mailfire` from this repository;
 all other package names receive priority `-1` and cannot be selected from it.
 The rules match the signed Release `Origin: cloudsmith/thorstenkramm/mailfire`,
 not the shared Cloudsmith hostname. They work with both traditional `.list`
-and deb822 `.sources` files (see the [README](../README.md#debian--ubuntu-cloudsmith-apt-repository)).
+and deb822 `.sources` files.
 Keep `signed-by` / `Signed-By` enabled as well: key trust and package selection
 are separate controls. `apt-cache policy mailfire` should show the Cloudsmith
 version at priority `500`; `apt-cache policy` shows the repository-wide `-1` default.
 
+### Alternative: deb822 source format
+
+The example above uses a traditional `mailfire.list` file. To use the modern deb822 format instead,
+replace the command that writes `mailfire.list` with this block. Choose only one source format:
+
+```shell
+. /etc/os-release
+sudo tee /etc/apt/sources.list.d/mailfire.sources > /dev/null <<EOF
+Types: deb
+URIs: https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID
+Suites: $VERSION_CODENAME
+Components: main
+Signed-By: /usr/share/keyrings/mailfire.gpg
+EOF
+```
+
+Use the same signing key and package preferences as above, then run `sudo apt update` and install Mailfire.
+`Signed-By` limits which key APT accepts for this source; the preferences limit which packages it can provide.
+
+### Updates and removal
+
 Upgrade with `sudo apt update && sudo apt install --only-upgrade mailfire`.
 Remove with `sudo apt remove mailfire`. To stop using the repository, remove
-`/etc/apt/sources.list.d/mailfire.list` and `/usr/share/keyrings/mailfire.gpg`,
+`/etc/apt/sources.list.d/mailfire.list` (or `mailfire.sources`) and `/usr/share/keyrings/mailfire.gpg`,
 then remove `/etc/apt/preferences.d/mailfire` and run `sudo apt update`.
-If you used the README's setup, remove `mailfire.sources` (or `mailfire.list`)
-and `/etc/apt/keyrings/mailfire.gpg` instead of the source/key paths above.
+Earlier README instructions stored the key in `/etc/apt/keyrings/mailfire.gpg`;
+if you followed those, remove that key file instead.
 
 ## Fedora / RPM
 
