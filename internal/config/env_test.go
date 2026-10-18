@@ -481,7 +481,7 @@ func TestEnvFillsMissingFileKey(t *testing.T) {
 // TestEnvDocumented: every supported variable appears in the
 // environment reference and the man page.
 func TestEnvDocumented(t *testing.T) {
-	for _, doc := range []string{"../../docs/environment.md", "../../docs/mailfire.1"} {
+	for _, doc := range []string{"../../docs/content/reference/environment.md", "../../docs/mailfire.1"} {
 		data, err := os.ReadFile(doc)
 		if err != nil {
 			t.Fatalf("reading %s: %v", doc, err)

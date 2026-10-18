@@ -1,0 +1,14 @@
+{{- $current := . }}
+<nav class="mf-sidebar-nav" aria-label="Documentation">
+  {{- range site.Menus.docs }}
+  {{- with .Page }}
+  {{- $inSection := or (eq $current .) ($current.IsDescendant .) }}
+  <a class="mf-nav-section{{ if eq $current . }} uk-active{{ end }}" href="{{ .RelPermalink }}"{{ if eq $current . }} aria-current="page"{{ end }}>{{ .LinkTitle }}</a>
+  <ul class="uk-nav uk-nav-default mf-nav{{ if $inSection }} mf-nav-current{{ end }}">
+    {{- range .Pages.ByWeight }}
+    <li{{ if eq $current . }} class="uk-active"{{ end }}><a href="{{ .RelPermalink }}"{{ if eq $current . }} aria-current="page"{{ end }}>{{ .LinkTitle }}</a></li>
+    {{- end }}
+  </ul>
+  {{- end }}
+  {{- end }}
+</nav>

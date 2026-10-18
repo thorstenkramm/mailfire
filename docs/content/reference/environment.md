@@ -1,4 +1,9 @@
-# Environment variables
+---
+title: Environment variables
+description: Every configuration setting as a MAILFIRE_* environment variable, for CI pipelines, containers, and scheduled jobs.
+weight: 30
+icon: world
+---
 
 Every Mailfire configuration setting can also be supplied through an environment variable. This suits CI pipelines,
 containers, and scheduled jobs where writing a configuration file is inconvenient.
@@ -60,7 +65,7 @@ testing with your own Google Cloud project. Normal use does not need them.
 Paths accept a leading `~`; relative paths use the current working directory. Mailfire does not expand other
 environment variables inside values; let your shell do that.
 
-See [mailfire.example.conf](../mailfire.example.conf) for a detailed description of each setting.
+See the [annotated example configuration](configuration.md#annotated-example) for a detailed description of each setting.
 
 ## SMTP submission
 
@@ -77,7 +82,7 @@ be set together. A password/app password is appropriate for ordinary SMTP
 submission. Gmail commonly requires an app password or OAuth; an ordinary
 Google-account password is not a supported shortcut. Gmail OAuth support is
 available as its own provider: set `MAILFIRE_SENDING_PROVIDER=gmail` and run
-`mailfire auth login --provider gmail` (see the [Gmail guide](gmail.md)).
+`mailfire auth login --provider gmail` (see the [Gmail guide](../guides/gmail.md)).
 
 `MAILFIRE_SMTP_TIMEOUT` covers connection setup, TLS, authentication, and the
 SMTP transaction. `--timeout` overrides it for a single command. A successful

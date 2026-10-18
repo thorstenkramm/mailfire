@@ -893,9 +893,9 @@ reports one record per message (sent, skipped, failed, or expired) and a
 summary; its outcome is
 .B partial
 when some messages were sent and others failed.
-The full schema, error codes, and compatibility rules are documented in
-.I docs/json-output.md
-of the project.
+The full schema, error codes, and compatibility rules are documented at
+.UR https://mailfire.system42.io/reference/json-output/
+.UE .
 .SH NOTIFICATION DEDUPLICATION
 Deduplication is opt-in: only sends with
 .B \-\-dedup\-key
@@ -1238,7 +1238,11 @@ Default directory for notification deduplication state
 .RI ( %LOCALAPPDATA%\emailfire\ededup
 on Windows).
 .SH SEE ALSO
-Project home and full documentation:
+Documentation:
+.UR https://mailfire.system42.io
+.UE
+.PP
+Source code and issues:
 .UR https://github.com/thorstenkramm/mailfire
 .UE
 .SH AUTHOR

@@ -2,8 +2,13 @@
   "minLines": 10,
   "minTokens": 50,
   "threshold": 0,
-  "reporters": ["console"],
-  "format": ["go", "markup"],
+  "reporters": [
+    "console"
+  ],
+  "format": [
+    "go",
+    "markup"
+  ],
   "ignore": [
     "**/*_test.go",
     "**/vendor/**",
@@ -20,6 +25,10 @@
     "**/internal/render/testdata/report.card.html",
     "**/internal/render/testdata/report.card-serif.html",
     "**/internal/render/testdata/report.plain.html",
-    "**/internal/render/testdata/report.plain-serif.html"
+    "**/internal/render/testdata/report.plain-serif.html",
+    "**/docs/public/**",
+    "**/docs/resources/**",
+    "**/docs/assets/generated/**",
+    "**/docs/themes/mailfire/assets/vendor/**"
   ]
 }

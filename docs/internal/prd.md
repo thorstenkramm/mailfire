@@ -184,7 +184,7 @@ build time via `-ldflags -X`.
   `templates/plain.html` (no background, left aligned, flexible width up to
   640 px), each in a sans-serif and a serif variant: `card` (default),
   `card-serif`, `plain`, `plain-serif`. Shared head and styles live in
-  `templates/head.html`. Screenshots: `templates.md`.
+  `templates/head.html`. Screenshots: `docs/content/guides/templates.md`.
 - The template is chosen per message with `--template <name>`, else by
   `[sending] template`, else `card`. `--template` requires `--md` or `--html`.
 - Font stacks start with fonts preinstalled on macOS/iOS, Windows, Android

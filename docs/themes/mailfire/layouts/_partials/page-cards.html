@@ -1,0 +1,12 @@
+{{- /* A grid of cards linking to the given pages. */ -}}
+<div class="mf-cards uk-grid-small uk-child-width-1-2@s uk-grid-match" uk-grid>
+  {{- range . }}
+  <div>
+    <a class="uk-card uk-card-default uk-card-body uk-card-hover mf-card" href="{{ .RelPermalink }}">
+      {{- with .Params.icon }}<span class="mf-card-icon" uk-icon="icon: {{ . }}; ratio: 1.2"></span>{{ end }}
+      <h3 class="uk-card-title">{{ .LinkTitle }}</h3>
+      {{- with .Description }}<p>{{ . }}</p>{{ end }}
+    </a>
+  </div>
+  {{- end }}
+</div>

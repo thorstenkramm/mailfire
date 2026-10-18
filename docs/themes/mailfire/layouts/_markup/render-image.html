@@ -1,0 +1,10 @@
+{{- /* Images: root-relative paths ("/images/...") resolve against the
+     site, and a missing file under static/ fails the build. */ -}}
+{{- $src := .Destination }}
+{{- $u := urls.Parse $src }}
+{{- if and (not $u.IsAbs) (strings.HasPrefix $src "/") }}
+  {{- if not (fileExists (printf "static%s" $src)) }}{{ errorf "%s: image %q not found" .Page.File.Path $src }}{{ end }}
+  {{- $src = relURL (strings.TrimPrefix "/" $src) }}
+{{- end -}}
+<img src="{{ $src }}" alt="{{ .PlainText }}"{{ with .Title }} title="{{ . }}"{{ end }} loading="lazy" class="mf-image">
+{{- /* chomp trailing newline */ -}}

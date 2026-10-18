@@ -12,3 +12,9 @@ mailfire.log
 __pycache__/
 mailfire-smtp.conf
 mailfire-smtp.log
+
+# Documentation site build output
+/docs/public/
+/docs/resources/
+/docs/.hugo_build.lock
+/docs/assets/generated/

@@ -15,7 +15,7 @@ import (
 // JSON output (task 27): with --json, a command prints exactly one JSON
 // document on stdout instead of its human-readable output. Diagnostics
 // and warnings stay on stderr, exit codes are unchanged, and help is
-// always text. The schema is documented in docs/json-output.md; bump
+// always text. The schema is documented in docs/content/reference/json-output.md; bump
 // jsonSchemaVersion on incompatible changes only.
 const jsonSchemaVersion = 1
 

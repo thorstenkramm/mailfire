@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="{{ site.Language.Locale }}" data-theme="light">
+<head>
+  {{- partial "head.html" . }}
+</head>
+<body class="{{ if .IsHome }}mf-home{{ else }}mf-doc{{ end }}">
+  <a class="mf-skip" href="#main">Skip to content</a>
+  {{- partial "header.html" . }}
+  {{- block "main" . }}{{ end }}
+  {{- partial "footer.html" . }}
+  {{- partial "scripts.html" . }}
+</body>
+</html>

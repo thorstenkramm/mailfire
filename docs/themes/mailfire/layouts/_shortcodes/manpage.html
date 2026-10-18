@@ -1,0 +1,23 @@
+{{- /* The man page docs/mailfire.1, rendered to an HTML fragment by
+     mandoc before the build ("make docs-man", done by "make docs"). */ -}}
+{{- with resources.Get "generated/mailfire.1.html" }}
+{{- $html := .Content }}
+{{- $sections := findRESubmatch `<h2 class="Sh" id="([^"]+)">` $html }}
+<nav class="mf-man-index" aria-label="Man page sections">
+  <p class="mf-toc-title">Sections</p>
+  <ul class="uk-subnav">
+    {{- range $sections }}{{ $id := index . 1 }}
+    <li><a href="#{{ $id }}">{{ replace $id "_" " " | title }}</a></li>
+    {{- end }}
+  </ul>
+</nav>
+<div class="mf-manpage">{{ $html | safeHTML }}</div>
+{{- else }}
+{{- if hugo.IsProduction }}
+{{- errorf "the man page was not rendered: run \"make docs-man\" (needs mandoc) before building the site" }}
+{{- end }}
+<div class="uk-alert mf-alert mf-alert-note" role="note">
+  <p class="mf-alert-title">Man page not rendered</p>
+  <p>Run <code>make docs-man</code> (needs <code>mandoc</code>) to render <code>docs/mailfire.1</code> for this preview.</p>
+</div>
+{{- end }}

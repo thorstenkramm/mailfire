@@ -2,7 +2,7 @@
 // the platform-specific search locations, with an explicit -c/--config
 // override. MAILFIRE_* environment variables override file settings and
 // can replace the file entirely when they supply all required settings
-// (see env.go and docs/environment.md).
+// (see env.go and docs/content/reference/environment.md).
 //
 // The API key is a secret: it is never included in error messages, and the
 // loader warns on stderr when the config file is readable by group/others

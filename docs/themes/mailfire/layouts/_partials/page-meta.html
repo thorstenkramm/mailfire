@@ -1,0 +1,8 @@
+<div class="mf-page-meta">
+  {{- with .File }}
+  <a href="{{ site.Params.editBase }}{{ .Path }}"><span uk-icon="icon: pencil; ratio: 0.8"></span> Edit this page on GitHub</a>
+  {{- end }}
+  {{- if and .GitInfo (not .Lastmod.IsZero) }}
+  <span>Last updated <time datetime="{{ .Lastmod.Format "2006-01-02" }}">{{ .Lastmod.Format "January 2, 2006" }}</time></span>
+  {{- end }}
+</div>

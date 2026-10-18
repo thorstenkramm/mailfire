@@ -1,0 +1,15 @@
+{{- /* GitHub-style alerts (> [!NOTE] ...) become UIkit alerts; other
+     quotes stay quotes. */ -}}
+{{- if eq .Type "alert" }}
+{{- $type := lower .AlertType }}
+{{- $icons := dict "note" "info" "tip" "star" "important" "bookmark" "warning" "warning" "caution" "ban" }}
+<div class="uk-alert mf-alert mf-alert-{{ $type }}" role="note">
+  <p class="mf-alert-title"><span uk-icon="icon: {{ index $icons $type | default "info" }}; ratio: 0.9"></span>
+    {{- with .AlertTitle }}{{ . }}{{ else }}{{ strings.FirstUpper $type }}{{ end }}</p>
+  {{ .Text }}
+</div>
+{{- else }}
+<blockquote>
+  {{ .Text }}
+</blockquote>
+{{- end }}

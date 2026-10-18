@@ -1,0 +1,7 @@
+{{- /* The annotated example configuration from the repository root,
+     mounted by hugo.toml, so the page can never drift from the file. */ -}}
+{{- with resources.Get "config/mailfire.example.conf" }}
+{{ transform.Highlight .Content "toml" }}
+{{- else }}
+{{- errorf "mailfire.example.conf is not mounted: check module.mounts in hugo.toml" }}
+{{- end }}

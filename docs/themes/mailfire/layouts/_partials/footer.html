@@ -1,0 +1,21 @@
+<footer class="mf-footer">
+  <div class="uk-container uk-container-large">
+    <div class="uk-grid-medium uk-flex-middle" uk-grid>
+      <div class="uk-width-expand@m">
+        <a class="mf-footer-brand" href="{{ "/" | relURL }}"><img src="{{ "images/mark-64.png" | relURL }}" width="24" height="24" alt=""> mailfire</a>
+        <p class="uk-margin-small-top uk-margin-remove-bottom">Email from the command line. Open source under the
+          <a href="{{ site.Params.repository }}/blob/main/LICENSE">MIT license</a>.</p>
+      </div>
+      <div class="uk-width-auto@m">
+        <ul class="uk-subnav mf-footer-links">
+          {{- range site.Menus.main }}
+          <li><a href="{{ .URL }}">{{ .Name }}</a></li>
+          {{- end }}
+          <li><a href="{{ site.Params.releases }}">Releases</a></li>
+          <li><a href="{{ site.Params.repository }}/issues">Issues</a></li>
+          <li><a href="{{ site.Params.repository }}">GitHub</a></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</footer>

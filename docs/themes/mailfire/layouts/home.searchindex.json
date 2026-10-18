@@ -1,0 +1,24 @@
+{{- /* Search index: one entry per documentation page and per section
+     heading, so results can link straight to the matching section. */ -}}
+{{- $entries := slice }}
+{{- range site.RegularPages | append (where site.Sections "Kind" "section") }}
+  {{- $page := . }}
+  {{- $section := cond (and .Parent (not .Parent.IsHome)) .Parent.LinkTitle "" }}
+  {{- $entries = $entries | append (dict
+      "title" .Title
+      "section" $section
+      "url" .RelPermalink
+      "description" (.Description | default "")
+      "text" (.Plain | strings.ReplaceRE `\s+` " " | truncate 6000 "")) }}
+  {{- range $heading := .Fragments.HeadingsMap }}
+    {{- if le $heading.Level 3 }}
+      {{- $entries = $entries | append (dict
+          "title" ($heading.Title | plainify | htmlUnescape)
+          "section" $page.Title
+          "url" (printf "%s#%s" $page.RelPermalink $heading.ID)
+          "description" ""
+          "text" "") }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- $entries | jsonify }}

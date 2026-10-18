@@ -6,7 +6,7 @@ COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%d)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(DATE)
 
-.PHONY: build test lint coverage clean
+.PHONY: build test lint coverage clean docs docs-man docs-serve
 
 COVERAGE_MIN := 85
 
@@ -29,5 +29,20 @@ coverage:
 	awk -v t="$$total" -v min="$(COVERAGE_MIN)" 'BEGIN { exit (t + 0 >= min + 0) ? 0 : 1 }' \
 		|| { echo "FAIL: total coverage $$total% is below $(COVERAGE_MIN)%"; exit 1; }
 
+# Documentation site (Hugo, docs/). The man page is rendered to an HTML
+# fragment by mandoc first; the production build fails without it.
+DOCS_MAN := docs/assets/generated/mailfire.1.html
+
+docs-man:
+	@mkdir -p $(dir $(DOCS_MAN))
+	mandoc -T html -O fragment docs/mailfire.1 > $(DOCS_MAN)
+
+docs: docs-man
+	hugo --source docs --minify --gc --cleanDestinationDir --panicOnWarning
+
+docs-serve: docs-man
+	hugo server --source docs
+
 clean:
 	rm -f $(BINARY) coverage.out
+	rm -rf docs/public docs/resources docs/.hugo_build.lock $(dir $(DOCS_MAN))

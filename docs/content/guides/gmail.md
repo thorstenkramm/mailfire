@@ -1,9 +1,15 @@
-# Gmail provider
+---
+title: Gmail
+description: Send through your Gmail or Google Workspace account with a one-time browser sign-in and send-only access.
+weight: 70
+icon: mail
+---
 
 Mailfire can send through the Gmail API of a personal Gmail or Google Workspace account. You do not need SMTP
 settings, an app password, or your own Google Cloud project.
 
-> **Availability:** Gmail sign-in requires Mailfire's registered Google OAuth client. Until a release ships it,
+> [!IMPORTANT] Availability
+> Gmail sign-in requires Mailfire's registered Google OAuth client. Until a release ships it,
 > `mailfire auth login` reports that sign-in is not available in this build. Developers can test with their own
 > Desktop OAuth client by setting `MAILFIRE_GMAIL_CLIENT_ID` (and `MAILFIRE_GMAIL_CLIENT_SECRET` if the client has
 > one).

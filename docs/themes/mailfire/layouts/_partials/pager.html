@@ -1,0 +1,28 @@
+{{- $order := partial "doc-order.html" . }}
+{{- $prev := false }}{{- $next := false }}
+{{- range $i, $p := $order }}
+  {{- if eq $p $ }}
+    {{- if gt $i 0 }}{{ $prev = index $order (sub $i 1) }}{{ end }}
+    {{- if lt (add $i 1) (len $order) }}{{ $next = index $order (add $i 1) }}{{ end }}
+  {{- end }}
+{{- end }}
+{{- if or $prev $next }}
+<nav class="mf-pager uk-grid-small uk-child-width-1-2@s" uk-grid aria-label="Previous and next page">
+  <div>
+    {{- with $prev }}
+    <a class="mf-pager-link" href="{{ .RelPermalink }}" rel="prev">
+      <span class="mf-pager-label"><span uk-icon="icon: arrow-left; ratio: 0.8"></span> Previous</span>
+      <span class="mf-pager-title">{{ .LinkTitle }}</span>
+    </a>
+    {{- end }}
+  </div>
+  <div>
+    {{- with $next }}
+    <a class="mf-pager-link mf-pager-next" href="{{ .RelPermalink }}" rel="next">
+      <span class="mf-pager-label">Next <span uk-icon="icon: arrow-right; ratio: 0.8"></span></span>
+      <span class="mf-pager-title">{{ .LinkTitle }}</span>
+    </a>
+    {{- end }}
+  </div>
+</nav>
+{{- end }}

@@ -1,4 +1,9 @@
-# Linux package repositories
+---
+title: Linux package repositories
+description: Install and update Mailfire from the signed Cloudsmith APT and DNF repositories, restricted to the mailfire package.
+weight: 30
+icon: server
+---
 
 Mailfire's public [Cloudsmith repository](https://cloudsmith.io/~thorstenkramm/repos/mailfire/packages/)
 provides DEB and RPM packages for amd64/x86_64 and arm64/aarch64.
@@ -216,30 +221,3 @@ those remain after removal. Older versions remain available: list them with
 `apt-cache madison mailfire` or `dnf --showduplicates list mailfire`, then select
 the desired version using `apt install mailfire=VERSION --allow-downgrades` or
 `dnf downgrade mailfire-VERSION`.
-
-## Maintainers: publication and recovery
-
-- `.github/workflows/release.yml` calls the Cloudsmith workflow after GitHub
-  publication. Stable releases only; no separate release event is needed.
-- GitHub secret `CLOUDSMITH_API_KEY` authenticates uploads. Rotate it by replacing
-  the secret with a new Cloudsmith key before revoking the old one. Local
-  `.cloudsmith` is ignored and must never be committed.
-- Use the **Cloudsmith** workflow's manual dispatch with an existing stable tag
-  to bootstrap a release or retry a partial failure:
-  `gh workflow run cloudsmith.yml -f tag=v0.1.0`.
-- The publisher downloads all four packages from GitHub and validates them
-  against `checksums.txt` before uploading. It does not rebuild packages.
-- Cloudsmith signs RPMs, so their served archive hashes differ from GitHub's.
-  The verified original hash is recorded in a `github-sha256-…` provenance tag.
-  Retries require matching provenance and successful synchronization. Existing
-  packages with unknown/different provenance fail; they are never overwritten.
-- Publication is serialized. A downstream failure leaves the GitHub release
-  intact. Check the failed job, correct the cause, then rerun the same tag.
-- Each publication runs signed repository installation, version, packaged-file,
-  and uninstall checks on native amd64 and arm64 runners. Upgrade testing between
-  different releases remains pending until the next real version is published.
-- Fix a bad release with a new patch version, preserving existing tags/assets.
-  Key rotation requires updating the documented fingerprint and smoke test.
-
-Local publisher checks: `python3 -m unittest discover -s packaging/cloudsmith -v`.
-The CLI dependency is pinned to `cloudsmith-cli==1.29.0`; `gh` is also required.

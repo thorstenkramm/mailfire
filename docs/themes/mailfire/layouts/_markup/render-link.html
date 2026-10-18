@@ -1,0 +1,18 @@
+{{- /* Links between content files are written as relative .md paths
+     (they also work when browsing the repository). They are resolved to
+     page URLs here; a link to a page that does not exist fails the build. */ -}}
+{{- $u := urls.Parse .Destination }}
+{{- $href := .Destination }}
+{{- $external := false }}
+{{- if $u.IsAbs }}
+  {{- $external = true }}
+{{- else if strings.HasSuffix $u.Path ".md" }}
+  {{- with .PageInner.GetPage $u.Path }}
+    {{- $href = .RelPermalink }}
+    {{- with $u.Fragment }}{{ $href = printf "%s#%s" $href . }}{{ end }}
+  {{- else }}
+    {{- errorf "%s: link to missing page %q" .PageInner.File.Path .Destination }}
+  {{- end }}
+{{- end -}}
+<a href="{{ $href | safeURL }}"{{ with .Title }} title="{{ . }}"{{ end }}{{ if $external }} rel="noopener"{{ end }}>{{ .Text }}</a>
+{{- /* chomp trailing newline */ -}}

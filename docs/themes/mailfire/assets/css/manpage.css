@@ -1,0 +1,28 @@
+/* The man page as rendered by "mandoc -T html -O fragment". */
+
+.mf-man-index { margin: 0 0 28px; padding: 14px 18px; border: 1px solid var(--mf-border); border-radius: var(--mf-radius); background: var(--mf-surface); }
+.mf-man-index .uk-subnav { margin-bottom: 0; }
+
+.mf-manpage .head, .mf-manpage .foot { display: none; }
+.mf-manpage .manual-text { font-size: 0.97rem; }
+.mf-manpage h2.Sh {
+  margin: 2em 0 0.6em;
+  padding-top: 0.6em;
+  border-top: 1px solid var(--mf-border);
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.mf-manpage section.Sh:first-child h2.Sh { margin-top: 0; border-top: 0; padding-top: 0; }
+.mf-manpage h3.Ss { margin: 1.6em 0 0.5em; font-size: 1.05rem; font-weight: 650; }
+.mf-manpage .permalink { color: inherit; text-decoration: none; }
+.mf-manpage .permalink:hover { color: var(--mf-brand-strong); }
+.mf-manpage b { color: var(--mf-heading); font-family: var(--mf-font-mono); font-size: 0.92em; font-weight: 600; }
+.mf-manpage i { font-style: italic; }
+.mf-manpage p.Pp { margin: 0 0 0.9em; }
+.mf-manpage dl.Bl-tag { margin: 0 0 1em; }
+.mf-manpage dl.Bl-tag > dt { margin-top: 0.7em; font-weight: 600; }
+.mf-manpage dl.Bl-tag > dd { margin: 0.2em 0 0 1.6em; }
+.mf-manpage pre { padding: 14px 16px; border: 1px solid var(--mf-border); border-radius: var(--mf-radius); background: var(--mf-code-bg); font-family: var(--mf-font-mono); font-size: 0.85rem; overflow-x: auto; }
+.mf-manpage pre b { font-size: inherit; }
+.mf-manpage .Bd-indent { margin-left: 1.6em; }

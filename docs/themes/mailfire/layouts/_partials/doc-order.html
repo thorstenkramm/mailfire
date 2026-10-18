@@ -1,0 +1,12 @@
+{{- /* The reading order of the documentation: each section of the "docs"
+     menu, then its pages by weight. Returns a slice of pages. */ -}}
+{{- $pages := slice }}
+{{- range site.Menus.docs }}
+  {{- with .Page }}
+    {{- $pages = $pages | append . }}
+    {{- range .Pages.ByWeight }}
+      {{- $pages = $pages | append . }}
+    {{- end }}
+  {{- end }}
+{{- end }}
+{{- return $pages }}

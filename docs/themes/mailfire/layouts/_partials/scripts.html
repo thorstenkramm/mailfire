@@ -1,0 +1,11 @@
+{{- $uikit := resources.Get "vendor/uikit/js/uikit.min.js" }}
+{{- $icons := resources.Get "vendor/uikit/js/uikit-icons.min.js" }}
+{{- $site := resources.Get "js/site.js" | js.Build (dict "target" "es2018" "minify" hugo.IsProduction) }}
+{{- if hugo.IsProduction }}
+  {{- $uikit = $uikit | fingerprint }}
+  {{- $icons = $icons | fingerprint }}
+  {{- $site = $site | fingerprint }}
+{{- end }}
+<script src="{{ $uikit.RelPermalink }}"{{ with $uikit.Data.Integrity }} integrity="{{ . }}"{{ end }}></script>
+<script src="{{ $icons.RelPermalink }}"{{ with $icons.Data.Integrity }} integrity="{{ . }}"{{ end }}></script>
+<script src="{{ $site.RelPermalink }}"{{ with $site.Data.Integrity }} integrity="{{ . }}"{{ end }} data-search-index="{{ "search-index.json" | relURL }}" defer></script>

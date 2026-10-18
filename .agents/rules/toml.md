@@ -61,7 +61,8 @@ the configuration loader.
   describe proposals, not the current schema.
 - Every key has a `MAILFIRE_<SECTION>_<KEY>` environment override
   (`internal/config/env.go`). A new key needs its binding there and documentation in
-  `docs/environment.md`, `docs/mailfire.1`, and, where relevant, README.md.
+  `docs/content/reference/environment.md` and `docs/mailfire.1`, and, where relevant, the
+  documentation site's guides under `docs/content/`.
 - In `mailfire.example.conf`, put `# Env: MAILFIRE_<SECTION>_<KEY>` with the exact
   variable from `envNames()` directly above each setting, one per key (never one
   line for a group such as `api_key` and `region`). The header states precedence

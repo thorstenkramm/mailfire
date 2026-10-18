@@ -1,0 +1,15 @@
+{{ define "main" }}
+<main id="main" class="mf-notfound uk-section">
+  <div class="uk-container uk-container-small uk-text-center">
+    <img src="{{ "images/mark-128.png" | relURL }}" width="96" height="96" alt="">
+    <h1>Page not found</h1>
+    <p class="mf-lead">This page does not exist, or it moved when the documentation was reorganized.
+      Try the search above, or start from one of these:</p>
+    <p>
+      {{- range site.Menus.main }}
+      <a class="uk-button uk-button-default uk-margin-small-right uk-margin-small-bottom" href="{{ .URL }}">{{ .Name }}</a>
+      {{- end }}
+    </p>
+  </div>
+</main>
+{{ end }}

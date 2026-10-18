@@ -1,0 +1,8 @@
+{{ define "main" }}
+{{- $body := .Content }}
+{{- with .Pages.ByWeight }}
+  {{- $cards := partial "page-cards.html" . }}
+  {{- $body = printf "%s%s" $body $cards | safeHTML }}
+{{- end }}
+{{- partial "doc-frame.html" (dict "page" . "body" $body) }}
+{{ end }}

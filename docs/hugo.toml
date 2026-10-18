@@ -1,0 +1,84 @@
+# Hugo configuration of the Mailfire documentation site (https://mailfire.system42.io).
+# Build: make docs    Preview: make docs-serve
+baseURL = "https://mailfire.system42.io/"
+locale = "en"
+defaultContentLanguage = "en"
+title = "Mailfire"
+theme = "mailfire"
+enableRobotsTXT = true
+enableGitInfo = true
+disableKinds = ["taxonomy", "term"]
+
+[params]
+  description = "Send plain-text, Markdown, and HTML email from the command line through Mailgun, Gmail, or SMTP."
+  repository = "https://github.com/thorstenkramm/mailfire"
+  editBase = "https://github.com/thorstenkramm/mailfire/edit/main/docs/content/"
+  releases = "https://github.com/thorstenkramm/mailfire/releases/latest"
+
+# Sidebar sections, in order.
+[[menus.docs]]
+  name = "Getting started"
+  pageRef = "/getting-started"
+  weight = 10
+[[menus.docs]]
+  name = "Guides"
+  pageRef = "/guides"
+  weight = 20
+[[menus.docs]]
+  name = "Reference"
+  pageRef = "/reference"
+  weight = 30
+
+[[menus.main]]
+  name = "Getting started"
+  pageRef = "/getting-started"
+  weight = 10
+[[menus.main]]
+  name = "Guides"
+  pageRef = "/guides"
+  weight = 20
+[[menus.main]]
+  name = "Reference"
+  pageRef = "/reference"
+  weight = 30
+
+[outputFormats.searchindex]
+  mediaType = "application/json"
+  baseName = "search-index"
+  isPlainText = true
+  notAlternative = true
+
+[outputs]
+  home = ["html", "searchindex"]
+  section = ["html"]
+  page = ["html"]
+
+[markup.goldmark.renderer]
+  # Content is maintained in this repository and may use <details>.
+  unsafe = true
+[markup.goldmark.parser.attribute]
+  block = true
+[markup.highlight]
+  noClasses = false
+  lineNos = false
+[markup.tableOfContents]
+  startLevel = 2
+  endLevel = 3
+
+# The annotated example configuration is embedded from the repository
+# root, so the configuration reference can never drift from it.
+[[module.mounts]]
+  source = "../mailfire.example.conf"
+  target = "assets/config/mailfire.example.conf"
+[[module.mounts]]
+  source = "assets"
+  target = "assets"
+[[module.mounts]]
+  source = "content"
+  target = "content"
+[[module.mounts]]
+  source = "static"
+  target = "static"
+[[module.mounts]]
+  source = "layouts"
+  target = "layouts"

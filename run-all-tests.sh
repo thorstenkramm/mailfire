@@ -58,6 +58,14 @@ if command -v govulncheck >/dev/null 2>&1; then
   govulncheck ./...
 fi
 
+if command -v hugo >/dev/null 2>&1 && command -v mandoc >/dev/null 2>&1; then
+  echo "Building documentation site ..."
+  # Same build as .github/workflows/docs.yml; fails on any warning or broken link.
+  make docs
+else
+  echo "Skipping documentation site build (needs hugo and mandoc) ..."
+fi
+
 echo "Running Trivy vulnerability scan ..."
 trivy fs . --skip-dirs .agents --ignorefile .trivyignore.yaml
 

@@ -30,7 +30,7 @@ type envBinding struct {
 // environment overrides. defer.defer (a boolean) and the template
 // name/file pair are handled separately in applyEnv. Adding a
 // configuration key means adding a row here and documenting the variable
-// in docs/environment.md, docs/mailfire.1, and README.md.
+// in docs/content/reference/environment.md and docs/mailfire.1.
 var envBindings = []envBinding{
 	{"MAILFIRE_MAILGUN_API_KEY", "mailgun.api_key", func(r *rawConfig, v string) { r.Mailgun.APIKey = v }},
 	{"MAILFIRE_MAILGUN_REGION", "mailgun.region", func(r *rawConfig, v string) { r.Mailgun.Region = v }},

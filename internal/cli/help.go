@@ -2,7 +2,7 @@ package cli
 
 import "strings"
 
-const moreHelp = "\nMore help: https://github.com/thorstenkramm/mailfire\n"
+const moreHelp = "\nMore help: https://mailfire.system42.io\n"
 
 // usageText is the top-level help printed by "mailfire --help". It must
 // match, word for word, the help block under "full usage documentation"

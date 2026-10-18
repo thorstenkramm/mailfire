@@ -1,4 +1,9 @@
-# JSON output reference
+---
+title: JSON output
+description: "The machine-readable result documents of every command: fields, outcomes, error codes, and compatibility rules."
+weight: 40
+icon: code
+---
 
 Add `--json` to `send`, `resend` (including `--list`), `queue list|show|delete|stats`, `validate`,
 `auth status|refresh|logout`, `version`, or `export-templates` to get a machine-readable result. The documents are

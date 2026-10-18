@@ -1,0 +1,43 @@
+<header class="mf-header" uk-sticky="sel-target: .uk-navbar-container; cls-active: mf-header-stuck">
+  <nav class="uk-navbar-container mf-navbar" aria-label="Main">
+    <div class="uk-container uk-container-expand">
+      <div uk-navbar="mode: click">
+        <div class="uk-navbar-left">
+          {{- if not .IsHome }}
+          <button class="uk-navbar-toggle mf-icon-button uk-hidden@m" type="button" uk-toggle="target: #mf-offcanvas"
+                  aria-label="Open navigation" aria-controls="mf-offcanvas"><span uk-navbar-toggle-icon></span></button>
+          {{- end }}
+          <a class="uk-navbar-item uk-logo mf-logo" href="{{ "/" | relURL }}" aria-label="Mailfire home">
+            <img src="{{ "images/mark-64.png" | relURL }}" width="32" height="32" alt="">
+            <span>mailfire</span>
+          </a>
+          <ul class="uk-navbar-nav uk-visible@m">
+            {{- $current := . }}
+            {{- range site.Menus.main }}
+            {{- $active := or ($current.IsMenuCurrent "main" .) ($current.HasMenuCurrent "main" .) (and .Page ($current.IsDescendant .Page)) }}
+            <li{{ if $active }} class="uk-active"{{ end }}><a href="{{ .URL }}"{{ if $active }} aria-current="page"{{ end }}>{{ .Name }}</a></li>
+            {{- end }}
+          </ul>
+        </div>
+        <div class="uk-navbar-right">
+          <div class="uk-navbar-item mf-search" role="search">
+            <form class="uk-search uk-search-default" action="#" onsubmit="return false">
+              <span uk-search-icon></span>
+              <input id="mf-search-input" class="uk-search-input" type="search" placeholder="Search docs" aria-label="Search the documentation"
+                     role="combobox" aria-autocomplete="list" aria-haspopup="listbox"
+                     autocomplete="off" spellcheck="false" aria-controls="mf-search-results" aria-expanded="false">
+              <kbd class="mf-kbd uk-visible@s" aria-hidden="true">/</kbd>
+            </form>
+            <div id="mf-search-results" class="mf-search-results" role="listbox" hidden></div>
+          </div>
+          <button class="uk-navbar-item mf-icon-button mf-theme-toggle" type="button" aria-label="Toggle dark mode" title="Toggle dark mode">
+            <span class="mf-when-light" uk-icon="icon: mf-moon"></span><span class="mf-when-dark" uk-icon="icon: mf-sun"></span>
+          </button>
+          <a class="uk-navbar-item mf-icon-button uk-visible@s" href="{{ site.Params.repository }}" aria-label="Mailfire on GitHub" title="Mailfire on GitHub">
+            <span uk-icon="icon: github"></span>
+          </a>
+        </div>
+      </div>
+    </div>
+  </nav>
+</header>

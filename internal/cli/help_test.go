@@ -6,34 +6,48 @@ import (
 	"testing"
 )
 
-const readmePath = "../../README.md"
+// cliDocPath is the command-line reference of the documentation site. Its
+// help blocks are the documentation of record, so they are pinned to the
+// program's output.
+const cliDocPath = "../../docs/content/reference/cli.md"
 
-// readmeHelpBlock extracts the text block that follows "$ mailfire --help"
-// in README.md, as the text mailfire --help must print. Line endings are
-// normalized to LF, so a CRLF checkout (core.autocrlf) still matches.
-func readmeHelpBlock(t *testing.T) string {
+// helpBlock is one "$ mailfire <args>" text block of the CLI reference.
+type helpBlock struct {
+	args []string
+	want string
+}
+
+// docHelpBlocks extracts every text block that starts with "$ mailfire",
+// with the command's arguments and the text it must print. Line endings
+// are normalized to LF, so a CRLF checkout (core.autocrlf) still matches.
+func docHelpBlocks(t *testing.T) []helpBlock {
 	t.Helper()
-	data, err := os.ReadFile(readmePath)
+	data, err := os.ReadFile(cliDocPath)
 	if err != nil {
-		t.Skipf("README.md not available (%v); skipping docs pin test", err)
+		t.Skipf("%s not available (%v); skipping docs pin test", cliDocPath, err)
 	}
-	const marker = "```text\n$ mailfire --help\n"
+	const marker = "```text\n$ mailfire "
 	s := strings.ReplaceAll(string(data), "\r\n", "\n")
-	start := strings.Index(s, marker)
-	if start < 0 {
-		t.Fatalf("README.md has no %q block", marker)
+	var blocks []helpBlock
+	for {
+		start := strings.Index(s, marker)
+		if start < 0 {
+			return blocks
+		}
+		s = s[start+len(marker):]
+		cmd, rest, ok := strings.Cut(s, "\n")
+		end := strings.Index(rest, "```")
+		if !ok || end < 0 {
+			t.Fatalf("%s: help block %q is not terminated", cliDocPath, cmd)
+		}
+		blocks = append(blocks, helpBlock{args: strings.Fields(cmd), want: rest[:end]})
+		s = rest[end:]
 	}
-	s = s[start+len(marker):]
-	end := strings.Index(s, "```")
-	if end < 0 {
-		t.Fatal("README.md help block is not terminated")
-	}
-	return s[:end]
 }
 
 // trimTrailingSpace removes trailing blanks from every line. Editors
 // commonly add or strip them in Markdown, and they are invisible in the
-// rendered README, so they must not decide the comparison.
+// rendered page, so they must not decide the comparison.
 func trimTrailingSpace(s string) string {
 	lines := strings.Split(s, "\n")
 	for i, l := range lines {
@@ -42,29 +56,50 @@ func trimTrailingSpace(s string) string {
 	return strings.Join(lines, "\n")
 }
 
-func TestUsageMatchesREADME(t *testing.T) {
-	want := trimTrailingSpace(readmeHelpBlock(t))
-	for _, args := range [][]string{{"--help"}, {"-h"}} {
-		code, stdout, stderr := run(t, args...)
-		if code != ExitOK {
-			t.Errorf("Run(%v) = exit %d, want %d", args, code, ExitOK)
+// TestHelpMatchesDocs pins every help text in the CLI reference to the
+// program's output, and requires the reference to cover every command.
+func TestHelpMatchesDocs(t *testing.T) {
+	blocks := docHelpBlocks(t)
+	documented := map[string]bool{}
+	for _, b := range blocks {
+		documented[strings.Join(b.args, " ")] = true
+		code, stdout, stderr := run(t, b.args...)
+		if code != ExitOK || stderr != "" {
+			t.Errorf("mailfire %s: exit %d, stderr %q", strings.Join(b.args, " "), code, stderr)
 		}
-		if trimTrailingSpace(stdout) != want {
-			t.Errorf("Run(%v) output differs from the README help block\n--- README ---\n%s\n--- mailfire ---\n%s", args, want, stdout)
+		if trimTrailingSpace(stdout) != trimTrailingSpace(b.want) {
+			t.Errorf("mailfire %s output differs from %s\n--- docs ---\n%s\n--- mailfire ---\n%s",
+				strings.Join(b.args, " "), cliDocPath, b.want, stdout)
 		}
-		if stderr != "" {
-			t.Errorf("Run(%v): stderr = %q, want empty", args, stderr)
+	}
+	for _, cmd := range []string{"--help", "send --help", "validate --help", "auth --help", "resend --help",
+		"queue --help", "export-templates --help", "version --help"} {
+		if !documented[cmd] {
+			t.Errorf("%s does not document \"mailfire %s\"", cliDocPath, cmd)
 		}
+	}
+	// The short form prints the same text as the documented long form.
+	if code, short, _ := run(t, "-h"); code != ExitOK || short != mustRun(t, "--help") {
+		t.Error("mailfire -h differs from mailfire --help")
 	}
 }
 
-// TestUsageMatchesREADME ignores trailing blanks, so pin them here: the
+func mustRun(t *testing.T, args ...string) string {
+	t.Helper()
+	code, stdout, stderr := run(t, args...)
+	if code != ExitOK {
+		t.Fatalf("mailfire %v: exit %d: %s", args, code, stderr)
+	}
+	return stdout
+}
+
+// TestHelpMatchesDocs ignores trailing blanks, so pin them here: the
 // help texts themselves must not carry any, and must end in a newline.
 func TestHelpTextsAreClean(t *testing.T) {
 	for name, text := range map[string]string{
 		"usageText": usageText, "sendUsage": sendUsage, "resendUsage": resendUsage,
 		"validateUsage": validateUsage, "versionUsage": versionUsage, "queueUsage": queueUsage,
-		"exportTemplatesUsage": exportTemplatesUsage,
+		"exportTemplatesUsage": exportTemplatesUsage, "authUsage": authUsage,
 	} {
 		if text != trimTrailingSpace(text) {
 			t.Errorf("%s has trailing whitespace", name)

@@ -72,7 +72,7 @@ mailfire auth refresh --provider gmail
 ```
 
 This is also the real-account onboarding run that task 30 requires before release. Include the headless path:
-`mailfire auth login --provider gmail --no-browser --port 8765` over an SSH tunnel (see [Gmail provider](gmail.md)).
+`mailfire auth login --provider gmail --no-browser --port 8765` over an SSH tunnel (see [Gmail provider](../content/guides/gmail.md)).
 
 While the app is in Testing, refresh tokens expire after 7 days. That is expected and does not happen in
 production.
@@ -105,5 +105,5 @@ Until verification passes, users see an "unverified app" warning and at most 100
 1. Put the client ID into `gmail.BuiltinClientID` in `internal/gmail/auth.go`.
 2. If Phase 3 only worked with `MAILFIRE_GMAIL_CLIENT_SECRET` set, build the secret in as well. The code
    currently reads the secret only from that variable, so this needs a small addition.
-3. Remove the "Availability" note from [docs/gmail.md](gmail.md).
+3. Remove the "Availability" note from [docs/content/guides/gmail.md](../content/guides/gmail.md).
 4. Set task 30 to `done` in `tmp/tasks/30-gmail-provider.md` and `tmp/tasks/README.md`.

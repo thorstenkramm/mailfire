@@ -1,4 +1,9 @@
-# Templates
+---
+title: Templates
+description: Choose one of four built-in email templates, or export and customize them, or write your own.
+weight: 30
+icon: thumbnails
+---
 
 `--md` and `--html` bodies are wrapped in one of four built-in templates. There are two layouts, `card` and `plain`, and
 each comes in a sans-serif and a serif variant.
@@ -16,7 +21,7 @@ each comes in a sans-serif and a serif variant.
 mailfire --md --template plain-serif --to user@example.com --subject "Nightly backup finished" --file report.md
 ```
 
-To change the default, set `template` in the `[sending]` section of `mailfire.conf`:
+To change the default, set `template` in the `[sending]` section of the [configuration file](../reference/configuration.md):
 
 ```toml
 [sending]
@@ -42,13 +47,13 @@ and `{{html .Preheader}}`; insert HTML with `{{.Body}}` and `{{.Footer}}`.
 Use `{{with .Footer}}...{{.}}...{{end}}` for optional blocks. Outlook conditional comments
 are preserved, and CSS is inlined just as for built-in templates.
 
-While editing, render a local preview instead of sending test emails. It needs no Mailgun credentials:
+While editing, render a local preview instead of sending test emails. It needs no provider credentials:
 
 ```shell
 mailfire --md --template-file ./my-templates/card.html --file report.md --preview report.html
 ```
 
-See [Local preview](README.md#local-preview) for details.
+See [Local preview](preview.md) for details.
 
 To configure a custom default:
 
@@ -102,16 +107,16 @@ All screenshots show the same message, sent with `--md`, `--preheader` and `--fo
 
 ### card
 
-<img src="docs/templates/card.png" width="760" alt="The card template: a white card with sans-serif text on a gray page, with a table and five colored alerts">
+![The card template: a white card with sans-serif text on a gray page, with a table and five colored alerts](/images/templates/card.png)
 
 ### card-serif
 
-<img src="docs/templates/card-serif.png" width="760" alt="The card-serif template: a white card with serif text on a warm gray page, alerts with small uppercase titles">
+![The card-serif template: a white card with serif text on a warm gray page, alerts with small uppercase titles](/images/templates/card-serif.png)
 
 ### plain
 
-<img src="docs/templates/plain.png" width="760" alt="The plain template: left-aligned sans-serif text on white, alerts with a colored left bar">
+![The plain template: left-aligned sans-serif text on white, alerts with a colored left bar](/images/templates/plain.png)
 
 ### plain-serif
 
-<img src="docs/templates/plain-serif.png" width="760" alt="The plain-serif template: left-aligned serif text on white, alerts with italic titles">
+![The plain-serif template: left-aligned serif text on white, alerts with italic titles](/images/templates/plain-serif.png)
