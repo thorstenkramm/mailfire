@@ -524,14 +524,19 @@ func TestDedupResendAndSendRace(t *testing.T) {
 		notify(t, m, c0(), cfg)
 		status.Store(http.StatusOK)
 
+		// One clock for both, like processes sharing the system clock.
+		// Separate frozen clocks could put the send's "now" a moment
+		// before the resend's delivery, which the cooldown check rightly
+		// treats as a clock that moved backward.
+		clock := c0()
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			if code, _, stderr := runAt(t, m, c0(), "resend", "--force", "-c", cfg); code != ExitOK {
+			if code, _, stderr := runAt(t, m, clock, "resend", "--force", "-c", cfg); code != ExitOK {
 				t.Errorf("resend: %d %s", code, stderr)
 			}
 		})
 		wg.Go(func() {
-			if code, _, stderr := notify(t, m, c0(), cfg); code != ExitOK {
+			if code, _, stderr := notify(t, m, clock, cfg); code != ExitOK {
 				t.Errorf("send: %d %s", code, stderr)
 			}
 		})
