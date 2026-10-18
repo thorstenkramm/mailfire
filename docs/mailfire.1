@@ -1,6 +1,6 @@
 .TH MAILFIRE 1 "October 17, 2026" "mailfire" "User Commands"
 .SH NAME
-mailfire \- send email from the command line via the Mailgun API
+mailfire \- send email from the command line via Mailgun, Gmail, or SMTP
 .SH SYNOPSIS
 .B mailfire
 .RB [ send ]
@@ -21,6 +21,11 @@ mailfire \- send email from the command line via the Mailgun API
 .RB [ \-\-json ]
 .RB [ \-c
 .IR path ]
+.br
+.B mailfire auth
+.BR login " | " status " | " refresh " | " logout
+.B \-\-provider gmail
+.RI [ flags ]
 .br
 .B mailfire queue
 .BR list " | " stats
@@ -52,7 +57,12 @@ mailfire \- send email from the command line via the Mailgun API
 .BR \-h " | " \-\-help
 .SH DESCRIPTION
 .B mailfire
-is a client for the Mailgun HTTP API that sends email from the command line.
+sends email from the command line through one of three providers,
+selected with
+.BR [sending].provider :
+the Mailgun HTTP API (the default), the Gmail API with send-only OAuth
+authorization, or standard SMTP submission to an existing email provider or
+local relay.
 The message body is read from piped standard input, a regular file with
 .BR \-\-file ,
 or an explicit string with
@@ -63,9 +73,12 @@ are rendered into a built-in, responsive email template or a custom template fil
 Without a subcommand,
 .B send
 is assumed.
-On success the Mailgun message ID is printed to standard output.
+On success the message ID is printed to standard output: Mailgun's or
+Gmail's ID, or for SMTP the Message-ID header Mailfire generated.
+For SMTP, success means the submission server accepted the message (a 250
+reply), not that it reached the recipient's mailbox.
 .PP
-If sending fails because of a network error, a Mailgun server error, or rate
+If sending fails because of a network error, a temporary server error, or rate
 limiting, the composed message is stored for later retrying with
 .B mailfire resend
 (unless deferral is disabled).
@@ -80,9 +93,16 @@ Check, step by step, that the configuration file is found and valid TOML
 (or that
 .B MAILFIRE_*
 environment variables replace it),
-that all mandatory keys are well-formed, and that the API key and domain are
-accepted by Mailgun.
+that all mandatory keys are well-formed, and that the selected provider
+accepts the credentials: Mailgun checks the API key and domain; SMTP connects,
+negotiates TLS, and authenticates without issuing MAIL, RCPT, or DATA (no
+recipient is probed); Gmail checks the stored authorization, refreshing it
+when it is about to expire.
 No mail is sent.
+.TP
+.B auth
+Manage the Gmail authorization; see
+.BR "GMAIL AUTHORIZATION" .
 .TP
 .B resend
 Retry deferred messages, oldest first.
@@ -111,7 +131,7 @@ Print the version, commit, and build date.
 .BI export\-templates " folder"
 Export all four built-in templates as self-contained, editable HTML template files.
 Creates the folder if needed and refuses to overwrite existing template files.
-No configuration or Mailgun credentials are required.
+No configuration or provider credentials are required.
 .PP
 Every subcommand accepts
 .BR \-h " and " \-\-help .
@@ -241,20 +261,29 @@ Attach a file, repeatable.
 .B \-\-test
 Use Mailgun test mode: the API validates the request, but nothing is delivered.
 Test sends are never deferred.
+SMTP and Gmail have no validation-only mode, so
+.B \-\-test
+is a usage error with them rather than a real delivery; use
+.B validate
+or
+.B \-\-preview
+instead.
 .TP
 .B \-\-no\-defer
 Fail immediately instead of storing the message for a later resend.
 .TP
 .BI \-\-timeout " duration"
-Per-request timeout for Mailgun API calls, covering connection setup,
-upload, and response reading.
+Per-request timeout of the selected provider: for Mailgun and Gmail the
+API request (connection setup, upload, response; for Gmail also a token
+refresh), for SMTP the whole connection and transaction (connect, TLS,
+authentication, submission).
 Accepts Go duration syntax such as
 .BR 15s " or " 1m .
-Overrides
+Overrides the provider's
 .B timeout
-in the
-.B [mailgun]
-section of the configuration file; the default is 30 seconds.
+setting
+.RB ( [mailgun] ", " [smtp] ", or " [gmail] );
+the default is 30 seconds.
 .TP
 .BI \-\-dedup\-key " key"
 Skip repeats of this notification: a send with the same key, sending
@@ -302,12 +331,12 @@ Show deferred messages (ID, date, to, subject, size) without sending.
 Ignore the cooldown and backoff.
 With
 .I id
-arguments, also retry messages that Mailgun rejected permanently.
+arguments, also retry messages that were rejected permanently.
 .TP
 .BI \-\-timeout " duration"
-Per-request timeout for each resent message, covering connection setup,
-upload, and response reading. Overrides
-.BR [mailgun].timeout .
+Per-request timeout for each resent message, as for
+.BR send ;
+it overrides the timeout of the provider each message is resent through.
 A run retrying several messages may therefore take longer than a single
 timeout.
 .TP
@@ -356,9 +385,9 @@ nothing.
 .SS Flags of validate
 .TP
 .BI \-\-timeout " duration"
-Per-request timeout for the Mailgun check, covering connection setup and
-response reading. Overrides
-.BR [mailgun].timeout .
+Timeout of the provider check; overrides the provider's
+.B timeout
+setting.
 .TP
 .B \-\-json
 Print the result as one JSON document; see
@@ -369,6 +398,35 @@ Use this configuration file.
 .TP
 .BR \-h ", " \-\-help
 Show help.
+.SS Flags of auth
+.TP
+.B \-\-provider gmail
+The provider to authorize (required).
+.TP
+.B \-\-no\-browser
+login: print the consent URL instead of opening a browser, plus an SSH
+port-forwarding hint.
+.TP
+.BI \-\-port " port"
+login: listen for the OAuth callback on this local port instead of a random
+one, so it can be forwarded over SSH.
+.TP
+.B \-\-manual
+login: read the callback URL from standard input instead of receiving it
+(requires
+.BR \-\-port ).
+.TP
+.BI \-\-timeout " duration"
+Token request timeout; overrides
+.BR [gmail].timeout .
+.TP
+.B \-\-json
+status, refresh, logout: print the result as one JSON document.
+.TP
+.BI \-c ", " \-\-config " path"
+Use this configuration file (only its
+.B [gmail]
+section is read).
 .SS Flags of version and export-templates
 .TP
 .B \-\-json
@@ -439,9 +497,19 @@ A
 run retrying several messages may take longer than a single timeout.
 .SS [sending]
 .TP
+.B provider
+String, optional, default
+.BR mailgun .
+Either
+.B mailgun
+or
+.BR smtp .
+Existing configurations continue using Mailgun unless this is set to SMTP.
+.TP
 .B domain
 String, mandatory.
-The sending domain as configured at Mailgun.
+The sending domain as configured at Mailgun, or the stable Mailfire sending
+and deduplication domain for SMTP.
 .TP
 .B from
 String, optional.
@@ -476,6 +544,67 @@ Mutually exclusive with a nonempty
 .BR template .
 Either template flag overrides this setting.
 A leading ~ is expanded; relative paths use the current working directory.
+.SS [smtp]
+Used only when
+.B [sending].provider
+is
+.BR smtp .
+No Mailgun API key or domain registration is required for SMTP submission.
+.TP
+.B host
+SMTP server hostname, mandatory for SMTP.
+.TP
+.B port
+SMTP server port from 1 through 65535, mandatory for SMTP.
+.TP
+.B security
+Mandatory for SMTP:
+.B tls
+for implicit TLS (normally port 465),
+.B starttls
+for required STARTTLS (normally port 587), or
+.B none
+only for an explicitly trusted local plaintext relay. Mailfire never falls
+back to plaintext when STARTTLS is unavailable or fails.
+.TP
+.BR username ", " password
+Optional SMTP username/password pair. Both must be set together. Passwords
+are never stored in deferred messages, logs, diagnostics, or JSON output.
+Credentials are refused for
+.BR "security = none" .
+Common PLAIN, LOGIN, and CRAM-MD5 mechanisms are selected only after TLS.
+.TP
+.B timeout
+Optional positive duration. It covers connection setup, TLS, authentication,
+and SMTP submission. It is overridden by
+.BR \--timeout .
+.PP
+SMTP acceptance (a 250 response after DATA) confirms only that the submission
+server accepted the transaction; it does not prove final recipient delivery.
+If any recipient is rejected at RCPT TO, the transaction is aborted before
+DATA, so nobody receives a partial send; the error names the recipient.
+Account setup is provider-specific: Gmail and other large providers usually
+require an app password (or OAuth, see
+.BR [gmail] );
+an ordinary account password is not a supported shortcut.
+.SS [gmail]
+Used by
+.B [sending].provider
+.B gmail
+and by
+.BR "mailfire auth" .
+.TP
+.B credentials
+Optional path of the owner-only credential file;
+default
+.I $HOME/.config/mailfire/gmail-credentials.json
+.RI ( %APPDATA%\emailfire\egmail\-credentials.json
+on Windows).
+.TP
+.B timeout
+Optional positive duration for Gmail API and token requests;
+overridden by
+.BR \-\-timeout .
 .SS [logging]
 .TP
 .B logfile
@@ -618,6 +747,50 @@ same message twice.
 Exactly-once delivery is still not guaranteed: when a request times out
 or the connection drops after Mailgun accepted the message, it stays
 deferred and a later resend may deliver it again.
+.PP
+A deferred message records the provider and the non-secret account it was
+sent through (the Mailgun domain; the SMTP username, host, port, and security
+mode; the Google account ID) and is resent through that provider with its
+current credentials, even when the default provider changed meanwhile.
+SMTP messages also keep their envelope (Bcc recipients included) and their
+Message-ID, which stays the same on every retry.
+Credentials are never stored with deferred messages.
+If the provider is no longer configured or a different account is configured,
+the message is not attempted; it stays queued with unchanged retry state and is
+resent normally once the configuration is restored.
+.PP
+Duplicates are possible with every provider: when the connection drops or
+times out after the server accepted the message (for SMTP, a lost final reply
+after DATA), the outcome is unknown, the message stays deferred, and a later
+resend may deliver it again.
+.SH GMAIL AUTHORIZATION
+.B mailfire auth login \-\-provider gmail
+opens Google's consent page (installed-app loopback flow with PKCE and state
+validation) and stores the access token, its expiry, and the refresh token in
+the credential file (mode 0600).
+Only the
+.B gmail.send
+scope is requested, plus
+.BR openid ,
+which yields only an opaque account ID used to bind deferred messages to the
+account; no mailbox or profile access is requested.
+Access tokens are refreshed automatically before sends; sends and refreshes
+never open a browser.
+.PP
+.B auth refresh
+exchanges the refresh token even when the cached access token is still
+valid, without sending mail or touching the queue.
+Google may expire refresh tokens unused for six months; schedule a monthly
+refresh for infrequent senders under the same user as the sends.
+Refreshing cannot prevent revocation, password or policy changes, or the
+seven-day limit of OAuth apps in testing mode.
+.B auth status
+shows whether credentials exist,
+.B auth logout
+removes them locally (it does not revoke Google's grant).
+.PP
+Gmail sends only as the authenticated account or its configured send-as
+aliases and enforces its own sending and size limits.
 .SH LOCAL PREVIEW
 .BI "send \-\-preview " path
 renders the message body through the same pipeline as a send (Markdown,
@@ -797,8 +970,9 @@ Empty or whitespace-only variables are treated as unset and never clear a
 file setting or default.
 .PP
 When no configuration file is found and at least one variable is set,
-the environment is the only source; it must then supply the API key,
-region, and domain.
+the environment is the only source; it must then supply the selected
+provider's required settings (Mailgun: API key, region, and domain; SMTP:
+host, port, security, and domain; Gmail: nothing beyond the provider).
 A file given with
 .B \-\-config
 must still exist and be valid.
@@ -812,6 +986,36 @@ The
 .B [mailgun]
 settings.
 .TP
+.B MAILFIRE_SMTP_HOST
+.TQ
+.B MAILFIRE_SMTP_PORT
+.TQ
+.B MAILFIRE_SMTP_SECURITY
+.TQ
+.B MAILFIRE_SMTP_USERNAME
+.TQ
+.B MAILFIRE_SMTP_PASSWORD
+.TQ
+.B MAILFIRE_SMTP_TIMEOUT
+The
+.B [smtp]
+settings.
+.TP
+.B MAILFIRE_GMAIL_CREDENTIALS
+.TQ
+.B MAILFIRE_GMAIL_TIMEOUT
+The
+.B [gmail]
+settings.
+.TP
+.B MAILFIRE_GMAIL_CLIENT_ID
+.TQ
+.B MAILFIRE_GMAIL_CLIENT_SECRET
+Developer override of the built-in Google OAuth client; not needed for
+normal use.
+.TP
+.B MAILFIRE_SENDING_PROVIDER
+.TQ
 .B MAILFIRE_SENDING_DOMAIN
 .TQ
 .B MAILFIRE_SENDING_FROM
@@ -871,7 +1075,7 @@ overrides the environment.
 .PP
 Errors name the variable that supplied an invalid value.
 .B mailfire validate
-reports where settings came from; the API key is never shown.
+reports where settings came from; credentials are never shown.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -884,7 +1088,9 @@ Usage error: missing flags, unknown subcommand, conflicting formats.
 Configuration error: missing file, invalid TOML, missing or invalid keys.
 .TP
 .B 3
-Authentication error: the API key was rejected (401 or 403 from Mailgun).
+Authentication error: credentials were rejected (Mailgun 401 or 403, SMTP
+535), or Gmail is not authorized (not logged in, or the authorization was
+revoked or expired).
 .TP
 .B 4
 Sending failed and the message was deferred for a later
@@ -896,14 +1102,18 @@ Sending failed and the message was not deferred
 or
 .BR "defer = false" ).
 .PP
-Exit status 5 is also used when Mailgun rejects a message permanently
-(any other 4xx response), when a
+Exit status 5 is also used when the provider rejects a message permanently
+(any other Mailgun or Gmail 4xx response, an SMTP 5xx reply such as a
+rejected recipient, missing STARTTLS, or an untrusted certificate), when a
 .B \-\-test
 send fails with a retryable error (test sends are never deferred),
 and when the message cannot be stored in the defer directory.
 .B validate
-exits with 4 when Mailgun cannot be reached reliably (the check can be
+exits with 4 when the provider cannot be reached reliably (the check can be
 retried later), and with 2 when Mailgun does not know the domain.
+.B auth
+exits with 3 when Gmail is not authorized and 4 for a transient token
+endpoint failure.
 .B resend
 returns the most severe outcome of all attempts, ranked 3, 5, 4, 0;
 a message that fails with 4 stays deferred.
@@ -1012,6 +1222,11 @@ Configuration file locations on Linux and macOS, in search order.
 .I %PROGRAMDATA%\emailfire\emailfire.conf
 Configuration file locations on Windows, after
 .IR .\e.mailfire.conf .
+.TP
+.I $HOME/.config/mailfire/gmail-credentials.json
+Default Gmail credential file
+.RI ( %APPDATA%\emailfire\egmail\-credentials.json
+on Windows).
 .TP
 .I $HOME/.local/share/mailfire
 Default directory for deferred messages

@@ -54,6 +54,51 @@ region = "us"
 domain = "mg.example.com"
 `
 
+func TestSMTPConfigurationDoesNotRequireMailgun(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), `
+[sending]
+provider = "smtp"
+domain = "example.com"
+from = "Ops <ops@example.com>"
+
+[smtp]
+host = "smtp.example.com"
+port = 587
+security = "starttls"
+username = "user"
+password = "smtp-secret"
+timeout = "12s"
+`)
+	var stderr bytes.Buffer
+	cfg, err := Load(path, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Provider != "smtp" || cfg.SMTPHost != "smtp.example.com" || cfg.SMTPPort != 587 || cfg.SMTPTimeout != 12*time.Second {
+		t.Fatalf("SMTP config = %#v", cfg)
+	}
+}
+
+func TestSMTPRejectsPlaintextCredentials(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), `
+[sending]
+provider = "smtp"
+domain = "example.com"
+
+[smtp]
+host = "127.0.0.1"
+port = 2525
+security = "none"
+username = "user"
+password = "smtp-secret"
+`)
+	var stderr bytes.Buffer
+	_, err := Load(path, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "plaintext SMTP") || strings.Contains(err.Error(), "smtp-secret") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 // writeConfig writes content to <dir>/mailfire.conf with mode 0600 and
 // returns the path.
 func writeConfig(t *testing.T, dir, content string) string {
@@ -634,5 +679,96 @@ func TestSearchPathsSkipUnsetEnv(t *testing.T) {
 func TestParseSizeOverflow(t *testing.T) {
 	if _, err := parseSize("9999999999999G"); err == nil {
 		t.Error("parseSize overflow: want error, got nil")
+	}
+}
+
+func TestParseErrorWithholdsSMTPPassword(t *testing.T) {
+	const secret = "Sup3rS3cret"
+	path := writeConfig(t, t.TempDir(), "[smtp]\npassword = "+secret+"\n")
+	var stderr bytes.Buffer
+	_, err := Load(path, &stderr)
+	if err == nil {
+		t.Fatal("expected a parse error")
+	}
+	// go-toml quotes the first offending character ('S') of an unquoted
+	// value; neither it nor the value may appear.
+	if strings.Contains(err.Error(), "'S'") || strings.Contains(err.Error(), secret) {
+		t.Fatalf("parse error leaks the password: %v", err)
+	}
+	if !strings.Contains(err.Error(), "smtp.password") || !strings.Contains(err.Error(), "details withheld") {
+		t.Fatalf("error = %v, want smtp.password with details withheld", err)
+	}
+}
+
+func TestSMTPPortEnvironmentValidation(t *testing.T) {
+	raw := rawConfig{}
+	_, err := applyEnv(&raw, func(k string) string {
+		if k == "MAILFIRE_SMTP_PORT" {
+			return "submission"
+		}
+		return ""
+	})
+	if err == nil || !strings.Contains(err.Error(), "MAILFIRE_SMTP_PORT") || !strings.Contains(err.Error(), "invalid port") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := applyEnv(&raw, func(k string) string {
+		if k == "MAILFIRE_SMTP_PORT" {
+			return "2525"
+		}
+		return ""
+	}); err != nil || raw.SMTP.Port != 2525 {
+		t.Fatalf("port = %d, err = %v", raw.SMTP.Port, err)
+	}
+}
+
+func TestCheckProviderValidatesNonDefaultSections(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), minimalTOML+"\n[smtp]\nhost = \"relay.example.com\"\nport = 587\n")
+	var stderr bytes.Buffer
+	cfg, err := Load(path, &stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.CheckProvider(ProviderMailgun); err != nil {
+		t.Errorf("mailgun: %v", err)
+	}
+	if err := cfg.CheckProvider(ProviderSMTP); err == nil || !strings.Contains(err.Error(), "smtp.security") {
+		t.Errorf("smtp without security: %v", err)
+	}
+	if err := cfg.CheckProvider("pigeon"); err == nil {
+		t.Error("unknown provider accepted")
+	}
+}
+
+func TestTimeoutOverrideDiscardsAllProviderTimeouts(t *testing.T) {
+	path := writeConfig(t, t.TempDir(), minimalTOML+"\n[smtp]\ntimeout = \"0s\"\n\n[gmail]\ntimeout = \"bogus\"\n")
+	var stderr bytes.Buffer
+	if _, err := Load(path, &stderr); err == nil {
+		t.Fatal("invalid provider timeouts accepted without --timeout")
+	}
+	if _, err := LoadWith(path, &stderr, Overrides{Timeout: true}); err != nil {
+		t.Fatalf("--timeout must discard file timeouts: %v", err)
+	}
+}
+
+func TestLoadGmailReadsOnlyGmailSettings(t *testing.T) {
+	dir := t.TempDir()
+	// The rest of the file is incomplete (no Mailgun key): auth must
+	// still work.
+	path := writeConfig(t, dir, "[sending]\nprovider = \"gmail\"\n\n[gmail]\ncredentials = \"~/tok.json\"\ntimeout = \"9s\"\n")
+	var stderr bytes.Buffer
+	cfg, err := loadGmail(path, &stderr, runtime.GOOS, func(k string) string {
+		if k == "HOME" {
+			return dir
+		}
+		return ""
+	}, Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GmailCredentials != filepath.Join(dir, "tok.json") || cfg.GmailTimeout != 9*time.Second {
+		t.Fatalf("cfg = %#v", cfg)
+	}
+	if _, err := loadGmail(filepath.Join(dir, "missing.conf"), &stderr, runtime.GOOS, func(string) string { return "" }, Overrides{}); err == nil {
+		t.Fatal("missing -c file accepted")
 	}
 }

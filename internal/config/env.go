@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -35,6 +36,14 @@ var envBindings = []envBinding{
 	{"MAILFIRE_MAILGUN_REGION", "mailgun.region", func(r *rawConfig, v string) { r.Mailgun.Region = v }},
 	{"MAILFIRE_MAILGUN_TIMEOUT", "mailgun.timeout", func(r *rawConfig, v string) { r.Mailgun.Timeout = &v }},
 	{"MAILFIRE_SENDING_DOMAIN", "sending.domain", func(r *rawConfig, v string) { r.Sending.Domain = v }},
+	{"MAILFIRE_SENDING_PROVIDER", "sending.provider", func(r *rawConfig, v string) { r.Sending.Provider = v }},
+	{"MAILFIRE_GMAIL_CREDENTIALS", "gmail.credentials", func(r *rawConfig, v string) { r.Gmail.Credentials = v }},
+	{"MAILFIRE_GMAIL_TIMEOUT", "gmail.timeout", func(r *rawConfig, v string) { r.Gmail.Timeout = &v }},
+	{"MAILFIRE_SMTP_HOST", "smtp.host", func(r *rawConfig, v string) { r.SMTP.Host = v }},
+	{"MAILFIRE_SMTP_SECURITY", "smtp.security", func(r *rawConfig, v string) { r.SMTP.Security = v }},
+	{"MAILFIRE_SMTP_USERNAME", "smtp.username", func(r *rawConfig, v string) { r.SMTP.Username = v }},
+	{"MAILFIRE_SMTP_PASSWORD", "smtp.password", func(r *rawConfig, v string) { r.SMTP.Password = v }},
+	{"MAILFIRE_SMTP_TIMEOUT", "smtp.timeout", func(r *rawConfig, v string) { r.SMTP.Timeout = &v }},
 	{"MAILFIRE_SENDING_FROM", "sending.from", func(r *rawConfig, v string) { r.Sending.From = v }},
 	{"MAILFIRE_LOGGING_LOGFILE", "logging.logfile", func(r *rawConfig, v string) { r.Logging.Logfile = v }},
 	{"MAILFIRE_LOGGING_LOGLEVEL", "logging.loglevel", func(r *rawConfig, v string) { r.Logging.Level = v }},
@@ -52,15 +61,16 @@ const (
 	envDeferBool    = "MAILFIRE_DEFER_DEFER"
 	envTemplate     = "MAILFIRE_SENDING_TEMPLATE"
 	envTemplateFile = "MAILFIRE_SENDING_TEMPLATE_FILE"
+	envSMTPPort     = "MAILFIRE_SMTP_PORT"
 )
 
 // envNames returns every documented MAILFIRE_* variable.
 func envNames() []string {
-	names := make([]string, 0, len(envBindings)+3)
+	names := make([]string, 0, len(envBindings)+4)
 	for _, b := range envBindings {
 		names = append(names, b.env)
 	}
-	return append(names, envDeferBool, envTemplate, envTemplateFile)
+	return append(names, envDeferBool, envTemplate, envTemplateFile, envSMTPPort)
 }
 
 // envActive reports whether any documented MAILFIRE_* variable carries a
@@ -106,6 +116,17 @@ func applyEnv(raw *rawConfig, getenv func(string) string) (map[string]string, er
 		}
 		raw.Defer.Defer = &b
 		sources["defer.defer"] = envDeferBool
+	}
+
+	// smtp.port is a TOML integer, so the environment value is parsed
+	// here and a malformed one names the variable.
+	if v := get(envSMTPPort); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 65535 {
+			return nil, fmt.Errorf("config: environment variable %s: invalid port %q: must be a number between 1 and 65535", envSMTPPort, v)
+		}
+		raw.SMTP.Port = n
+		sources["smtp.port"] = envSMTPPort
 	}
 
 	if err := applyTemplateEnv(raw, getenv, sources); err != nil {

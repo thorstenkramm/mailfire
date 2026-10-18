@@ -7,11 +7,13 @@ const moreHelp = "\nMore help: https://github.com/thorstenkramm/mailfire\n"
 // usageText is the top-level help printed by "mailfire --help". It must
 // match, word for word, the help block under "full usage documentation"
 // in README.md and PRD §7; TestUsageMatchesREADME pins them together.
-const usageText = `mailfire — send email from the command line via the Mailgun API
+const usageText = `mailfire — send email from the command line via Mailgun, Gmail, or SMTP
 
 Usage:
   mailfire [send] [flags]     compose and send an email (default)
-  mailfire validate           check config and Mailgun credentials
+  mailfire validate           check configuration and provider credentials
+  mailfire auth login|status|refresh|logout --provider gmail
+                              manage Gmail OAuth authorization
   mailfire resend [--list | --force | <id>...]
                               retry deferred messages
   mailfire queue list|show|delete|stats
@@ -36,9 +38,9 @@ Flags (send):
   --preheader <txt>  inbox preview text (HTML formats only)
   --footer <path>    HTML fragment appended as footer (HTML formats only)
   --attach <path>    attach a file, repeatable
-  --test             use Mailgun test mode: validate the request, deliver nothing
+  --test             Mailgun test mode: validate only (rejected for SMTP and Gmail)
   --no-defer         fail immediately instead of deferring on error
-  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides provider timeout
   --dedup-key <key>  skip repeats of this notification within the cooldown
   --cooldown <dur>   suppression window for --dedup-key (default 1h)
   --preview <path>   write the rendered HTML to <path> (- for stdout); send nothing
@@ -56,7 +58,7 @@ Compose and send an email. Read piped stdin unless --file or --message is given.
 Terminal stdin is never read. An empty body requires at least one attachment.
 Sender and recipient domains must be dotted DNS names (no DNS lookup).
 
-With --preview, render the body locally instead of sending: no Mailgun
+With --preview, render the body locally instead of sending: no provider
 credentials, recipients, sender, or subject are needed, and nothing is sent,
 deferred, deduplicated, or logged. Local Markdown images are embedded.
 
@@ -78,7 +80,7 @@ Flags (resend):
   --list             show deferred messages (ID, date, to, subject, size)
   --force            ignore the cooldown and backoff; with <id>, also retry
                      permanently rejected messages
-  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides provider timeout
   --json             print the result (or the --list listing) as one JSON document
   -c, --config <p>   use this config file
   -h, --help         show help
@@ -110,10 +112,10 @@ const validateUsage = `Usage:
   mailfire validate [flags]
 
 Check the configuration (config file and MAILFIRE_* environment variables)
-and the Mailgun credentials without sending mail.
+and the selected provider credentials without sending mail.
 
 Flags (validate):
-  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides provider timeout
   --json             print the result as one JSON document
   -c, --config <p>   use this config file
   -h, --help         show help
@@ -128,5 +130,32 @@ Show version, commit, and build date.
 
 Flags (version):
   --json             print the result as one JSON document
+  -h, --help         show help
+` + moreHelp
+
+// authUsage is printed by "mailfire auth --help" and on auth usage errors.
+const authUsage = `Usage:
+  mailfire auth login --provider gmail [--no-browser] [--port <port>] [--manual]
+  mailfire auth status --provider gmail
+  mailfire auth refresh --provider gmail [--timeout <dur>]
+  mailfire auth logout --provider gmail
+
+Authorize Mailfire to send through Gmail (send-only access). login opens the
+consent page in a browser; refresh and sends never do. On a headless host use
+--no-browser and forward the callback port over SSH, or --manual when
+forwarding is unavailable.
+
+refresh exchanges the refresh token even when the cached token is still valid,
+without sending mail; schedule it monthly for infrequent senders. logout
+removes only the local credentials; revoke access in your Google Account.
+
+Flags (auth):
+  --provider gmail   provider to authorize (required)
+  --no-browser       login: print the consent URL instead of opening a browser
+  --port <port>      login: fixed callback port (for SSH forwarding)
+  --manual           login: paste the callback URL (requires --port)
+  --timeout <dur>    token request timeout (e.g. 15s); overrides gmail.timeout
+  --json             status, refresh, logout: print the result as one JSON document
+  -c, --config <p>   use this config file
   -h, --help         show help
 ` + moreHelp

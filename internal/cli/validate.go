@@ -11,6 +11,7 @@ import (
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/message"
 )
 
 // validate.go implements the validate subcommand (PRD FR-5): it checks
@@ -153,14 +154,67 @@ func validate(opts validateOptions, rc *runContext, res *validateResult, stdout,
 		}
 		return "config file"
 	}
-	keys := fmt.Sprintf("region %q from %s, domain %q from %s",
-		cfg.Region, src("mailgun.region"), cfg.Domain, src("sending.domain"))
+	var keys string
+	switch cfg.Provider {
+	case config.ProviderMailgun:
+		// Preserve the established Mailgun validation wording for scripts
+		// and existing tests; the provider is implicit for the default.
+		keys = fmt.Sprintf("region %q from %s, domain %q from %s", cfg.Region, src("mailgun.region"), cfg.Domain, src("sending.domain"))
+	case config.ProviderGmail:
+		keys = fmt.Sprintf("provider %q from %s, Gmail credentials %q", cfg.Provider, src("sending.provider"), gmailStore(cfg).Path)
+		if cfg.Domain != "" {
+			keys += fmt.Sprintf(", domain %q from %s", cfg.Domain, src("sending.domain"))
+		}
+	case config.ProviderSMTP:
+		keys = fmt.Sprintf("provider %q from %s, domain %q from %s, SMTP host %q from %s, port %d from %s, security %q from %s",
+			cfg.Provider, src("sending.provider"), cfg.Domain, src("sending.domain"), cfg.SMTPHost, src("smtp.host"),
+			cfg.SMTPPort, src("smtp.port"), cfg.SMTPSecurity, src("smtp.security"))
+	}
 	if cfg.From != "" {
 		keys += fmt.Sprintf(", from %q from %s", cfg.From, src("sending.from"))
 	}
 	// The API key is named by source only, never by value.
-	keys += fmt.Sprintf(", api key from %s", src("mailgun.api_key"))
+	if cfg.Provider == "mailgun" {
+		keys += fmt.Sprintf(", api key from %s", src("mailgun.api_key"))
+	} else if cfg.SMTPUsername != "" {
+		keys += fmt.Sprintf(", SMTP credentials from %s / %s", src("smtp.username"), src("smtp.password"))
+	}
 	validatePass(stdout, res, "mandatory keys", "mandatory keys present and well-formed ("+keys+")")
+	if cfg.Provider == "gmail" {
+		// Refreshes the access token when it is (nearly) expired; never
+		// contacts the send endpoint.
+		if _, err := gmailStore(cfg).AccessToken(context.Background(), gmailOAuth(cfg, opts.Timeout, rc), false); err != nil {
+			switch {
+			case message.IsAuth(err):
+				return validateFail(stdout, stderr, res, "Gmail authorization", err, ExitAuth)
+			case message.IsDeferrable(err):
+				return validateFail(stdout, stderr, res, "Gmail authorization", fmt.Errorf("could not refresh Gmail authorization reliably (retry later): %w", err), ExitDeferred)
+			default:
+				return validateFail(stdout, stderr, res, "Gmail authorization", err, ExitConfig)
+			}
+		}
+		validatePass(stdout, res, "Gmail authorization", "Gmail send authorization is available (token refreshed if needed; no email sent)")
+		return ExitOK
+	}
+
+	if cfg.Provider == "smtp" {
+		client, err := smtpClient(cfg, opts.Timeout, rc)
+		if err != nil {
+			return validateFail(stdout, stderr, res, "SMTP connection", err, ExitConfig)
+		}
+		if err := client.Validate(context.Background()); err != nil {
+			switch {
+			case message.IsAuth(err):
+				return validateFail(stdout, stderr, res, "SMTP connection", fmt.Errorf("SMTP authentication failed: %w", err), ExitAuth)
+			case message.IsDeferrable(err):
+				return validateFail(stdout, stderr, res, "SMTP connection", fmt.Errorf("could not reach SMTP server reliably (retry later): %w", err), ExitDeferred)
+			default:
+				return validateFail(stdout, stderr, res, "SMTP connection", err, ExitConfig)
+			}
+		}
+		validatePass(stdout, res, "SMTP connection", fmt.Sprintf("SMTP connection, TLS negotiation, and authentication verified with %s:%d", cfg.SMTPHost, cfg.SMTPPort))
+		return ExitOK
+	}
 
 	// Step 3: API key and domain verified against Mailgun.
 	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...)

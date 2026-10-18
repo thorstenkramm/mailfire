@@ -10,3 +10,5 @@ mailfire.log
 /dist/
 .cloudsmith
 __pycache__/
+mailfire-smtp.conf
+mailfire-smtp.log

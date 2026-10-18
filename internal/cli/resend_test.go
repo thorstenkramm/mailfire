@@ -58,6 +58,37 @@ func seedDeferred(t *testing.T, deferDir, to, subject string, age time.Duration)
 	return meta
 }
 
+func TestResendAccountMismatchKeepsRetryState(t *testing.T) {
+	store := &deferral.Store{Dir: t.TempDir()}
+	meta, err := store.SaveMessage(deferral.Metadata{
+		To:          []string{"to@example.com"},
+		Subject:     "account mismatch",
+		ContentType: "message/rfc822",
+		Provider:    "smtp",
+		Account:     "old@relay.example.com:587/starttls",
+	}, []byte("From: sender@example.com\r\n\r\nbody\r\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Provider: "smtp", SMTPHost: "relay.example.com", SMTPPort: 587, SMTPSecurity: "starttls", SMTPUsername: "new", SMTPPassword: "pw"}
+	var stdout, stderr bytes.Buffer
+	rec := &resendMessage{ID: meta.ID}
+	code, gone := resendOne(cfg, 0, store, nil, nil, meta, time.Now(), config.DefaultCooldown, &runContext{}, rec, &stdout, &stderr)
+	if code != ExitSendFail || gone {
+		t.Fatalf("resendOne() = (%d, %t), want (%d, false)", code, gone, ExitSendFail)
+	}
+	if rec.Reason != "account_mismatch" || !strings.Contains(stdout.String(), "message kept") {
+		t.Fatalf("result = %#v, stdout = %q", rec, stdout.String())
+	}
+	updated, ok, err := store.Get(meta.ID)
+	if err != nil || !ok {
+		t.Fatalf("stored metadata = %#v, %t, %v", updated, ok, err)
+	}
+	if updated.Failed || updated.Attempts != 0 || updated.LastError != "" || !updated.LastAttempt.IsZero() {
+		t.Errorf("mismatch changed retry state: %#v", updated)
+	}
+}
+
 // storedBodies snapshots every stored message's metadata and body, keyed
 // by subject, for verbatim-replay assertions after the resend.
 func storedBodies(t *testing.T, deferDir string) map[string]struct {
@@ -666,14 +697,12 @@ func TestListDeferredNoDir(t *testing.T) {
 // nothing is attempted and nothing is reported on stderr.
 func TestResendOneGoneMessage(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
-	client, err := mailgun.New("k", "d", "us", mailgun.WithBaseURL(m.URL()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := &config.Config{Provider: config.ProviderMailgun, APIKey: "k", Domain: "d", Region: "us"}
+	rc := &runContext{clientOpts: []mailgun.Option{mailgun.WithBaseURL(m.URL())}}
 	store := &deferral.Store{Dir: t.TempDir()}
 	meta := deferral.Metadata{ID: "no-such-dir", To: []string{"a@example.com"}, Subject: "s"}
 	var stdout, stderr bytes.Buffer
-	code, gone := resendOne(client, store, nil, nil, meta, time.Now(), config.DefaultCooldown, &resendMessage{}, &stdout, &stderr)
+	code, gone := resendOne(cfg, 0, store, nil, nil, meta, time.Now(), config.DefaultCooldown, rc, &resendMessage{}, &stdout, &stderr)
 	if code != ExitOK || !gone {
 		t.Errorf("resendOne = (%d, %v), want (%d, true)", code, gone, ExitOK)
 	}
@@ -727,10 +756,8 @@ func TestResendConcurrentRemoval(t *testing.T) {
 // exit 5, nothing is sent, the message directory is left alone.
 func TestResendOneUnreadableBody(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
-	client, err := mailgun.New("k", "d", "us", mailgun.WithBaseURL(m.URL()))
-	if err != nil {
-		t.Fatal(err)
-	}
+	cfg := &config.Config{Provider: config.ProviderMailgun, APIKey: "k", Domain: "d", Region: "us"}
+	rc := &runContext{clientOpts: []mailgun.Option{mailgun.WithBaseURL(m.URL())}}
 	store := &deferral.Store{Dir: t.TempDir()}
 	meta := deferral.Metadata{ID: "broken", To: []string{"a@example.com"}, Subject: "s"}
 	// body.bin is a directory: it exists, but reading it fails.
@@ -738,7 +765,7 @@ func TestResendOneUnreadableBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code, gone := resendOne(client, store, nil, nil, meta, time.Now(), config.DefaultCooldown, &resendMessage{}, &stdout, &stderr)
+	code, gone := resendOne(cfg, 0, store, nil, nil, meta, time.Now(), config.DefaultCooldown, rc, &resendMessage{}, &stdout, &stderr)
 	if code != ExitSendFail || gone {
 		t.Errorf("resendOne = (%d, %v), want (%d, false)", code, gone, ExitSendFail)
 	}

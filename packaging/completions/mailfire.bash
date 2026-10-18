@@ -20,13 +20,18 @@ _mailfire() {
             COMPREPLY=($(compgen -f -- "$cur"))
             return 0
             ;;
+        --provider)
+            # shellcheck disable=SC2207
+            COMPREPLY=($(compgen -W "gmail" -- "$cur"))
+            return 0
+            ;;
         --template)
             # shellcheck disable=SC2207
             COMPREPLY=($(compgen -W "card card-serif plain plain-serif" -- "$cur"))
             return 0
             ;;
         # Flags taking a free-form value: nothing to complete.
-        --to | --cc | --bcc | --from | --subject | --preheader | --message | --m | -m | --timeout | --dedup-key | --cooldown)
+        --to | --cc | --bcc | --from | --subject | --preheader | --message | --m | -m | --timeout | --dedup-key | --cooldown | --port)
             return 0
             ;;
     esac
@@ -35,7 +40,7 @@ _mailfire() {
     sub="send"
     if [[ $COMP_CWORD -ge 2 ]]; then
         case "${COMP_WORDS[1]}" in
-            send | validate | resend | queue | version | export-templates) sub="${COMP_WORDS[1]}" ;;
+            send | validate | auth | resend | queue | version | export-templates) sub="${COMP_WORDS[1]}" ;;
         esac
     fi
 
@@ -47,6 +52,15 @@ _mailfire() {
             ;;
         validate)
             opts="--timeout --json -c --config -h --help"
+            ;;
+        auth)
+            if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then
+                opts="login status refresh logout"
+            elif [[ ${COMP_WORDS[2]} == login ]]; then
+                opts="--provider --no-browser --port --manual --timeout -c --config -h --help"
+            else
+                opts="--provider --timeout --json -c --config -h --help"
+            fi
             ;;
         resend)
             opts="--list --force --timeout --json -c --config -h --help"
@@ -75,7 +89,7 @@ _mailfire() {
     esac
 
     if [[ $COMP_CWORD -eq 1 && $cur != -* ]]; then
-        opts="send validate resend queue version export-templates"
+        opts="send validate auth resend queue version export-templates"
     fi
 
     # shellcheck disable=SC2207

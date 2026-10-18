@@ -15,6 +15,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/render"
+	"github.com/thorstenkramm/mailfire/internal/smtp"
 )
 
 // BuildInfo carries version details injected at build time via -ldflags -X.
@@ -36,7 +37,7 @@ const (
 )
 
 // Option customizes Run's behavior. Options exist mainly so tests can
-// inject the body reader and point the Mailgun client at a mock server.
+// inject the body reader and point the providers at mock servers.
 type Option func(*runContext)
 
 // runContext carries the process resources Run needs.
@@ -44,6 +45,20 @@ type runContext struct {
 	stdin      io.Reader
 	clientOpts []mailgun.Option
 	clock      func() time.Time // nil: time.Now
+
+	// Test seams of the SMTP and Gmail providers (provider.go).
+	smtpOpts      []smtp.Option
+	gmailAPIURL   string
+	gmailTokenURL string
+	browser       func(url string) error // nil: the desktop browser
+}
+
+// openBrowser opens url for auth login, through the test seam if set.
+func (rc *runContext) openBrowser(url string) error {
+	if rc.browser != nil {
+		return rc.browser(url)
+	}
+	return openBrowser(url)
 }
 
 // now returns the current time from the injected clock, if any.
@@ -105,6 +120,8 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 				return ExitOK
 			}
 			return runValidate(args[1:], rc, stdout, stderr)
+		case "auth":
+			return runAuth(args[1:], rc, stdout, stderr)
 		case "version":
 			if wantsHelp(args[1:]) {
 				printOutput(stdout, versionUsage)
@@ -169,6 +186,7 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		printfOutput(stderr, "mailfire: %v\n", err)
 		return jsonFail(stdout, opts.JSON, "send", errConfig, err, ExitConfig)
 	}
+	res.Provider = cfg.Provider
 	code := send(cfg, &opts, rc, res, humanOut(stdout, opts.JSON), stderr)
 	if opts.JSON {
 		return emitJSON(stdout, res, code)

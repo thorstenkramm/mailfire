@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/message"
 )
 
 // DefaultTimeout is the HTTP timeout applied when neither WithTimeout nor
@@ -30,46 +32,45 @@ var regionBaseURLs = map[string]string{
 }
 
 // Kind classifies a failure so callers can map it to an exit code and
-// decide whether the message may be deferred for resend (PRD §8).
-type Kind int
+// decide whether the message may be deferred for resend (PRD §8). It is
+// the provider-neutral taxonomy defined in internal/message (task 31):
+// all sending providers share it.
+type Kind = message.Kind
 
 const (
 	// KindUnknown is the zero value and never returned by this package.
-	KindUnknown Kind = iota
+	KindUnknown = message.KindUnknown
 	// KindAuth means the API key was rejected (HTTP 401/403); exit 3.
-	KindAuth
+	KindAuth = message.KindAuth
 	// KindPermanent means the request will never succeed as-is (other
 	// HTTP 4xx, local encoding errors, or the caller canceling the
 	// context — e.g. on SIGINT, where the outcome is unknown and deferring
 	// could cause a duplicate send); exit 5, no deferral.
-	KindPermanent
+	KindPermanent = message.KindPermanent
 	// KindDeferrable means retrying later may succeed (HTTP 429, 5xx,
 	// network error, timeout, or an unparseable success response);
 	// exit 4 when the message is deferred.
-	KindDeferrable
+	KindDeferrable = message.KindDeferrable
 )
 
-func (k Kind) String() string {
-	switch k {
-	case KindAuth:
-		return "auth"
-	case KindPermanent:
-		return "permanent"
-	case KindDeferrable:
-		return "deferrable"
-	default:
-		return "unknown"
-	}
-}
-
-// Error is the single error type returned by Client operations. The
-// Message field never contains the API key.
+// Error is the single error type returned by Client operations. It
+// implements message.SendError, so the CLI can classify failures of any
+// provider. The Message field never contains the API key.
 type Error struct {
 	Op         string // operation, e.g. "send message" or "validate domain"
 	StatusCode int    // HTTP status code, or 0 for transport errors
 	Message    string // Mailgun's message or the transport error detail
 	Kind       Kind
 }
+
+// SendKind implements message.SendError.
+func (e *Error) SendKind() message.Kind { return e.Kind }
+
+// ReplyCode implements message.SendError.
+func (e *Error) ReplyCode() int { return e.StatusCode }
+
+// Detail implements message.SendError.
+func (e *Error) Detail() string { return e.Message }
 
 func (e *Error) Error() string {
 	if e.StatusCode > 0 {

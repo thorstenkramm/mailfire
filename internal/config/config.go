@@ -52,13 +52,24 @@ type Config struct {
 	// secrets. File settings and defaults are not listed.
 	EnvSource map[string]string
 
-	// [mailgun]
-	APIKey  string        // required; never log or include in errors
-	Region  string        // "us" or "eu"
-	Timeout time.Duration // per-request timeout; zero keeps the mailgun client's default
+	// [mailgun] (required only when sending.provider is "mailgun")
+	APIKey           string        // required; never log or include in errors
+	Region           string        // "us" or "eu"
+	Timeout          time.Duration // legacy Mailgun-specific timeout; zero uses provider default
+	GmailCredentials string        // owner-only OAuth token file; empty uses platform default
+	GmailTimeout     time.Duration
+
+	// [smtp] (required only when sending.provider is "smtp")
+	SMTPHost     string
+	SMTPPort     int
+	SMTPSecurity string        // "tls" (implicit TLS), "starttls", or "none"
+	SMTPUsername string        // optional; must be paired with SMTPPassword
+	SMTPPassword string        // optional; never log or include in errors
+	SMTPTimeout  time.Duration // provider-specific timeout; zero uses provider default
 
 	// [sending]
 	Domain       string // required
+	Provider     string // "mailgun" (default) or "smtp"
 	From         string // optional; valid mailbox ("user@example.com" or "Name <user@example.com>")
 	Template     string // email template for --md and --html; default render.DefaultTemplate
 	TemplateFile string // custom template path; mutually exclusive with Template in TOML
@@ -91,8 +102,21 @@ type rawConfig struct {
 		// explicitly empty value, which is a configuration error.
 		Timeout *string `toml:"timeout"`
 	} `toml:"mailgun"`
+	Gmail struct {
+		Credentials string  `toml:"credentials"`
+		Timeout     *string `toml:"timeout"`
+	} `toml:"gmail"`
+	SMTP struct {
+		Host     string  `toml:"host"`
+		Port     int     `toml:"port"`
+		Security string  `toml:"security"`
+		Username string  `toml:"username"`
+		Password string  `toml:"password"`
+		Timeout  *string `toml:"timeout"`
+	} `toml:"smtp"`
 	Sending struct {
 		Domain       string `toml:"domain"`
+		Provider     string `toml:"provider"`
 		From         string `toml:"from"`
 		Template     string `toml:"template"`
 		TemplateFile string `toml:"template_file"`
@@ -159,7 +183,11 @@ func (ov Overrides) discard(raw *rawConfig, sources map[string]string) {
 	}
 	if ov.Timeout {
 		raw.Mailgun.Timeout = nil
-		delete(sources, "mailgun.timeout")
+		raw.SMTP.Timeout = nil
+		raw.Gmail.Timeout = nil
+		for _, k := range []string{"mailgun.timeout", "smtp.timeout", "gmail.timeout"} {
+			delete(sources, k)
+		}
 	}
 	if ov.Cooldown {
 		raw.Dedup.Cooldown = ""
@@ -247,7 +275,7 @@ func find(flagPath, goos string, getenv func(string) string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("config: no configuration file found (searched: %s); create one, or set MAILFIRE_MAILGUN_API_KEY, MAILFIRE_MAILGUN_REGION, and MAILFIRE_SENDING_DOMAIN to configure via the environment", strings.Join(paths, ", "))
+	return "", fmt.Errorf("config: no configuration file found (searched: %s); create one, or set MAILFIRE_MAILGUN_API_KEY, MAILFIRE_MAILGUN_REGION, and MAILFIRE_SENDING_DOMAIN for Mailgun, or MAILFIRE_SENDING_PROVIDER=smtp with MAILFIRE_SMTP_HOST, MAILFIRE_SMTP_PORT, MAILFIRE_SMTP_SECURITY, and MAILFIRE_SENDING_DOMAIN for SMTP, or MAILFIRE_SENDING_PROVIDER=gmail for Gmail", strings.Join(paths, ", "))
 }
 
 func fileExists(p string) bool {
@@ -263,7 +291,8 @@ var (
 // parseError formats a TOML decode error with the file name, the line
 // number and, when known, the key. go-toml's messages may quote a character
 // of the offending value (e.g. "unexpected character U+0053 'S'"), so when
-// the error lies within the api_key assignment the detail is withheld.
+// the error lies within a secret's assignment (mailgun.api_key,
+// smtp.password) the detail is withheld.
 func parseError(path string, data []byte, err error) error {
 	var derr *toml.DecodeError
 	if !errors.As(err, &derr) {
@@ -278,9 +307,12 @@ func parseError(path string, data []byte, err error) error {
 	} else if strings.Contains(msg, "at start of value") {
 		msg += ` (strings must be quoted, e.g. region = "eu")`
 	}
-	if strings.HasSuffix(key, "api_key") || assignedKeyAt(data, row) == "api_key" || lineMentionsAPIKey(data, row) {
-		key = "mailgun.api_key"
-		msg = "invalid value (details withheld: the line contains the API key)"
+	for _, s := range secretKeys {
+		if strings.HasSuffix(key, s.name) || assignedKeyAt(data, row) == s.name || lineMentions(data, row, s.name) {
+			key = s.key
+			msg = "invalid value (details withheld: the line contains " + s.what + ")"
+			break
+		}
 	}
 	if key != "" {
 		return fmt.Errorf("config: parsing %s: line %d: %s: %s", path, row, key, msg)
@@ -288,13 +320,20 @@ func parseError(path string, data []byte, err error) error {
 	return fmt.Errorf("config: parsing %s: line %d: %s", path, row, msg)
 }
 
-// lineMentionsAPIKey reports whether the 1-based line row contains
-// "api_key" anywhere. This covers inline tables such as
+// secretKeys are the configuration keys whose values must never appear in
+// diagnostics: the full key is reported instead, with a description.
+var secretKeys = []struct{ name, key, what string }{
+	{"api_key", "mailgun.api_key", "the API key"},
+	{"password", "smtp.password", "a password"},
+}
+
+// lineMentions reports whether the 1-based line row contains name
+// anywhere. This covers inline tables such as
 // mailgun = { api_key = "..." }, where the assignment at the start of
 // the line names a different key.
-func lineMentionsAPIKey(data []byte, row int) bool {
+func lineMentions(data []byte, row int, name string) bool {
 	lines := strings.Split(string(data), "\n")
-	return row >= 1 && row <= len(lines) && strings.Contains(lines[row-1], "api_key")
+	return row >= 1 && row <= len(lines) && strings.Contains(lines[row-1], name)
 }
 
 // assignedKeyAt returns the last path component of the key assigned on, or
@@ -371,35 +410,55 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		return n, nil
 	}
 
-	cfg.APIKey = strings.TrimSpace(raw.Mailgun.APIKey)
-	if cfg.APIKey == "" {
-		return nil, keyErr("mailgun.api_key", "is required and must not be empty (or set MAILFIRE_MAILGUN_API_KEY)")
+	cfg.Provider = strings.ToLower(strings.TrimSpace(raw.Sending.Provider))
+	if cfg.Provider == "" {
+		cfg.Provider = ProviderMailgun
 	}
-
-	cfg.Region = strings.ToLower(strings.TrimSpace(raw.Mailgun.Region))
-	switch cfg.Region {
-	case "":
-		return nil, keyErr("mailgun.region", `is required: must be "us" or "eu" (or set MAILFIRE_MAILGUN_REGION)`)
-	case "us", "eu":
+	switch cfg.Provider {
+	case ProviderMailgun, ProviderSMTP, ProviderGmail:
 	default:
-		return nil, keyErr("mailgun.region", fmt.Sprintf("invalid value %q: must be \"us\" or \"eu\"", cfg.Region))
+		return nil, keyErr("sending.provider", fmt.Sprintf("invalid value %q: must be \"mailgun\", \"gmail\", or \"smtp\"", cfg.Provider))
 	}
 
+	// Every provider section is parsed; only the selected provider's
+	// required settings are enforced here. Resending a message deferred
+	// through another provider checks that provider's section with
+	// CheckProvider.
+	cfg.APIKey = strings.TrimSpace(raw.Mailgun.APIKey)
+	cfg.Region = strings.ToLower(strings.TrimSpace(raw.Mailgun.Region))
+	if cfg.Provider == ProviderMailgun {
+		if err := cfg.checkMailgun(keyErr); err != nil {
+			return nil, err
+		}
+	}
+	var err error
 	// Empty, zero, negative, malformed, and overflowing durations are
 	// rejected: empty and zero would disable the timeout and let a stalled
-	// request hang forever. An absent key keeps the mailgun client's
-	// built-in default.
-	if raw.Mailgun.Timeout != nil {
-		s := strings.TrimSpace(*raw.Mailgun.Timeout)
-		d, terr := time.ParseDuration(s)
-		if terr != nil || d <= 0 {
-			return nil, keyErr("mailgun.timeout", fmt.Sprintf("invalid duration %q: use a positive Go duration, e.g. \"15s\", \"1m\"", s))
+	// request hang forever. An absent key keeps the provider's built-in
+	// default.
+	if cfg.Timeout, err = parseTimeout(keyErr, "mailgun.timeout", raw.Mailgun.Timeout); err != nil {
+		return nil, err
+	}
+
+	cfg.SMTPHost = strings.TrimSpace(raw.SMTP.Host)
+	cfg.SMTPPort = raw.SMTP.Port
+	cfg.SMTPSecurity = strings.ToLower(strings.TrimSpace(raw.SMTP.Security))
+	cfg.SMTPUsername = strings.TrimSpace(raw.SMTP.Username)
+	cfg.SMTPPassword = raw.SMTP.Password
+	if cfg.Provider == ProviderSMTP {
+		if err := cfg.checkSMTP(keyErr); err != nil {
+			return nil, err
 		}
-		cfg.Timeout = d
+	}
+	if cfg.SMTPTimeout, err = parseTimeout(keyErr, "smtp.timeout", raw.SMTP.Timeout); err != nil {
+		return nil, err
+	}
+	if err := cfg.setGmail(raw, getenv, keyErr); err != nil {
+		return nil, err
 	}
 
 	cfg.Domain = strings.TrimSpace(raw.Sending.Domain)
-	if cfg.Domain == "" {
+	if cfg.Domain == "" && cfg.Provider != ProviderGmail {
 		return nil, keyErr("sending.domain", "is required and must not be empty (or set MAILFIRE_SENDING_DOMAIN)")
 	}
 
@@ -425,7 +484,6 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		return nil, keyErr("logging.loglevel", fmt.Sprintf("invalid value %q: must be \"error\", \"information\", or \"debug\"", cfg.LogLevel))
 	}
 
-	var err error
 	if cfg.LogMaxSize, err = sizeOrDefault("logging.max_size", raw.Logging.MaxSize); err != nil {
 		return nil, err
 	}
@@ -477,6 +535,132 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 	return cfg, nil
 }
 
+// Sending providers ([sending].provider).
+const (
+	ProviderMailgun = "mailgun"
+	ProviderSMTP    = "smtp"
+	ProviderGmail   = "gmail"
+)
+
+// parseTimeout validates an optional positive duration setting; nil (key
+// absent) yields zero, meaning the provider's default.
+func parseTimeout(keyErr func(key, msg string) error, key string, raw *string) (time.Duration, error) {
+	if raw == nil {
+		return 0, nil
+	}
+	s := strings.TrimSpace(*raw)
+	d, err := time.ParseDuration(s)
+	if err != nil || d <= 0 {
+		return 0, keyErr(key, fmt.Sprintf("invalid duration %q: use a positive Go duration, e.g. \"15s\", \"1m\"", s))
+	}
+	return d, nil
+}
+
+// checkMailgun enforces the Mailgun provider's required settings.
+func (c *Config) checkMailgun(keyErr func(key, msg string) error) error {
+	if c.APIKey == "" {
+		return keyErr("mailgun.api_key", "is required for the Mailgun provider (or set MAILFIRE_MAILGUN_API_KEY)")
+	}
+	switch c.Region {
+	case "":
+		return keyErr("mailgun.region", `is required for the Mailgun provider: must be "us" or "eu" (or set MAILFIRE_MAILGUN_REGION)`)
+	case "us", "eu":
+		return nil
+	default:
+		return keyErr("mailgun.region", fmt.Sprintf("invalid value %q: must be \"us\" or \"eu\"", c.Region))
+	}
+}
+
+// checkSMTP enforces the SMTP provider's required settings. Credentials
+// are optional (unauthenticated relays) but must come as a pair and never
+// with plaintext transport.
+func (c *Config) checkSMTP(keyErr func(key, msg string) error) error {
+	if c.SMTPHost == "" {
+		return keyErr("smtp.host", "is required for the SMTP provider (or set MAILFIRE_SMTP_HOST)")
+	}
+	if c.SMTPPort < 1 || c.SMTPPort > 65535 {
+		return keyErr("smtp.port", "is required for the SMTP provider and must be between 1 and 65535 (or set MAILFIRE_SMTP_PORT)")
+	}
+	switch c.SMTPSecurity {
+	case "tls", "starttls", "none":
+	case "":
+		return keyErr("smtp.security", `is required for the SMTP provider: must be "tls", "starttls", or "none"`)
+	default:
+		return keyErr("smtp.security", fmt.Sprintf("invalid value %q: must be \"tls\", \"starttls\", or \"none\"", c.SMTPSecurity))
+	}
+	if (c.SMTPUsername == "") != (c.SMTPPassword == "") {
+		return keyErr("smtp.username", "username and password must be set together")
+	}
+	if c.SMTPSecurity == "none" && c.SMTPUsername != "" {
+		return keyErr("smtp.security", "plaintext SMTP cannot be used with credentials; use tls or starttls")
+	}
+	return nil
+}
+
+// CheckProvider reports whether the settings of provider p are complete.
+// The selected provider is validated by Load; resend uses this to check
+// the provider a deferred message was originally sent through, which may
+// differ from the current default.
+func (c *Config) CheckProvider(p string) error {
+	keyErr := func(key, msg string) error { return fmt.Errorf("config: %s: %s", key, msg) }
+	switch p {
+	case ProviderMailgun:
+		if err := c.checkMailgun(keyErr); err != nil {
+			return err
+		}
+		if c.Domain == "" {
+			return keyErr("sending.domain", "is required for the Mailgun provider (or set MAILFIRE_SENDING_DOMAIN)")
+		}
+		return nil
+	case ProviderSMTP:
+		return c.checkSMTP(keyErr)
+	case ProviderGmail:
+		return nil
+	}
+	return fmt.Errorf("config: unknown provider %q", p)
+}
+
+// setGmail validates and applies the [gmail] settings.
+func (c *Config) setGmail(raw *rawConfig, getenv func(string) string, keyErr func(key, msg string) error) error {
+	c.GmailCredentials = expandPath(strings.TrimSpace(raw.Gmail.Credentials), getenv)
+	var err error
+	c.GmailTimeout, err = parseTimeout(keyErr, "gmail.timeout", raw.Gmail.Timeout)
+	return err
+}
+
+// LoadGmail loads only the [gmail] settings and their MAILFIRE_GMAIL_*
+// variables, for "mailfire auth": authorizing Gmail must work before the
+// rest of the configuration (or any configuration file) exists. Like
+// LoadRender, a missing config file is not an error unless flagPath names
+// one; a file that exists must parse. Only Path, EnvSource,
+// GmailCredentials, and GmailTimeout are set.
+func LoadGmail(flagPath string, stderr io.Writer, ov Overrides) (*Config, error) {
+	return loadGmail(flagPath, stderr, runtime.GOOS, os.Getenv, ov)
+}
+
+func loadGmail(flagPath string, stderr io.Writer, goos string, getenv func(string) string, ov Overrides) (*Config, error) {
+	path, data, raw, err := readOptional(flagPath, stderr, goos, getenv)
+	if err != nil {
+		return nil, err
+	}
+	sources := map[string]string{}
+	for _, b := range envBindings {
+		if !strings.HasPrefix(b.key, "gmail.") {
+			continue
+		}
+		if v := strings.TrimSpace(getenv(b.env)); v != "" {
+			b.set(raw, v)
+			sources[b.key] = b.env
+		}
+	}
+	ov.discard(raw, sources)
+	cfg := &Config{Path: path, EnvSource: sources, Provider: ProviderGmail}
+	if err := cfg.setGmail(raw, getenv, keyErrorFunc(path, data, sources)); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // keyErrorFunc returns the error constructor for an invalid key: it names
 // the MAILFIRE_* variable that supplied the value, or the file and line.
 func keyErrorFunc(path string, data []byte, envSource map[string]string) func(key, msg string) error {
@@ -509,6 +693,40 @@ func (c *Config) setTemplate(raw *rawConfig, getenv func(string) string, keyErr 
 	return nil
 }
 
+// readOptional reads the configuration file for the partial loaders
+// (LoadRender, LoadGmail): a missing file is not an error unless flagPath
+// names one (path "", empty raw), but a file that exists must parse.
+func readOptional(flagPath string, stderr io.Writer, goos string, getenv func(string) string) (string, []byte, *rawConfig, error) {
+	raw := &rawConfig{}
+	path, err := findOptional(flagPath, goos, getenv)
+	if err != nil || path == "" {
+		return "", nil, raw, err
+	}
+	warnIfPermissive(goos, path, stderr)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("config: reading %s: %w", path, err)
+	}
+	if err := toml.Unmarshal(data, raw); err != nil {
+		return "", nil, nil, parseError(path, data, err)
+	}
+	return path, data, raw, nil
+}
+
+// findOptional is find for the partial loaders: without -c, the absence
+// of every searched file yields "" and no error.
+func findOptional(flagPath, goos string, getenv func(string) string) (string, error) {
+	if flagPath != "" {
+		return find(flagPath, goos, getenv)
+	}
+	for _, p := range searchPaths(goos, getenv) {
+		if fileExists(p) {
+			return p, nil
+		}
+	}
+	return "", nil
+}
+
 // LoadRender loads only the settings needed to render a message locally
 // (send --preview, task 29): the template selection from the config file
 // and the MAILFIRE_SENDING_TEMPLATE / MAILFIRE_SENDING_TEMPLATE_FILE
@@ -521,32 +739,19 @@ func LoadRender(flagPath string, stderr io.Writer, ov Overrides) (*Config, error
 }
 
 func loadRender(flagPath string, stderr io.Writer, goos string, getenv func(string) string, ov Overrides) (*Config, error) {
-	var raw rawConfig
-	var data []byte
-	path, err := find(flagPath, goos, getenv)
-	switch {
-	case err != nil && flagPath != "":
+	path, data, raw, err := readOptional(flagPath, stderr, goos, getenv)
+	if err != nil {
 		return nil, err
-	case err != nil:
-		path = ""
-	default:
-		warnIfPermissive(goos, path, stderr)
-		if data, err = os.ReadFile(path); err != nil {
-			return nil, fmt.Errorf("config: reading %s: %w", path, err)
-		}
-		if err := toml.Unmarshal(data, &raw); err != nil {
-			return nil, parseError(path, data, err)
-		}
 	}
 	// Only the template variables matter for rendering: an invalid
 	// unrelated variable (e.g. MAILFIRE_DEFER_DEFER) must not fail it.
 	sources := map[string]string{}
-	if err := applyTemplateEnv(&raw, getenv, sources); err != nil {
+	if err := applyTemplateEnv(raw, getenv, sources); err != nil {
 		return nil, err
 	}
-	ov.discard(&raw, sources)
+	ov.discard(raw, sources)
 	cfg := &Config{Path: path, EnvSource: sources}
-	if err := cfg.setTemplate(&raw, getenv, keyErrorFunc(path, data, sources)); err != nil {
+	if err := cfg.setTemplate(raw, getenv, keyErrorFunc(path, data, sources)); err != nil {
 		return nil, err
 	}
 	return cfg, nil

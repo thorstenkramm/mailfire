@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -19,13 +18,14 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/mailbox"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/markdown"
+	"github.com/thorstenkramm/mailfire/internal/message"
 	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
 // send composes a message (plain text, or multipart/alternative for
 // --md, --html and --html-raw) from the parsed flags and the body read
-// from stdin or --file, posts it via the Mailgun client, and maps the
-// outcome to an exit code per PRD §8.
+// from stdin or --file, sends it through the configured provider, and
+// maps the outcome to an exit code per PRD §8.
 func send(cfg *config.Config, opts *SendOptions, rc *runContext, res *sendResult, stdout, stderr io.Writer) int {
 	msg, err := compose(cfg, opts, rc.stdin)
 	if err != nil {
@@ -38,12 +38,13 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, res *sendResult
 	defer closeFiles(msg.Attachments)
 	defer closeFiles(msg.Inline)
 
-	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...)
-	if err != nil {
-		// Cannot happen: config.Load already validated these fields.
-		printfOutput(stderr, "mailfire: %v\n", err)
-		res.setError(errConfig, err)
-		return ExitConfig
+	// SMTP and Gmail have no Mailgun-style validation-only mode: a "test"
+	// would deliver real email, so it is refused before anything happens.
+	if cfg.Provider != config.ProviderMailgun && opts.Test {
+		err := errTestUnsupported(cfg.Provider)
+		printfOutput(stderr, "mailfire: send: %v\n", err)
+		res.setError(errUsage, err)
+		return ExitUsage
 	}
 
 	// The logfile is opened before any send attempt (FR-3): an unusable
@@ -71,7 +72,16 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, res *sendResult
 		defer n.close()
 	}
 
-	resp, err := client.SendMessage(context.Background(), msg)
+	resp, err, setupErr := deliver(cfg, opts, rc, msg)
+	if setupErr != nil {
+		// Nothing was sent: the provider is not usable as configured.
+		printfOutput(stderr, "mailfire: send: %v\n", setupErr)
+		res.setError(errConfig, setupErr)
+		if n != nil {
+			n.notDelivered()
+		}
+		return ExitConfig
+	}
 	if logger != nil {
 		logAttempt(logger, msg, opts.Test, resp, err, stderr)
 	}
@@ -513,9 +523,9 @@ func logOutcome(logger *logging.Logger, a logging.Attempt,
 		a.MessageID = resp.ID
 		a.Status = resp.StatusCode
 		a.Response = resp.RawBody
-	} else if merr, ok := mailgun.As(sendErr); ok {
-		a.Status = merr.StatusCode
-		a.Response = merr.Message // redacted by the client
+	} else if serr, ok := message.As(sendErr); ok {
+		a.Status = serr.ReplyCode()
+		a.Response = serr.Detail() // providers redact credentials
 	} else {
 		a.Response = sendErr.Error()
 	}
@@ -535,9 +545,9 @@ func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message
 	printfOutput(stderr, "mailfire: send: %v\n", sendErr)
 	res.setError(sendErrorCode(sendErr), sendErr)
 	switch {
-	case mailgun.IsAuth(sendErr):
+	case message.IsAuth(sendErr):
 		return ExitAuth
-	case !mailgun.IsDeferrable(sendErr):
+	case !message.IsDeferrable(sendErr):
 		// Permanent failure (other 4xx, encoding error, cancellation):
 		// retrying cannot succeed, so nothing is ever stored.
 		return ExitSendFail
@@ -595,7 +605,7 @@ func deferMessage(cfg *config.Config, msg *mailgun.Message, sendErr error, logge
 		logDrop(logger, meta, false, time.Now(), stderr)
 	}
 	store.OnExpire = expireReporter("defer", logger, time.Now, stderr)
-	meta, err := store.SaveMessage(deferMetadata(msg, sendErr, n), msg.Encoded)
+	meta, err := store.SaveMessage(deferMetadata(cfg, msg, sendErr, n), msg.Encoded)
 	if err != nil {
 		if meta.ID == "" {
 			printfOutput(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)

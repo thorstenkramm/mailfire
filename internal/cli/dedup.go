@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
@@ -10,6 +11,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/mailbox"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/smtp"
 )
 
 // dedup.go wires notification deduplication (task 24) into send and
@@ -193,8 +195,14 @@ func (n *notification) close() {
 
 // deferMetadata describes msg for the deferral store, linking it to its
 // deduplication scope when n is non-nil.
-func deferMetadata(msg *mailgun.Message, sendErr error, n *notification) deferral.Metadata {
-	m := deferral.Metadata{To: msg.To, Subject: msg.Subject, ContentType: msg.EncodedType}
+func deferMetadata(cfg *config.Config, msg *mailgun.Message, sendErr error, n *notification) deferral.Metadata {
+	m := deferral.Metadata{To: msg.To, Subject: msg.Subject, ContentType: msg.EncodedType, Provider: cfg.Provider, Account: providerAccount(cfg, cfg.Provider)}
+	if cfg.Provider == config.ProviderSMTP {
+		if env, err := smtp.Envelope(msg); err == nil {
+			m.EnvelopeFrom, m.EnvelopeRecipients = env.From, env.Recipients
+		}
+		m.MessageID = storedMessageID(msg.Encoded)
+	}
 	if sendErr != nil {
 		m.LastError = sendErr.Error()
 	}
@@ -203,6 +211,18 @@ func deferMetadata(msg *mailgun.Message, sendErr error, n *notification) deferra
 		m.DedupCooldown = n.cooldown
 	}
 	return m
+}
+
+// storedMessageID extracts the generated SMTP Message-ID from a stored
+// RFC 5322 body. MIME build has already validated the header; empty is
+// retained as a safe failure during resend rather than invented anew.
+func storedMessageID(raw []byte) string {
+	for _, line := range strings.Split(string(raw), "\r\n") {
+		if name, value, ok := strings.Cut(line, ":"); ok && strings.EqualFold(name, "Message-ID") {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // resendGuard locks the deduplication scope of a deferred message before

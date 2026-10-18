@@ -17,8 +17,8 @@ the configuration loader.
 
 ## Structure and style
 
-- Use the existing top-level tables: `[mailgun]`, `[sending]`, `[logging]`,
-  `[defer]`, and `[dedup]`. Add tables or keys only alongside implementation and documentation.
+- Use the existing top-level tables: `[mailgun]`, `[smtp]`, `[gmail]`, `[sending]`,
+  `[logging]`, `[defer]`, and `[dedup]`. Add tables or keys only alongside implementation and documentation.
 - Match `mailfire.example.conf`: table headers, settings, and comments are
   left-aligned; separate tables and related settings with blank lines.
 - Use `# ` comments and `# key = value` for commented-out settings.
@@ -49,15 +49,16 @@ the configuration loader.
   (or absence of one), and any implemented command-line override.
 - Use short, consistent comments. Explain platform differences where relevant.
 - Show required fields with illustrative values. Use `<your-api-key>` for the
-  API key and reserved example domains such as `example.com`; never use real secrets.
+  API key, `<app-password>` for SMTP passwords, and reserved example domains such as
+  `example.com`; never use real secrets.
 - Keep optional overrides commented out unless needed to make the example useful,
   such as a sample sender. Preserve normal defaults rather than enabling debug
   logging or disabling deferral in the starter configuration.
 - Explain that `sending.from` is optional only when `--from` is provided when sending.
 - Do not enable both `sending.template` and `sending.template_file` in an example.
   Explain their mutual exclusion and command-line overrides.
-- Do not document planned settings, such as the Gmail provider, as available until
-  implemented. Task files describe proposals, not the current schema.
+- Do not document planned settings as available until implemented. Task files
+  describe proposals, not the current schema.
 - Every key has a `MAILFIRE_<SECTION>_<KEY>` environment override
   (`internal/config/env.go`). A new key needs its binding there and documentation in
   `docs/environment.md`, `docs/mailfire.1`, and, where relevant, README.md.

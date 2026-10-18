@@ -7,11 +7,12 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/thorstenkramm/mailfire)](https://github.com/thorstenkramm/mailfire/blob/main/go.mod)
 [![License](https://img.shields.io/github/license/thorstenkramm/mailfire)](LICENSE)
 
-Send plain-text, Markdown, and HTML email from the command line through the Mailgun API.
+Send plain-text, Markdown, and HTML email from the command line through Mailgun, Gmail, or SMTP.
 
+- Three sending providers: the Mailgun API (default), Gmail with send-only OAuth, and standard SMTP submission
 - Four built-in email templates, plus support for custom templates
 - Attachments, inline Markdown images, and GitHub-style alerts
-- Test mode to validate requests without delivering email
+- Mailgun test mode to validate requests without delivering email
 - Local HTML preview without credentials or network access
 - Logging and deferred delivery with retry support
 - Opt-in deduplication of repeated notifications
@@ -104,7 +105,8 @@ With Go 1.27.2 or newer installed, run `make build` from a source checkout.
 
 ## Quick start
 
-You need a Mailgun API key and a sending domain configured in Mailgun.
+You need one of: a Mailgun API key and a sending domain configured in Mailgun (shown below), a Gmail account
+([Gmail setup](docs/gmail.md)), or an SMTP submission server ([SMTP submission](#smtp-submission)).
 
 ### 1. Configure Mailfire
 
@@ -139,6 +141,73 @@ mailfire --test --to user@example.com --subject "Test" --message "Hello"
 Replace the recipient with your own address. `--test` asks Mailgun to validate the request without delivering it.
 The output explicitly says that nothing was delivered.
 
+### SMTP submission
+
+Set `provider = "smtp"` and configure `[smtp]` for an existing provider or
+local relay. Use `security = "tls"` for implicit TLS (normally port 465),
+`security = "starttls"` for required STARTTLS (normally port 587), or
+`security = "none"` only for an explicitly trusted unauthenticated local
+relay. SMTP credentials are optional, but when used they require TLS or
+STARTTLS. Mailfire does not fall back to plaintext when STARTTLS is missing
+or fails.
+
+```toml
+[sending]
+provider = "smtp"
+domain = "example.com"
+from = "My Name <user@example.com>"
+
+[smtp]
+host = "smtp.example.com"
+port = 587
+security = "starttls"
+username = "submission-user"
+password = "<app-password>"
+```
+
+For a local relay, make plaintext explicit and omit credentials:
+
+```toml
+[sending]
+provider = "smtp"
+domain = "example.com"
+
+[smtp]
+host = "127.0.0.1"
+port = 2525
+security = "none"
+```
+
+`mailfire validate` checks SMTP connection, TLS negotiation, and configured
+authentication without sending a message. SMTP cannot offer Mailgun-style
+test sends, so `--test` is rejected for SMTP; use `--preview` for local
+rendering. An SMTP `250` response means the server accepted the transaction,
+not that a recipient finally received it. On success Mailfire prints the
+Message-ID it generated; it stays the same if the message is deferred and
+retried.
+
+If any recipient is rejected, Mailfire aborts before sending the message
+data, so nobody receives a partial send; the error names the recipient.
+`timeout` in `[smtp]` (or `--timeout`) bounds the whole connection: connect,
+TLS, authentication, and submission. SMTP settings can also come from
+`MAILFIRE_SMTP_*` variables, which keeps the password out of the file.
+
+For Gmail and many other large providers, SMTP needs an app password (or use
+the Gmail provider with OAuth below); an ordinary account password is not a
+supported shortcut.
+
+### Gmail
+
+Set `provider = "gmail"` in `[sending]` and authorize Mailfire once in a browser:
+
+```shell
+mailfire auth login --provider gmail
+```
+
+Mailfire requests only send access and refreshes its token automatically; scheduled sends never open a browser.
+`mailfire auth refresh --provider gmail` keeps an infrequently used authorization alive (for example monthly from
+cron). See the [Gmail guide](docs/gmail.md) for headless servers, token lifetimes, and limits.
+
 ### 3. Send an email
 
 ```shell
@@ -152,7 +221,7 @@ EOF
 ```
 
 This example uses Bash/Zsh heredoc syntax. On other shells, use `--file` or `--message` instead.
-On success, Mailfire prints the Mailgun message ID.
+On success, Mailfire prints the message ID (Mailgun's or Gmail's, or for SMTP the generated Message-ID).
 
 ## Features and usage
 
@@ -232,12 +301,14 @@ The preview uses the same Markdown rendering, template, preheader, footer, and C
 
 | | `--preview` | `--test` |
 |---|---|---|
-| Contacts Mailgun | No | Yes, Mailgun validates the request |
-| Needs a configuration and API key | No | Yes |
+| Contacts the provider | No | Yes, Mailgun validates the request (Mailgun only) |
+| Needs a configuration and credentials | No | Yes |
 | Needs `--to` and `--subject` | No | Yes |
 | Output | Rendered HTML body | Mailgun message ID |
 
-A preview needs no configuration file, Mailgun settings, recipients, sender, or subject. Only the template selection
+SMTP and Gmail have no validation-only mode: `--test` is rejected with them instead of delivering a real email.
+
+A preview needs no configuration file, provider settings, recipients, sender, or subject. Only the template selection
 is read from a configuration file, `MAILFIRE_SENDING_TEMPLATE`, or `MAILFIRE_SENDING_TEMPLATE_FILE`; other settings
 and variables are ignored. Supplied addresses and subjects are
 still checked. Nothing is sent, deferred, deduplicated, or logged.
@@ -289,14 +360,14 @@ Use `-c <path>` or `--config <path>` to select a different file.
 Every setting can also be supplied through a `MAILFIRE_<SECTION>_<KEY>` environment variable, such as
 `MAILFIRE_MAILGUN_API_KEY` or `MAILFIRE_DEFER_MAX_SIZE`. Command-line options override environment variables, which
 override the configuration file. Empty variables are ignored. Without a configuration file, the environment must supply
-the API key, region, and domain. See the [environment variable reference](docs/environment.md).
+the selected provider's required settings. See the [environment variable reference](docs/environment.md).
 
-Mailgun requests time out after 30 seconds by default (per request, covering connection setup, upload, and
-response reading). Change this with `timeout` in the `[mailgun]` section, or with `--timeout <duration>`
-(for example `15s` or `1m`) on `send`, `resend`, and `validate`; the flag overrides the configuration.
+Provider requests time out after 30 seconds by default (per request, covering connection setup, upload, and
+response reading). Set `timeout` in `[mailgun]` or `[smtp]`, or use `--timeout <duration>`
+(for example `15s` or `1m`) on `send`, `resend`, and `validate`; the flag overrides the selected provider setting.
 A `resend` run retrying several messages may take longer than a single timeout.
 
-Anyone who can read the configuration file can use its API key. On Linux and macOS, Mailfire warns if the file
+Anyone who can read the configuration file can use its credentials (API key or SMTP password). On Linux and macOS, Mailfire warns if the file
 is accessible by group or others; restrict access with `chmod 600 <path>`.
 On Windows, configure access through NTFS permissions; the Unix permission check does not apply.
 
@@ -304,11 +375,13 @@ On Windows, configure access through NTFS permissions; the Unix permission check
 
 ```text
 $ mailfire --help
-mailfire — send email from the command line via the Mailgun API
+mailfire — send email from the command line via Mailgun, Gmail, or SMTP
 
 Usage:
   mailfire [send] [flags]     compose and send an email (default)
-  mailfire validate           check config and Mailgun credentials
+  mailfire validate           check configuration and provider credentials
+  mailfire auth login|status|refresh|logout --provider gmail
+                              manage Gmail OAuth authorization
   mailfire resend [--list | --force | <id>...]
                               retry deferred messages
   mailfire queue list|show|delete|stats
@@ -333,9 +406,9 @@ Flags (send):
   --preheader <txt>  inbox preview text (HTML formats only)
   --footer <path>    HTML fragment appended as footer (HTML formats only)
   --attach <path>    attach a file, repeatable
-  --test             use Mailgun test mode: validate the request, deliver nothing
+  --test             Mailgun test mode: validate only (rejected for SMTP and Gmail)
   --no-defer         fail immediately instead of deferring on error
-  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides provider timeout
   --dedup-key <key>  skip repeats of this notification within the cooldown
   --cooldown <dur>   suppression window for --dedup-key (default 1h)
   --preview <path>   write the rendered HTML to <path> (- for stdout); send nothing
@@ -351,8 +424,12 @@ Every subcommand accepts `-h`/`--help` and prints its own usage and flags.
 ### Subcommands
 
 - `mailfire send` composes and sends an email. This is the default when no subcommand is given.
-- `mailfire validate` checks the configuration file, required settings, and whether Mailgun accepts the API key and domain.
-  It reports which settings came from environment variables without showing the API key.
+- `mailfire validate` checks the configuration file, required settings, and the selected provider without sending
+  mail: Mailgun's API key and domain; the SMTP connection, TLS negotiation, and authentication (no recipient is
+  probed); or the Gmail authorization. It reports which settings came from environment variables without showing
+  credentials.
+- `mailfire auth login|status|refresh|logout --provider gmail` manages the Gmail authorization
+  (see the [Gmail guide](docs/gmail.md)).
 - `mailfire resend` retries deferred messages, oldest first. Messages are removed only after a successful send.
   Messages that are not yet eligible for a retry are skipped (see [Deferred delivery](#deferred-delivery));
   `--force` ignores the wait. `--list` shows deferred messages without sending, and `mailfire resend <id>...`
@@ -367,13 +444,13 @@ Every subcommand accepts `-h`/`--help` and prints its own usage and flags.
 
 ### Deferred delivery
 
-If sending fails because of a network error, a Mailgun server error, or rate limiting, and `defer = true`
+If sending fails because of a network error, a temporary server error (HTTP 5xx, SMTP 4xx), or rate limiting, and `defer = true`
 (the default), the composed message is stored in `defer_dir` and Mailfire exits with code 4.
 Run `mailfire resend` (for example, from cron) to retry. Use `--no-defer` or `defer = false` to fail immediately instead.
 
 A deferred message becomes eligible for `mailfire resend` once `resend_cooldown` (default `5m`) has passed. Each
 failed retry doubles the wait, measured from the latest attempt and capped at one hour; a `resend_cooldown` longer
-than one hour is used unchanged. `--force` retries immediately. Messages that Mailgun rejects permanently stay in
+than one hour is used unchanged. `--force` retries immediately. Messages the provider rejects permanently stay in
 `defer_dir`, marked as failed, and are skipped by later runs; retry one with `mailfire resend --force <id>` or remove
 it with `mailfire queue delete <id>`. The stored message itself is never changed; only its retry information is.
 
@@ -385,8 +462,14 @@ never remove anything.
 
 Concurrent Mailfire processes coordinate through a lock file in `defer_dir`, so overlapping `resend` and
 `queue delete` runs cannot send or delete the same message twice. Exactly-once delivery is still not guaranteed:
-if a request times out or the connection drops after Mailgun accepted the message, it stays deferred and a later
-`resend` may deliver it again.
+if a request times out or the connection drops after the provider accepted the message (for SMTP, a lost final
+reply after the message data), it stays deferred and a later `resend` may deliver it again.
+
+A deferred message is resent through the provider and account it was originally sent through — the Mailgun domain,
+the SMTP username and server, or the Google account — using that provider's current credentials, even if the default
+provider changed. Credentials are never stored with deferred messages. If that provider is no longer configured, or a
+different account is configured, the message is not attempted; it stays queued unchanged and is resent normally once
+the configuration is restored.
 
 ### Notification deduplication
 
@@ -405,7 +488,7 @@ exit code 0 and a `skipped: ...` line on stdout that says when it becomes eligib
 - the same notification was delivered within its cooldown. The cooldown is set by `--cooldown`, else `cooldown` in
   `[dedup]`, default `1h`; the delivered send's value applies, and skipped repeats do not extend it, so a persistent
   problem is reported once per cooldown.
-- the same notification is still deferred, even if Mailgun rejected it permanently (retry it with
+- the same notification is still deferred, even if it was rejected permanently (retry it with
   `mailfire resend --force <id>` or remove it with `mailfire queue delete <id>`). The first deferred message is kept;
   no duplicate is queued.
 - an attempt was interrupted, for example by a crash, less than a minute ago and may have been delivered. Mailfire
@@ -439,7 +522,7 @@ mailfire queue list --json | jq -r '.messages[] | select(.status == "failed") | 
 
 Every document has `schema_version`, `command`, `outcome`, and `exit_code`; failures add an `error` object with a
 stable `code` such as `auth_failed`. Diagnostics and warnings stay on stderr, exit codes are unchanged, and
-`--help` always prints text. API keys and message content are never included, except the stored request with
+`--help` always prints text. Credentials and message content are never included, except the stored request with
 `queue show --raw --json`. See the [JSON output reference](docs/json-output.md) for the schema, all fields and
 error codes, and compatibility guarantees.
 
@@ -450,13 +533,14 @@ error codes, and compatibility guarantees.
 | 0 | Success (sent, validated, resent, templates exported, or information shown) |
 | 1 | Usage error (missing flags, unknown subcommand, conflicting formats) |
 | 2 | Configuration error (missing file, invalid TOML, missing or invalid keys) |
-| 3 | Authentication error (API key rejected: 401/403 from Mailgun) |
+| 3 | Authentication error (Mailgun API key or SMTP credentials rejected; Gmail not authorized) |
 | 4 | Send failed and message was deferred for a later retry |
 | 5 | Send failed and was not deferred (`--no-defer` or `defer = false`) |
 
-Exit code 5 is also used when Mailgun rejects a message permanently (any other 4xx response), when a
+Exit code 5 is also used when the provider rejects a message permanently (another Mailgun or Gmail 4xx response, an
+SMTP 5xx reply such as a rejected recipient, missing STARTTLS, or an untrusted certificate), when a
 `--test` send fails with a retryable error (test sends are never deferred), and when the message cannot be stored
-in `defer_dir`. `mailfire validate` exits with 4 when Mailgun cannot be reached reliably (retry later), and with 2
+in `defer_dir`. `mailfire validate` exits with 4 when the provider cannot be reached reliably (retry later), and with 2
 when Mailgun does not know the domain. `mailfire resend` returns the most severe outcome of all attempts,
 ranked 3, 5, 4, 0; a message that fails with 4 stays deferred. `mailfire queue` exits with 1 for an unknown
 message ID and with 5 when `defer_dir` cannot be read or a message cannot be deleted. A send skipped by

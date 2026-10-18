@@ -39,17 +39,12 @@ func parseTimeoutOption(fs *flag.FlagSet, timeoutFlag string) (time.Duration, er
 	return parseTimeoutFlag(timeoutFlag)
 }
 
-// effectiveTimeout resolves the per-request timeout: --timeout wins over
-// [mailgun].timeout; with neither, the mailgun client's built-in default
-// (mailgun.DefaultTimeout) applies.
+// effectiveTimeout resolves the Mailgun per-request timeout: --timeout
+// wins over [mailgun].timeout; with neither, the mailgun client's built-in
+// default (mailgun.DefaultTimeout) applies. Other providers use
+// providerTimeout (provider.go).
 func effectiveTimeout(cfg *config.Config, flagTimeout time.Duration) time.Duration {
-	if flagTimeout > 0 {
-		return flagTimeout
-	}
-	if cfg.Timeout > 0 {
-		return cfg.Timeout
-	}
-	return mailgun.DefaultTimeout
+	return providerTimeout(cfg, config.ProviderMailgun, flagTimeout)
 }
 
 // clientOptions assembles the Mailgun client options for a command: the

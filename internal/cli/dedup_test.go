@@ -12,10 +12,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/dedup"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
+
+func TestProviderAccountSMTPIdentityIncludesUsername(t *testing.T) {
+	base := &config.Config{Provider: "smtp", SMTPHost: "relay.example.com", SMTPPort: 587, SMTPSecurity: "starttls"}
+	if got, want := providerAccount(base, config.ProviderSMTP), "relay.example.com:587/starttls"; got != want {
+		t.Errorf("unauthenticated identity = %q, want %q", got, want)
+	}
+	first := *base
+	first.SMTPUsername = "first"
+	second := *base
+	second.SMTPUsername = "second"
+	if got, want := providerAccount(&first, config.ProviderSMTP), "first@relay.example.com:587/starttls"; got != want {
+		t.Errorf("first account identity = %q, want %q", got, want)
+	}
+	if providerAccount(&first, config.ProviderSMTP) == providerAccount(&second, config.ProviderSMTP) {
+		t.Errorf("different SMTP usernames produced the same account identity: %q", providerAccount(&first, config.ProviderSMTP))
+	}
+}
 
 // dedupConfig writes a config with a sender, a defer_dir, and a dedup
 // state_dir in temp directories, plus extra lines appended (inside

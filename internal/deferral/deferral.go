@@ -104,6 +104,21 @@ type Metadata struct {
 	// ContentType is the multipart Content-Type of body.bin, boundary
 	// included; resend replays the body with exactly this header.
 	ContentType string `json:"content_type"`
+	// Provider identifies the transport that encoded body.bin. Empty means
+	// Mailgun for compatibility with queues written before task 31.
+	Provider string `json:"provider,omitempty"`
+	// Account identifies the selected non-secret account or transport. Resend
+	// refuses a mismatch rather than silently using changed configuration.
+	// Empty remains compatible with queues written by earlier versions.
+	Account string `json:"account,omitempty"`
+	// EnvelopeFrom and EnvelopeRecipients are the SMTP envelope. They are
+	// deliberately separate from headers: recipients includes Bcc, while
+	// the stored RFC 5322 body never does. Empty for Mailgun entries.
+	EnvelopeFrom       string   `json:"envelope_from,omitempty"`
+	EnvelopeRecipients []string `json:"envelope_recipients,omitempty"`
+	// MessageID is generated while building SMTP MIME and stays stable on
+	// retries. Mailgun entries get their ID from the server response.
+	MessageID string `json:"message_id,omitempty"`
 
 	// Attempts counts failed resend attempts (the original send is not
 	// counted). Zero for messages never resent and for messages stored
@@ -203,15 +218,20 @@ func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) 
 		return Metadata{}, err
 	}
 	meta = Metadata{
-		ID:            id,
-		Timestamp:     now,
-		To:            append([]string(nil), m.To...),
-		Subject:       m.Subject,
-		Size:          int64(len(body)),
-		ContentType:   m.ContentType,
-		LastError:     truncateError(m.LastError),
-		DedupScope:    m.DedupScope,
-		DedupCooldown: m.DedupCooldown,
+		ID:                 id,
+		Timestamp:          now,
+		To:                 append([]string(nil), m.To...),
+		Subject:            m.Subject,
+		Size:               int64(len(body)),
+		ContentType:        m.ContentType,
+		Provider:           m.Provider,
+		Account:            m.Account,
+		EnvelopeFrom:       m.EnvelopeFrom,
+		EnvelopeRecipients: append([]string(nil), m.EnvelopeRecipients...),
+		MessageID:          m.MessageID,
+		LastError:          truncateError(m.LastError),
+		DedupScope:         m.DedupScope,
+		DedupCooldown:      m.DedupCooldown,
 	}
 
 	// body.bin first, meta.json last: meta.json is the commit marker, so

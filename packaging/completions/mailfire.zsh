@@ -25,9 +25,9 @@ _mailfire_send() {
         '--preheader=[inbox preview text]:text:' \
         '--footer=[HTML fragment appended as footer]:file:_files' \
         '(--preview)*--attach=[attach a file, repeatable]:file:_files' \
-        '(--preview)--test[use Mailgun test mode]' \
+        '(--preview)--test[Mailgun test mode; rejected for SMTP and Gmail]' \
         '(--preview)--no-defer[fail immediately instead of deferring on error]' \
-        '(--preview)--timeout=[per-request timeout, overrides mailgun.timeout]:duration:' \
+        '(--preview)--timeout=[per-request timeout, overrides provider timeout]:duration:' \
         '(--preview)--dedup-key=[skip repeats of this notification within the cooldown]:key:' \
         '(--preview)--cooldown=[suppression window for --dedup-key]:duration:' \
         '(--attach --test --no-defer --timeout --dedup-key --cooldown --json)--preview=[write the rendered HTML instead of sending]:file:_files' \
@@ -39,9 +39,43 @@ _mailfire_send() {
 _mailfire_validate() {
     _arguments -S \
         '--json[print the result as one JSON document]' \
-        '--timeout=[per-request timeout, overrides mailgun.timeout]:duration:' \
+        '--timeout=[per-request timeout, overrides provider timeout]:duration:' \
         '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
         '(-h --help)'{-h,--help}'[show help]'
+}
+
+_mailfire_auth() {
+    local -a auth_subcommands
+    auth_subcommands=(
+        'login:authorize Gmail in a browser'
+        'status:show whether Gmail is authorized'
+        'refresh:refresh the Gmail authorization without sending'
+        'logout:remove the local Gmail credentials'
+    )
+    if (( CURRENT == 2 )); then
+        _describe -t commands 'auth command' auth_subcommands
+        return
+    fi
+    case $words[2] in
+        login)
+            _arguments -S \
+                '--provider=[provider to authorize]:provider:(gmail)' \
+                '--no-browser[print the consent URL instead of opening a browser]' \
+                '--port=[fixed local callback port]:port:' \
+                '--manual[paste the callback URL (requires --port)]' \
+                '--timeout=[token request timeout]:duration:' \
+                '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
+                '(-h --help)'{-h,--help}'[show help]'
+            ;;
+        *)
+            _arguments -S \
+                '--provider=[provider]:provider:(gmail)' \
+                '--timeout=[token request timeout]:duration:' \
+                '--json[print the result as one JSON document]' \
+                '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
+                '(-h --help)'{-h,--help}'[show help]'
+            ;;
+    esac
 }
 
 _mailfire_resend() {
@@ -49,7 +83,7 @@ _mailfire_resend() {
         '(--force)--list[list deferred messages without sending]' \
         '(--list)--force[ignore the cooldown and backoff]' \
         '--json[print the result as one JSON document]' \
-        '--timeout=[per-request timeout, overrides mailgun.timeout]:duration:' \
+        '--timeout=[per-request timeout, overrides provider timeout]:duration:' \
         '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
         '(-h --help)'{-h,--help}'[show help]' \
         '*:deferred message id:'
@@ -109,7 +143,8 @@ _mailfire() {
     local -a subcommands
     subcommands=(
         'send:compose and send an email (default)'
-        'validate:check config and Mailgun credentials'
+        'validate:check configuration and provider credentials'
+        'auth:manage Gmail authorization'
         'resend:retry deferred messages'
         'queue:inspect and delete deferred messages'
         'version:show version information'
@@ -124,7 +159,7 @@ _mailfire() {
     local sub=send
     if (( CURRENT > 2 )); then
         case $words[2] in
-            send|validate|resend|queue|version|export-templates) sub=$words[2] ;;
+            send|validate|auth|resend|queue|version|export-templates) sub=$words[2] ;;
         esac
     fi
 

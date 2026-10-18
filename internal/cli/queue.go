@@ -367,6 +367,7 @@ func queueShow(store *deferral.Store, msgs []deferral.Metadata, cooldown time.Du
 	field("Deferred", fmt.Sprintf("%s (%s ago)", formatUTC(meta.Timestamp), now.Sub(meta.Timestamp).Round(time.Second)))
 	field("To", listCell(strings.Join(meta.To, ", "), 0))
 	field("Subject", listCell(meta.Subject, 0))
+	field("Provider", storedProvider(meta))
 	field("Size", fmt.Sprintf("%d bytes", meta.Size))
 	field("Attempts", fmt.Sprintf("%d", meta.Attempts))
 	if meta.LastAttempt.IsZero() {

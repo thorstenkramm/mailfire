@@ -1,7 +1,8 @@
 # JSON output reference
 
-Add `--json` to `send`, `resend` (including `--list`), `queue list|show|delete|stats`, `validate`, `version`, or
-`export-templates` to get a machine-readable result. This page documents schema version 1.
+Add `--json` to `send`, `resend` (including `--list`), `queue list|show|delete|stats`, `validate`,
+`auth status|refresh|logout`, `version`, or `export-templates` to get a machine-readable result. The documents are
+the same for every sending provider (Mailgun, SMTP, Gmail); provider-specific details are noted below. This page documents schema version 1.
 
 ## Rules
 
@@ -21,9 +22,9 @@ Add `--json` to `send`, `resend` (including `--list`), `queue list|show|delete|s
 - Timestamps are RFC 3339 strings in UTC with second precision, for example `"2026-10-17T09:15:00Z"`.
 - Optional fields are omitted when they do not apply; they are never `null`. Arrays are present whenever the
   command produced data, also when it failed (for example, a partial `resend`), and may be empty.
-- The API key is never included. Message bodies and attachments are never included, except the stored request in
+- Credentials are never included: no Mailgun API key, SMTP password, or Gmail token. Message bodies and attachments are never included, except the stored request in
   `queue show --raw --json`. Recipients, subjects, and error messages are included as they are; error messages from
-  Mailgun are redacted like everywhere else in Mailfire.
+  the providers are redacted like everywhere else in Mailfire.
 - Strings are valid UTF-8 with standard JSON escaping; `<`, `>`, and `&` are not escaped.
 
 ## Common fields
@@ -33,7 +34,7 @@ Every document has these fields:
 | Field | Type | Description |
 |---|---|---|
 | `schema_version` | number | `1` |
-| `command` | string | `send`, `resend`, `queue list`, `queue show`, `queue delete`, `queue stats`, `validate`, `version`, `export-templates`; `queue` when the queue subcommand is missing or unknown; `mailfire` for an unknown subcommand |
+| `command` | string | `send`, `resend`, `queue list`, `queue show`, `queue delete`, `queue stats`, `validate`, `auth status`, `auth refresh`, `auth logout`, `auth` (usage errors), `version`, `export-templates`; `queue` when the queue subcommand is missing or unknown; `mailfire` for an unknown subcommand |
 | `outcome` | string | Result of the command; values per command below. `failed` whenever the command could not do its job |
 | `exit_code` | number | The process exit code |
 | `error` | object | Present if and only if `exit_code` is not 0 |
@@ -59,12 +60,12 @@ contains only the common fields:
 | `usage_error` | 1 | Invalid invocation or input: unknown flag or subcommand, missing or conflicting flags, invalid address, unreadable body, attachment, or footer |
 | `unknown_id` | 1 | A deferred message ID given to `resend`, `queue show`, or `queue delete` does not exist |
 | `export_failed` | 1 | `export-templates` could not write the templates, for example because they already exist |
-| `config_error` | 2 | Configuration file or variable missing or invalid, unusable logfile; `validate`: domain unknown to Mailgun |
+| `config_error` | 2 | Configuration file or variable missing or invalid, unusable logfile; `validate`: domain unknown to Mailgun; Gmail without a usable OAuth client; `resend`: a message's provider is not configured or its account changed (the message is kept untouched, exit 5) |
 | `dedup_error` | 2 (`send`), 5 (`resend`) | Notification deduplication state cannot be used; nothing was sent |
-| `auth_failed` | 3 | Mailgun rejected the API key (401/403) |
-| `temporary_failure` | 4 or 5 | Retryable failure (network error, timeout, 429, 5xx). Exit 4 when the message was deferred (or for `validate`), 5 when it was not (`--no-defer`, `defer = false`, `--test`) |
-| `rejected` | 5 | Mailgun rejected the request permanently (other 4xx) |
-| `send_failed` | 5 | Other non-retryable sending failure, for example an interrupted request |
+| `auth_failed` | 3 | Credentials rejected: Mailgun API key (401/403), SMTP authentication (535), Gmail not logged in or authorization revoked (run `mailfire auth login --provider gmail`) |
+| `temporary_failure` | 4 or 5 | Retryable failure (network error, timeout, HTTP 429 or 5xx, SMTP 4xx). Exit 4 when the message was deferred (or for `validate`), 5 when it was not (`--no-defer`, `defer = false`, `--test`) |
+| `rejected` | 5 | The provider rejected the message permanently: Mailgun or Gmail 4xx, SMTP 5xx (for example a rejected recipient; nothing was delivered to anyone) |
+| `send_failed` | 5 | Other non-retryable sending failure, for example an interrupted request, missing STARTTLS, or an untrusted TLS certificate |
 | `defer_failed` | 5 | Sending failed and the message could not be stored in `defer_dir`; it is lost |
 | `queue_error` | 5 | `defer_dir` or a stored message cannot be read, locked, or deleted |
 
@@ -72,15 +73,20 @@ contains only the common fields:
 
 | Field | Type | Description |
 |---|---|---|
+| `provider` | string | `mailgun`, `smtp`, or `gmail`; omitted when the configuration could not be loaded |
 | `outcome` | string | `sent`, `accepted` (test mode: Mailgun validated the request, nothing was delivered), `skipped` (duplicate notification), `deferred`, or `failed` |
 | `test_mode` | boolean | `true` with `--test` |
-| `message_id` | string | Mailgun message ID; with `sent` and `accepted` |
+| `message_id` | string | With `sent` and `accepted`: Mailgun's message ID, Gmail's message ID, or for SMTP the Message-ID header Mailfire generated (SMTP servers return no reliable ID) |
 | `deferred_id` | string | ID of the stored message; with `deferred`. Use it with `mailfire resend <id>` or `mailfire queue show <id>` |
 | `skip` | object | With `skipped`, see below |
 
 `skip` fields: `reason` (`cooldown`, `queued`, or `in_doubt`), `dedup_key`, `queued_id` (with `queued`: the deferred
 message), `since` (with `cooldown`: when the earlier notification was sent; with `in_doubt`: when the interrupted
 attempt started), and `eligible_at` (with `cooldown` and `in_doubt`).
+
+`sent` means the provider accepted the message. For SMTP that is the submission server's 250 reply, not final
+delivery to the recipient's mailbox. `--test` is a usage error (`usage_error`, exit 1) with SMTP and Gmail, which have
+no validation-only mode.
 
 ```json
 {"schema_version":1,"command":"send","outcome":"sent","exit_code":0,"test_mode":false,"message_id":"<20261017091500.1@mg.example.com>"}
@@ -102,8 +108,9 @@ Message record:
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Deferred message ID |
+| `provider` | string | Provider the message was deferred through and is resent through |
 | `outcome` | string | `sent`, `skipped`, `failed`, or `expired` (removed for exceeding `max_age`; this can include messages that were not selected) |
-| `reason` | string | With `skipped`: `not_eligible` (cooldown or backoff), `permanently_failed` (retry with `--force <id>`), or `gone` (removed by another process) |
+| `reason` | string | With `skipped`: `not_eligible` (cooldown or backoff), `permanently_failed` (retry with `--force <id>`), or `gone` (removed by another process). With `failed` when nothing was attempted: `provider_unavailable` (the message's provider is not configured) or `account_mismatch` (a different SMTP account or Google account is configured now). Such messages are kept with unchanged retry state and are retried normally once the configuration is restored |
 | `message_id` | string | With `sent` |
 | `next_retry` | string | When the message becomes eligible; with `not_eligible` and with failures of code `temporary_failure` |
 | `warning` | string | With `sent`, when the message could not be removed from `defer_dir` and might be sent again |
@@ -128,6 +135,7 @@ Message record (also used by `queue show`):
 | Field | Type | Description |
 |---|---|---|
 | `id` | string | Deferred message ID |
+| `provider` | string | `mailgun` (also for messages stored by versions before provider support), `smtp`, or `gmail` |
 | `deferred_at` | string | When the message was deferred |
 | `to` | array of strings | Recipients |
 | `subject` | string | Subject |
@@ -139,7 +147,7 @@ Message record (also used by `queue show`):
 | `next_retry` | string | With `pending`: when the message becomes eligible; a time in the past means it is eligible now |
 
 ```json
-{"schema_version":1,"command":"queue list","outcome":"ok","exit_code":0,"messages":[{"id":"20261015T090000.000000001-aa","deferred_at":"2026-10-15T09:00:00Z","to":["ops@example.com"],"subject":"Disk full","size":812,"attempts":2,"last_attempt":"2026-10-17T09:00:00Z","last_error":"mailgun: send message: status 503: failure","status":"pending","next_retry":"2026-10-17T09:20:00Z"}]}
+{"schema_version":1,"command":"queue list","outcome":"ok","exit_code":0,"messages":[{"id":"20261015T090000.000000001-aa","provider":"mailgun","deferred_at":"2026-10-15T09:00:00Z","to":["ops@example.com"],"subject":"Disk full","size":812,"attempts":2,"last_attempt":"2026-10-17T09:00:00Z","last_error":"mailgun: send message: status 503: failure","status":"pending","next_retry":"2026-10-17T09:20:00Z"}]}
 ```
 
 ## queue show
@@ -147,10 +155,11 @@ Message record (also used by `queue show`):
 | Field | Type | Description |
 |---|---|---|
 | `message` | object | The message record described above |
-| `raw` | object | Only with `--raw`: `content_type` (the multipart Content-Type) and `body_base64` (the stored request, base64-encoded because it may be binary) |
+| `raw` | object | Only with `--raw`: `content_type` (Mailgun: the multipart Content-Type; SMTP and Gmail: `message/rfc822`) and `body_base64` (the stored request, base64-encoded because it may be binary) |
 
 `--raw` is the only way to get message content in JSON. The stored request contains the message and its attachments,
-never credentials.
+never credentials. For SMTP the stored message has no Bcc header; the envelope recipients, Bcc included, are kept in
+the queue metadata only.
 
 ## queue delete
 
@@ -172,12 +181,30 @@ retry of a pending message).
 | Field | Type | Description |
 |---|---|---|
 | `checks` | array | Checks performed, in order; a failed check is the last one |
-| `domain` | object | When all checks passed: `name` and `state` as reported by Mailgun |
+| `domain` | object | Mailgun only, when all checks passed: `name` and `state` as reported by Mailgun |
 
-Check record: `name` (`config_file`, `mandatory_keys`, or `api_key_and_domain`), `ok` (boolean), and `message`.
+Check record: `name`, `ok` (boolean), and `message`. Names: `config_file`, `mandatory_keys`, then the provider check:
+`api_key_and_domain` (Mailgun), `smtp_connection` (SMTP: connection, TLS negotiation, and authentication; no message
+is sent and no recipient is probed), or `gmail_authorization` (Gmail: the stored authorization is usable, refreshed if
+nearly expired; nothing is sent).
 
 ```json
 {"schema_version":1,"command":"validate","outcome":"failed","exit_code":3,"error":{"code":"auth_failed","message":"mailgun rejected the API key: mailgun: validate domain: status 401: Forbidden"},"checks":[{"name":"config_file","ok":true,"message":"config file found and parses as valid TOML: /home/me/.config/mailfire/mailfire.conf"},{"name":"mandatory_keys","ok":true,"message":"mandatory keys present and well-formed (region \"eu\" from config file, domain \"example.com\" from config file, api key from config file)"},{"name":"api_key_and_domain","ok":false,"message":"mailgun rejected the API key: mailgun: validate domain: status 401: Forbidden"}]}
+```
+
+## auth status, auth refresh, auth logout
+
+| Field | Type | Description |
+|---|---|---|
+| `provider` | string | `gmail` |
+| `credential_file` | string | The credential file used (never its content) |
+| `logged_in` | boolean | `status` only |
+| `expires_at` | string | `status` and `refresh`: when the current access token expires (it is renewed automatically) |
+
+`auth login` is interactive and has no JSON output.
+
+```json
+{"schema_version":1,"command":"auth refresh","outcome":"ok","exit_code":0,"provider":"gmail","credential_file":"/home/me/.config/mailfire/gmail-credentials.json","expires_at":"2026-10-17T10:15:00Z"}
 ```
 
 ## version
@@ -195,7 +222,7 @@ Field: `directory`, the target folder with a leading `~` expanded.
 ## Examples with jq
 
 ```shell
-# Send and capture the Mailgun message ID; fail the script on any error.
+# Send and capture the message ID; fail the script on any error.
 id=$(mailfire --json --to ops@example.com --subject "Backup done" --message "ok" | jq -er .message_id)
 
 # Distinguish outcomes in a monitoring script.
@@ -216,7 +243,7 @@ mailfire queue stats --json | jq '.stats | {messages, failed}'
 mailfire queue list --json | jq -r '.messages[] | select(.status == "failed") | .id'
 
 # Alert on authentication problems only.
-mailfire validate --json | jq -e '.error.code != "auth_failed"' >/dev/null || echo "API key rejected"
+mailfire validate --json | jq -e '.error.code != "auth_failed"' >/dev/null || echo "credentials rejected"
 ```
 
 ## Compatibility

@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +21,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/logging"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/message"
 )
 
 // resend.go implements the resend subcommand (PRD FR-4): it replays
@@ -281,13 +281,14 @@ func resendSend(cfg *config.Config, store *deferral.Store, msgs []deferral.Metad
 		printlnOutput(stdout, "no deferred messages")
 		return ExitOK
 	}
-
-	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...)
-	if err != nil {
-		// Cannot happen: config.Load already validated these fields.
-		printfOutput(stderr, "mailfire: %v\n", err)
-		res.setError(errConfig, err)
-		return ExitConfig
+	// Preserve the existing defensive validation for the default Mailgun
+	// transport. SMTP entries are selected per queued metadata below.
+	if cfg.Provider == "" || cfg.Provider == "mailgun" {
+		if _, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...); err != nil {
+			printfOutput(stderr, "mailfire: %v\n", err)
+			res.setError(errConfig, err)
+			return ExitConfig
+		}
 	}
 
 	// As in send, the logfile is opened before any attempt: an unusable
@@ -332,7 +333,7 @@ func resendSend(cfg *config.Config, store *deferral.Store, msgs []deferral.Metad
 		if gone[listed.ID] {
 			continue // expired: already reported
 		}
-		rec := resendMessage{ID: listed.ID}
+		rec := resendMessage{ID: listed.ID, Provider: storedProvider(listed)}
 		guard, err := resendGuard(cfg, listed, rc)
 		var code, outcome int
 		if err != nil {
@@ -343,7 +344,7 @@ func resendSend(cfg *config.Config, store *deferral.Store, msgs []deferral.Metad
 			rec.Error = newJSONError(errDedup, err)
 			code, outcome = ExitSendFail, outcomeFailed
 		} else {
-			code, outcome = resendLocked(client, store, logger, guard, listed.ID, cfg.ResendCooldown,
+			code, outcome = resendLocked(cfg, opts.Timeout, store, logger, guard, listed.ID, cfg.ResendCooldown,
 				opts.Force, explicit, rc, &rec, stdout, stderr)
 			finishResendGuard(guard, cfg, listed, outcome == outcomeSent, rc, stderr)
 		}
@@ -383,7 +384,7 @@ const (
 // message since it was listed), applies the permanent-failure and
 // backoff rules unless overridden, and attempts delivery. guard, when
 // non-nil, is the held deduplication scope of the message.
-func resendLocked(client *mailgun.Client, store *deferral.Store, logger *logging.Logger, guard *dedup.Guard, id string,
+func resendLocked(cfg *config.Config, timeout time.Duration, store *deferral.Store, logger *logging.Logger, guard *dedup.Guard, id string,
 	cooldown time.Duration, force, explicit bool, rc *runContext, rec *resendMessage, stdout, stderr io.Writer) (int, int) {
 	unlock, err := store.Lock()
 	if err != nil {
@@ -445,7 +446,7 @@ func resendLocked(client *mailgun.Client, store *deferral.Store, logger *logging
 		rec.Reason, rec.NextRetry = "not_eligible", rfc3339(eligible)
 		return ExitOK, outcomeSkipped
 	}
-	code, gone := resendOne(client, store, logger, guard, meta, now, cooldown, rec, stdout, stderr)
+	code, gone := resendOne(cfg, timeout, store, logger, guard, meta, now, cooldown, rc, rec, stdout, stderr)
 	switch {
 	case gone:
 		return code, outcomeSkipped
@@ -516,8 +517,8 @@ func selectMessages(msgs []deferral.Metadata, ids []string) ([]deferral.Metadata
 // With a deduplication guard, the attempt is recorded as pending before
 // the request is made, so a crash between delivery and recording the
 // cooldown leaves the notification in doubt rather than unprotected.
-func resendOne(client *mailgun.Client, store *deferral.Store, logger *logging.Logger, guard *dedup.Guard,
-	meta deferral.Metadata, at time.Time, cooldown time.Duration, rec *resendMessage, stdout, stderr io.Writer) (code int, gone bool) {
+func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store, logger *logging.Logger, guard *dedup.Guard,
+	meta deferral.Metadata, at time.Time, cooldown time.Duration, rc *runContext, rec *resendMessage, stdout, stderr io.Writer) (code int, gone bool) {
 	dir, err := store.MessageDir(meta.ID)
 	if err != nil {
 		printfOutput(stderr, "mailfire: resend: %v\n", err)
@@ -545,16 +546,30 @@ func resendOne(client *mailgun.Client, store *deferral.Store, logger *logging.Lo
 			return ExitSendFail, false
 		}
 	}
-	resp, err := client.SendRaw(context.Background(), meta.ContentType, body)
+	resp, blocked, sendErr := replay(cfg, timeout, rc, meta, body)
+	if blocked != nil {
+		// Not a delivery failure: nothing was sent. The retry metadata is
+		// left untouched (no attempt, never marked permanently failed), so
+		// fixing the configuration lets a normal resend proceed.
+		printfOutput(stderr, "mailfire: resend: %s: %v\n", meta.ID, blocked.err)
+		printfOutput(stdout, "%s: blocked (%s; message kept, nothing sent)\n", meta.ID, strings.ReplaceAll(blocked.reason, "_", " "))
+		rec.Reason = blocked.reason
+		rec.Error = newJSONError(errConfig, blocked.err)
+		return ExitSendFail, false
+	}
 	if logger != nil {
+		from := meta.EnvelopeFrom
+		if from == "" {
+			from = storedFrom(meta.ContentType, body)
+		}
 		logOutcome(logger, logging.Attempt{
-			From:    storedFrom(meta.ContentType, body),
+			From:    from,
 			To:      meta.To,
 			Subject: meta.Subject,
 			Size:    int64(len(body)),
-		}, resp, err, stderr)
+		}, resp, sendErr, stderr)
 	}
-	return reportResend(store, meta, resp, err, at, cooldown, rec, stdout, stderr), false
+	return reportResend(store, meta, resp, sendErr, at, cooldown, rec, stdout, stderr), false
 }
 
 // reportResend prints the outcome of one resend attempt, removes the
@@ -578,7 +593,7 @@ func reportResend(store *deferral.Store, meta deferral.Metadata, resp *mailgun.S
 	}
 	printfOutput(stderr, "mailfire: resend: %s: %v\n", meta.ID, err)
 	rec.Error = newJSONError(sendErrorCode(err), err)
-	permanent := !mailgun.IsAuth(err) && !mailgun.IsDeferrable(err)
+	permanent := !message.IsAuth(err) && !message.IsDeferrable(err)
 	updated, rerr := store.RecordFailure(meta.ID, at, err.Error(), permanent)
 	if rerr != nil {
 		// The message itself is untouched; only its retry metadata is
@@ -587,10 +602,10 @@ func reportResend(store *deferral.Store, meta deferral.Metadata, resp *mailgun.S
 		updated = meta
 	}
 	switch {
-	case mailgun.IsAuth(err):
+	case message.IsAuth(err):
 		printfOutput(stdout, "%s: failed (authentication error; message kept)\n", meta.ID)
 		return ExitAuth
-	case mailgun.IsDeferrable(err):
+	case message.IsDeferrable(err):
 		printfOutput(stdout, "%s: failed (retryable; message kept, next retry at %s)\n",
 			meta.ID, formatUTC(updated.NextRetry(cooldown)))
 		rec.NextRetry = rfc3339(updated.NextRetry(cooldown))

@@ -47,7 +47,7 @@ def main():
 
   url "https://github.com/thorstenkramm/mailfire/releases/download/v#{{version}}/mailfire_#{{version}}_darwin_#{{arch}}.tar.gz"
   name "Mailfire"
-  desc "Send email from the command-line via the Mailgun API"
+  desc "Send email from the command-line via Mailgun, Gmail, or SMTP"
   homepage "https://github.com/thorstenkramm/mailfire"
 
   depends_on :macos

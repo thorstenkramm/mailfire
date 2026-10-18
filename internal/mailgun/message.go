@@ -15,6 +15,8 @@ import (
 	"net/url"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/thorstenkramm/mailfire/internal/message"
 )
 
 // maxResponseBody caps how much of a Mailgun response is read. Real
@@ -22,72 +24,19 @@ import (
 const maxResponseBody = 1 << 20 // 1 MiB
 
 // File is a file attached to a message, either as a regular attachment or
-// as an inline file referenced from the HTML body via cid:.
-type File struct {
-	// Name is the filename sent to Mailgun (e.g. "report.pdf").
-	Name string
-	// ContentType is optional; when empty, it is sniffed from the first
-	// bytes and falls back to application/octet-stream.
-	ContentType string
-	// Reader yields the file content and is consumed once per send.
-	Reader io.Reader
-}
+// as an inline file referenced from the HTML body via cid:. It is the
+// provider-neutral type defined in internal/message (task 31).
+type File = message.File
 
-// Message is one email to send via POST /v3/{domain}/messages. Later
-// milestones populate attachments, inline files, and both body variants;
-// the struct is designed so they can do so without changes here.
-type Message struct {
-	From    string   // sender, e.g. "Ops Bot <ops@example.com>"
-	To      []string // recipients, at least one required by Mailgun
-	Cc      []string
-	Bcc     []string
-	Subject string
-	Text    string // plain-text body; optional when HTML is set
-	HTML    string // HTML body; optional when Text is set
-
-	// TestMode sends o:testmode=yes: Mailgun validates but does not
-	// deliver. Set only from the --test CLI flag, never from config.
-	// Invariant: resend (task 15) never sends in test mode, even if the
-	// original send used --test (PRD FR-1, Decision Q5). This holds
-	// because --test sends are never deferred (review 12 decision, see
-	// reportSendError in cli/send.go), so a stored body never carries
-	// o:testmode=yes.
-	TestMode bool
-
-	Attachments []File // sent as repeated "attachment" file parts
-	Inline      []File // sent as repeated "inline" file parts
-
-	// Size is the encoded multipart request size in bytes, set by
-	// SendMessage after encoding (0 before the first SendMessage call or
-	// when encoding failed). It backs the "size" field of debug-level
-	// logging (PRD FR-3). Consumers must not set it.
-	Size int
-
-	// Encoded is the exact multipart request body sent to Mailgun and
-	// EncodedType its Content-Type (boundary included). Both are set by
-	// SendMessage alongside Size (nil/"" before the first call or when
-	// encoding failed). Deferral (task 14) persists these bytes: the
-	// readers in Attachments/Inline are consumed by encoding, so the
-	// message cannot be re-encoded after a send attempt (review 09).
-	// Consumers must not set them.
-	Encoded     []byte
-	EncodedType string
-}
+// Message is one email to send via POST /v3/{domain}/messages. It is the
+// provider-neutral type defined in internal/message (task 31), shared with
+// the SMTP provider. For Mailgun, Attachments are sent as repeated
+// "attachment" file parts and Inline files as "inline" parts; Encoded
+// holds the exact multipart request body.
+type Message = message.Message
 
 // SendResponse is Mailgun's answer to a successful send.
-type SendResponse struct {
-	ID      string // e.g. "<20261015...@mg.example.com>"
-	Message string // e.g. "Queued. Thank you."
-
-	// StatusCode is the HTTP status of the response (200 from Mailgun).
-	// StatusCode and RawBody are set by the client, never decoded from
-	// the response body.
-	StatusCode int `json:"-"`
-	// RawBody is the raw response body with any occurrence of the API
-	// key redacted; it backs the "response" field of debug-level logging
-	// (PRD FR-3). It is capped at maxResponseBody bytes.
-	RawBody string `json:"-"`
-}
+type SendResponse = message.SendResponse
 
 // SendMessage posts the message to /v3/{domain}/messages as
 // multipart/form-data and returns Mailgun's message ID on success.

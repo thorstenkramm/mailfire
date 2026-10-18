@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/deferral"
-	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/message"
 )
 
 // JSON output (task 27): with --json, a command prints exactly one JSON
@@ -113,12 +113,12 @@ func exitErrorCode(exit int) string {
 // sendErrorCode classifies a Mailgun client error.
 func sendErrorCode(err error) string {
 	switch {
-	case mailgun.IsAuth(err):
+	case message.IsAuth(err):
 		return errAuth
-	case mailgun.IsDeferrable(err):
+	case message.IsDeferrable(err):
 		return errTemporary
 	}
-	if merr, ok := mailgun.As(err); ok && merr.StatusCode > 0 {
+	if serr, ok := message.As(err); ok && serr.ReplyCode() > 0 {
 		return errRejected
 	}
 	return errSendFailed
@@ -170,6 +170,7 @@ func rfc3339(t time.Time) string {
 // sendResult is the document of send.
 type sendResult struct {
 	envelope
+	Provider   string    `json:"provider,omitempty"` // "mailgun", "smtp", or "gmail"; empty before the config is loaded
 	TestMode   bool      `json:"test_mode"`
 	MessageID  string    `json:"message_id,omitempty"`
 	DeferredID string    `json:"deferred_id,omitempty"`
@@ -194,9 +195,12 @@ type resendResult struct {
 
 // resendMessage is the outcome of one message in a resend run.
 type resendMessage struct {
-	ID        string     `json:"id"`
-	Outcome   string     `json:"outcome"`          // "sent", "skipped", "failed", or "expired"
-	Reason    string     `json:"reason,omitempty"` // skipped: "not_eligible", "permanently_failed", "gone"
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"` // provider the message was deferred through
+	Outcome  string `json:"outcome"`            // "sent", "skipped", "failed", or "expired"
+	// Reason: skipped: "not_eligible", "permanently_failed", "gone";
+	// failed without an attempt: "account_mismatch", "provider_unavailable".
+	Reason    string     `json:"reason,omitempty"`
 	MessageID string     `json:"message_id,omitempty"`
 	NextRetry string     `json:"next_retry,omitempty"`
 	Warning   string     `json:"warning,omitempty"`
@@ -214,6 +218,7 @@ type resendSummary struct {
 // and queue show. It never includes the message content.
 type queuedMessage struct {
 	ID          string   `json:"id"`
+	Provider    string   `json:"provider"` // "mailgun" for messages stored before provider identity
 	DeferredAt  string   `json:"deferred_at"`
 	To          []string `json:"to"`
 	Subject     string   `json:"subject"`
@@ -228,6 +233,7 @@ type queuedMessage struct {
 func newQueuedMessage(store *deferral.Store, m deferral.Metadata, cooldown time.Duration, now time.Time) queuedMessage {
 	q := queuedMessage{
 		ID:          m.ID,
+		Provider:    storedProvider(m),
 		DeferredAt:  rfc3339(m.Timestamp),
 		To:          append([]string{}, m.To...),
 		Subject:     m.Subject,

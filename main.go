@@ -1,4 +1,4 @@
-// Command mailfire sends email from the command line via the Mailgun API.
+// Command mailfire sends email from the command line via Mailgun, Gmail, or SMTP.
 package main
 
 import (

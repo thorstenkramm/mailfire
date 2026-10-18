@@ -83,7 +83,7 @@ nfpms:
     vendor: Thorsten Kramm
     homepage: https://github.com/thorstenkramm/mailfire
     maintainer: Thorsten Kramm <tk@system42.io>
-    description: Send email from the command line via the Mailgun API
+    description: Send email from the command line via Mailgun, Gmail, or SMTP
     license: MIT
     formats: [deb, rpm]
     bindir: /usr/bin
