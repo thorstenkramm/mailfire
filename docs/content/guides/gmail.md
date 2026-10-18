@@ -10,8 +10,8 @@ settings, an app password, or your own Google Cloud project.
 
 > [!IMPORTANT] Availability
 > Mailfire's Google app is awaiting Google's verification. Until it is verified, only accounts registered as testers
-> can sign in, and released versions up to 0.3.0 do not include the Gmail provider. Developers can use their own
-> Desktop OAuth client by setting `MAILFIRE_GMAIL_CLIENT_ID` and `MAILFIRE_GMAIL_CLIENT_SECRET`.
+> can sign in. Developers can use their own Desktop OAuth client by setting `MAILFIRE_GMAIL_CLIENT_ID` and
+> `MAILFIRE_GMAIL_CLIENT_SECRET`.
 
 ## Set up
 
