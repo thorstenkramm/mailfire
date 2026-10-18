@@ -48,6 +48,8 @@ credential. Writes are atomic and locked, so concurrent sends and refreshes cann
 removes the local file. Logging out does not revoke Mailfire's access at Google; do that at
 <https://myaccount.google.com/permissions>.
 
+The [privacy policy](../privacy.md) describes how Mailfire handles your Google user data.
+
 ## Token lifetime
 
 Access tokens usually last about one hour. Mailfire refreshes them automatically before a send when they expire

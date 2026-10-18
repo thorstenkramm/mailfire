@@ -25,7 +25,9 @@ These steps take the longest, so start with them.
    that is unconfirmed, so a real domain is safer.
 2. **Verify the domain** in [Google Search Console](https://search.google.com/search-console), using the same
    Google account that will own the Cloud project.
-3. **Publish two public pages on that domain:**
+3. **Publish two public pages on that domain.** Done: the home page <https://mailfire.system42.io/> (section "How
+   Mailfire uses your Gmail account") and the privacy policy <https://mailfire.system42.io/privacy/>
+   (`docs/content/privacy.md`, linked from the home page and every page footer). Requirements:
    - **Home page:** what Mailfire is, what it does with Gmail, and a link to the privacy policy.
    - **Privacy policy.** It must state:
      - Mailfire only sends mail the user tells it to send.
@@ -45,8 +47,8 @@ This takes about 15 minutes.
    **Enable**.
 3. **Google Auth Platform → Branding:**
    - App name `Mailfire`, support email, and logo.
-   - Home page and privacy policy URLs.
-   - Your domain under authorized domains.
+   - Home page `https://mailfire.system42.io/` and privacy policy `https://mailfire.system42.io/privacy/`.
+   - `system42.io` under authorized domains.
    - Developer contact email.
 4. **Audience:** choose **External**. The app starts in **Testing**; add your own Gmail address as a test user.
 5. **Data Access → Add or remove scopes:** add `https://www.googleapis.com/auth/gmail.send` (listed as

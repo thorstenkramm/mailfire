@@ -530,6 +530,17 @@ html[data-theme="dark"] .mf-when-light { display: none; }
 
 .mf-install { max-width: 760px; margin: 24px auto 0; }
 
+.mf-gmail-note {
+  margin-top: 32px;
+  padding: 22px 24px;
+  border: 1px solid var(--mf-border);
+  border-left: 4px solid var(--mf-brand);
+  border-radius: var(--mf-radius);
+  background: var(--mf-surface);
+}
+.mf-gmail-note h3 { margin: 0 0 6px; font-size: 1.12rem; font-weight: 650; }
+.mf-gmail-note p { margin: 0 0 10px; color: var(--mf-muted); max-width: 60em; }
+
 /* ---- Footer, 404 --------------------------------------------------- */
 
 .mf-footer { padding: 36px 0; border-top: 1px solid var(--mf-border); background: var(--mf-surface); color: var(--mf-muted); font-size: 0.9rem; }

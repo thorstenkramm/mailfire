@@ -78,6 +78,16 @@
         {{- end }}
         {{- end }}
       </div>
+      {{- with $p.gmail }}
+      <div class="mf-gmail-note">
+        <h3>{{ .title }}</h3>
+        <p>{{ .text | markdownify }}</p>
+        <p class="uk-margin-remove-bottom">
+          {{- with site.GetPage "/guides/gmail" }}<a class="mf-more" href="{{ .RelPermalink }}">Gmail guide <span uk-icon="icon: arrow-right; ratio: 0.8"></span></a>{{ end }}
+          {{- with site.GetPage "/privacy" }}<a class="mf-more uk-margin-left" href="{{ .RelPermalink }}">Privacy policy <span uk-icon="icon: arrow-right; ratio: 0.8"></span></a>{{ end }}
+        </p>
+      </div>
+      {{- end }}
     </div>
   </section>
 

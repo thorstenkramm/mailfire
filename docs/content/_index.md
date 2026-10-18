@@ -51,6 +51,13 @@ providers:
   - link: /guides/mailgun
   - link: /guides/smtp
   - link: /guides/gmail
+gmail:
+  title: How Mailfire uses your Gmail account
+  text: >-
+    With the Gmail provider, Mailfire asks Google only for permission to send email (`gmail.send`) and for an opaque
+    account identifier (`openid`), not your name or email address. It sends the messages you tell it to send — it never reads, lists, or changes the mail in
+    your mailbox. Your sign-in tokens are stored only on your own computer and never reach the Mailfire project or
+    anyone else.
 installTitle: Install in seconds
 install:
   - name: macOS
