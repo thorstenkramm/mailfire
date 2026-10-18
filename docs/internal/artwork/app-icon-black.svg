@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <title>mailfire</title>
+  <rect width="120" height="120" rx="26" fill="#000000"/>
+  <path transform="translate(60 74) scale(2)" d="M0 -30 C5 -20 14 -14 14 -2 C14 7 8 13 0 13 C-8 13 -14 7 -14 -2 C-14 -9 -10 -13 -7 -17 C-6 -11 -3 -9 -1 -9 C-2 -16 -3 -23 0 -30 Z" fill="#F0531C"/>
+  <rect x="43" y="62" width="34" height="26" rx="3" fill="none" stroke="#000000" stroke-width="5"/>
+  <path d="M45 64.5 L60 76 L75 64.5" fill="none" stroke="#000000" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

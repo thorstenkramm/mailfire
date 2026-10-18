@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <title>mailfire</title>
+  <mask id="envelope">
+    <rect width="120" height="120" fill="#fff"/>
+    <rect x="40" y="62" width="40" height="32" rx="4" fill="none" stroke="#000" stroke-width="6"/>
+    <path d="M42 65 L60 79 L78 65" fill="none" stroke="#000" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  </mask>
+  <g mask="url(#envelope)">
+    <path transform="translate(60 78) scale(2.4)" d="M0 -30 C5 -20 14 -14 14 -2 C14 7 8 13 0 13 C-8 13 -14 7 -14 -2 C-14 -9 -10 -13 -7 -17 C-6 -11 -3 -9 -1 -9 C-2 -16 -3 -23 0 -30 Z" fill="#000000"/>
+  </g>
+</svg>
