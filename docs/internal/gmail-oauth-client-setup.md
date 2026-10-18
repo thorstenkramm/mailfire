@@ -55,8 +55,13 @@ This takes about 15 minutes.
    sensitive) and `openid` (listed as non-sensitive). Add nothing else.
 6. **Clients → Create client:**
    - Application type **Desktop app**, name `Mailfire CLI`.
-   - Desktop clients need no redirect URIs. Google accepts any `http://127.0.0.1:<port>` callback for them,
-     which is what Mailfire uses.
+   - There is no redirect or callback URL setting for Desktop clients, and none is needed: Google accepts any
+     loopback callback `http://127.0.0.1:<port>/...` for them, which is what Mailfire uses
+     (`/oauth2/callback` on a random port, or the one given with `--port`). A redirect URI field only appears for
+     the "Web application" type, which is the wrong type for Mailfire.
+   - Leave "Use this client for an AI-powered agent" unchecked.
+   - New clients and settings can take from 5 minutes to a few hours to take effect; an "invalid client" error
+     right after creation usually just means waiting.
    - Note the **client ID** and **client secret**. For desktop apps neither is treated as confidential, because
      anyone can extract them from the binary. The users' refresh tokens are what must be protected.
 
