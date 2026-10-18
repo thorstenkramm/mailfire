@@ -634,8 +634,13 @@ func TestResendClientConstructionError(t *testing.T) {
 	cfg := &config.Config{APIKey: "k", Domain: "d", Region: "atlantis", DeferDir: deferDir}
 	store := &deferral.Store{Dir: deferDir}
 	opts := &resendOptions{}
+	msgs, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var stdout, stderr bytes.Buffer
-	if code := resendSend(cfg, store, opts, &runContext{}, &stdout, &stderr); code != ExitConfig {
+	res := &resendResult{}
+	if code := resendSend(cfg, store, msgs, opts, &runContext{}, res, &stdout, &stderr); code != ExitConfig {
 		t.Errorf("exit = %d, want %d", code, ExitConfig)
 	}
 	if !strings.Contains(stderr.String(), "unknown region") {
@@ -647,16 +652,12 @@ func TestResendClientConstructionError(t *testing.T) {
 // home directory is unknown), there is no place to look for deferred
 // messages: an empty result, not an error.
 func TestListDeferredNoDir(t *testing.T) {
-	var stderr bytes.Buffer
-	msgs, code := listDeferred(&deferral.Store{}, &stderr)
-	if code != ExitOK {
-		t.Errorf("code = %d, want %d", code, ExitOK)
+	msgs, err := listDeferred(&deferral.Store{})
+	if err != nil {
+		t.Errorf("err = %v, want nil", err)
 	}
 	if msgs != nil {
 		t.Errorf("msgs = %v, want nil", msgs)
-	}
-	if stderr.String() != "" {
-		t.Errorf("stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -672,7 +673,7 @@ func TestResendOneGoneMessage(t *testing.T) {
 	store := &deferral.Store{Dir: t.TempDir()}
 	meta := deferral.Metadata{ID: "no-such-dir", To: []string{"a@example.com"}, Subject: "s"}
 	var stdout, stderr bytes.Buffer
-	code, gone := resendOne(client, store, nil, meta, &stdout, &stderr)
+	code, gone := resendOne(client, store, nil, nil, meta, time.Now(), config.DefaultCooldown, &resendMessage{}, &stdout, &stderr)
 	if code != ExitOK || !gone {
 		t.Errorf("resendOne = (%d, %v), want (%d, true)", code, gone, ExitOK)
 	}
@@ -737,7 +738,7 @@ func TestResendOneUnreadableBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	code, gone := resendOne(client, store, nil, meta, &stdout, &stderr)
+	code, gone := resendOne(client, store, nil, nil, meta, time.Now(), config.DefaultCooldown, &resendMessage{}, &stdout, &stderr)
 	if code != ExitSendFail || gone {
 		t.Errorf("resendOne = (%d, %v), want (%d, false)", code, gone, ExitSendFail)
 	}

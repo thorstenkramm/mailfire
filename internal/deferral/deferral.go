@@ -26,6 +26,19 @@
 // incompleteGrace, so a save in progress in a concurrent mailfire
 // process is never mistaken for a crash leftover.
 //
+// Retry metadata (task 25) lives in meta.json as optional fields —
+// attempts, last_attempt, last_error, failed — and is rewritten
+// atomically (temporary file plus rename) after each failed resend;
+// body.bin is never modified. Messages stored by older versions lack the
+// fields and read as never retried. Older versions ignore them. The
+// optional dedup_scope and dedup_cooldown fields (task 24) link a message
+// to its notification-deduplication scope in the same compatible way.
+//
+// Concurrency: every write — Save (including its cleanups), retry
+// bookkeeping, deletion — runs under an exclusive lock on the defer_dir's
+// lock file (LockFile, see Lock). Reads take no lock: meta.json only ever
+// appears or changes via rename, so List always sees a consistent state.
+//
 // This layout is read by resend and may sit on disk across upgrades;
 // change it only with backwards compatibility in mind.
 package deferral
@@ -42,6 +55,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/fsutil"
 )
 
 const (
@@ -57,6 +72,16 @@ const (
 
 	// metaTmpFile is meta.json while being written; renamed on success.
 	metaTmpFile = MetaFile + ".tmp"
+
+	// LockFile is the lock file in the defer_dir (see Lock). It is a
+	// plain file, so it is never mistaken for a message directory.
+	LockFile = ".lock"
+
+	// ReservedDir is a subdirectory of the defer_dir that never holds a
+	// message: by default the notification-deduplication state lives in
+	// <default defer_dir>/dedup (task 24). The store ignores it — it is
+	// neither listed nor evicted as an incomplete write.
+	ReservedDir = "dedup"
 )
 
 // incompleteGrace is how long an incomplete message directory is left
@@ -79,6 +104,28 @@ type Metadata struct {
 	// ContentType is the multipart Content-Type of body.bin, boundary
 	// included; resend replays the body with exactly this header.
 	ContentType string `json:"content_type"`
+
+	// Attempts counts failed resend attempts (the original send is not
+	// counted). Zero for messages never resent and for messages stored
+	// by versions without retry metadata.
+	Attempts int `json:"attempts,omitempty"`
+	// LastAttempt is when the latest failed resend was attempted.
+	LastAttempt time.Time `json:"last_attempt,omitzero"`
+	// LastError is the error of the latest failed attempt: the original
+	// send's when the message was never resent. Never contains
+	// credentials (Mailgun errors carry no API key).
+	LastError string `json:"last_error,omitempty"`
+	// Failed marks a message Mailgun rejected permanently. It is kept
+	// for inspection but excluded from automatic retries.
+	Failed bool `json:"failed,omitempty"`
+
+	// DedupScope is the notification-deduplication scope (task 24) of a
+	// send with --dedup-key: while the message is queued, duplicates of
+	// it are skipped, and a successful resend starts its cooldown of
+	// DedupCooldown. Empty for sends without a key and for messages
+	// stored by older versions.
+	DedupScope    string        `json:"dedup_scope,omitempty"`
+	DedupCooldown time.Duration `json:"dedup_cooldown,omitempty"`
 }
 
 // Store is a defer_dir holding deferred messages.
@@ -93,6 +140,22 @@ type Store struct {
 	// max_size cleanup, in the order they are dropped (oldest first). The
 	// CLI wires it to stderr and the send log (PRD FR-4).
 	OnDrop func(meta Metadata)
+	// MaxAge, when positive, is [defer].max_age: Save and Expire remove
+	// messages deferred longer ago than MaxAge. Zero disables expiry.
+	MaxAge time.Duration
+	// OnExpire, when non-nil, is called once per message removed because
+	// it exceeded MaxAge.
+	OnExpire func(meta Metadata)
+	// Now, when non-nil, replaces time.Now (tests use a controlled
+	// clock).
+	Now func() time.Time
+}
+
+func (s *Store) now() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
 }
 
 // Save persists body with fresh metadata under a newly generated ID and
@@ -104,26 +167,51 @@ type Store struct {
 // Save returns a non-empty Metadata together with an error when the
 // message was stored but the max_size cleanup failed: the send counts as
 // deferred, but the cleanup problem should be reported.
+//
+// Save holds the store lock throughout, and expires messages older than
+// MaxAge before the max_size cleanup.
 func (s *Store) Save(to []string, subject string, body []byte, contentType string) (Metadata, error) {
+	return s.SaveWithError(to, subject, body, contentType, "")
+}
+
+// SaveWithError is Save recording sendErr — the error of the failed send
+// — as the message's LastError.
+func (s *Store) SaveWithError(to []string, subject string, body []byte, contentType, sendErr string) (Metadata, error) {
+	return s.SaveMessage(Metadata{To: to, Subject: subject, ContentType: contentType, LastError: sendErr}, body)
+}
+
+// SaveMessage is Save for a message described by m: its To, Subject,
+// ContentType, LastError, DedupScope, and DedupCooldown are stored; ID,
+// Timestamp, Size, and the retry state are assigned fresh.
+func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) {
 	if s.Dir == "" {
 		return Metadata{}, errors.New("deferral: no defer_dir configured")
 	}
-	if err := os.MkdirAll(s.Dir, dirPerm); err != nil {
-		return Metadata{}, fmt.Errorf("deferral: cannot create %s: %w", s.Dir, err)
+	unlock, err := s.Lock()
+	if err != nil {
+		return Metadata{}, err
 	}
+	defer func() {
+		if uerr := unlock(); uerr != nil && err == nil {
+			err = uerr
+		}
+	}()
 
-	now := time.Now().UTC()
+	now := s.now().UTC()
 	dir, id, err := s.createMessageDir(now)
 	if err != nil {
 		return Metadata{}, err
 	}
-	meta := Metadata{
-		ID:          id,
-		Timestamp:   now,
-		To:          append([]string(nil), to...),
-		Subject:     subject,
-		Size:        int64(len(body)),
-		ContentType: contentType,
+	meta = Metadata{
+		ID:            id,
+		Timestamp:     now,
+		To:            append([]string(nil), m.To...),
+		Subject:       m.Subject,
+		Size:          int64(len(body)),
+		ContentType:   m.ContentType,
+		LastError:     truncateError(m.LastError),
+		DedupScope:    m.DedupScope,
+		DedupCooldown: m.DedupCooldown,
 	}
 
 	// body.bin first, meta.json last: meta.json is the commit marker, so
@@ -135,22 +223,39 @@ func (s *Store) Save(to []string, subject string, body []byte, contentType strin
 	if err := writeFileSync(filepath.Join(dir, BodyFile), body); err != nil {
 		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, BodyFile), err), os.RemoveAll(dir))
 	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return Metadata{}, errors.Join(fmt.Errorf("deferral: encoding metadata: %w", err), os.RemoveAll(dir))
-	}
-	tmp := filepath.Join(dir, metaTmpFile)
-	if err := writeFileSync(tmp, append(data, '\n')); err != nil {
-		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", tmp, err), os.RemoveAll(dir))
-	}
-	if err := os.Rename(tmp, filepath.Join(dir, MetaFile)); err != nil {
-		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, MetaFile), err), os.RemoveAll(dir))
+	if err := writeMeta(dir, meta); err != nil {
+		return Metadata{}, errors.Join(err, os.RemoveAll(dir))
 	}
 
+	if _, err := s.expireLocked(); err != nil {
+		return meta, err
+	}
 	if err := s.enforceMaxSize(meta.ID); err != nil {
 		return meta, err
 	}
 	return meta, nil
+}
+
+// writeMeta writes meta.json into the message directory dir atomically:
+// a synced temporary file renamed into place, replacing any previous
+// meta.json. Callers hold the store lock, so a leftover temporary file
+// (crash mid-write) is stale and removed first.
+func writeMeta(dir string, meta Metadata) error {
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return fmt.Errorf("deferral: encoding metadata: %w", err)
+	}
+	tmp := filepath.Join(dir, metaTmpFile)
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("deferral: removing stale %s: %w", tmp, err)
+	}
+	if err := writeFileSync(tmp, append(data, '\n')); err != nil {
+		return fmt.Errorf("deferral: writing %s: %w", tmp, err)
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, MetaFile)); err != nil {
+		return errors.Join(fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, MetaFile), err), os.Remove(tmp))
+	}
+	return nil
 }
 
 // List returns the metadata of all properly stored messages, oldest
@@ -194,13 +299,7 @@ func writeFileSync(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		return errors.Join(err, f.Close())
-	}
-	if err := f.Sync(); err != nil {
-		return errors.Join(err, f.Close())
-	}
-	return f.Close()
+	return fsutil.WriteSyncClose(f, data)
 }
 
 // idTimeFormat makes the ID's timestamp prefix sortable as plain text.
@@ -220,8 +319,8 @@ func newID(t time.Time) string {
 }
 
 // entry is one subdirectory of the defer_dir. Entries without a parseable
-// meta.json, or whose body.bin is missing or not of the recorded size,
-// are invalid (incomplete writes or foreign directories); they can never
+// meta.json, whose meta.json ID differs from the directory name, or whose
+// body.bin is missing or not of the recorded size, are invalid (incomplete writes or foreign directories); they can never
 // be resent and are the first eviction candidates.
 type entry struct {
 	meta    Metadata
@@ -257,8 +356,8 @@ func (s *Store) scan() (result []entry, err error) {
 	}
 	var entries []entry
 	for _, d := range dirs {
-		if !d.IsDir() {
-			continue // stray files are not ours to touch
+		if !d.IsDir() || d.Name() == ReservedDir {
+			continue // stray files and the dedup state are not ours to touch
 		}
 		e := entry{path: filepath.Join(s.Dir, d.Name()), size: dirSize(filepath.Join(s.Dir, d.Name()))}
 		if fi, err := d.Info(); err == nil {
@@ -266,7 +365,11 @@ func (s *Store) scan() (result []entry, err error) {
 		}
 		if data, err := os.ReadFile(filepath.Join(e.path, MetaFile)); err == nil {
 			err = json.Unmarshal(data, &e.meta)
-			e.valid = err == nil && e.meta.ID != "" && bodyIntact(e.path, e.meta.Size)
+			// The ID must name this very directory: every operation
+			// addresses a message by its ID, so a corrupt or malicious
+			// meta.json (e.g. id = "../elsewhere") must never redirect
+			// reads, rewrites, or removals outside it.
+			e.valid = err == nil && e.meta.ID == d.Name() && validID(e.meta.ID) && bodyIntact(e.path, e.meta.Size)
 		}
 		if !e.valid {
 			e.meta = Metadata{ID: d.Name(), Size: e.size}

@@ -63,10 +63,20 @@ func TestSaveAndListRoundTrip(t *testing.T) {
 	}
 
 	// The directory layout: one subdirectory per message, named by ID,
-	// holding body.bin and meta.json.
-	dirs, err := os.ReadDir(s.Dir)
+	// holding body.bin and meta.json, plus the plain lock file.
+	entries, err := os.ReadDir(s.Dir)
 	if err != nil {
 		t.Fatalf("reading defer_dir: %v", err)
+	}
+	var dirs []os.DirEntry
+	for _, e := range entries {
+		if e.Name() == LockFile {
+			if !e.Type().IsRegular() {
+				t.Errorf("%s is not a regular file", LockFile)
+			}
+			continue
+		}
+		dirs = append(dirs, e)
 	}
 	if len(dirs) != 2 {
 		t.Fatalf("got %d entries in defer_dir, want 2", len(dirs))

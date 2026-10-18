@@ -40,7 +40,9 @@ func deferredIDs(t *testing.T, deferDir string) []string {
 	}
 	var ids []string
 	for _, e := range entries {
-		ids = append(ids, e.Name())
+		if e.IsDir() { // skip the store's lock file
+			ids = append(ids, e.Name())
+		}
 	}
 	return ids
 }
@@ -428,7 +430,7 @@ func TestDeferMessageGuards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			deferDir := filepath.Join(t.TempDir(), "deferred")
 			var stderr bytes.Buffer
-			code := deferMessage(&config.Config{Defer: true, DeferDir: deferDir}, tc.msg, nil, &stderr)
+			code := deferMessage(&config.Config{Defer: true, DeferDir: deferDir}, tc.msg, nil, nil, nil, &sendResult{}, &stderr)
 			if code != ExitSendFail {
 				t.Errorf("exit = %d, want %d", code, ExitSendFail)
 			}

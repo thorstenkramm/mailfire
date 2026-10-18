@@ -25,6 +25,7 @@ const validTOML = `
 [mailgun]
 api_key = "` + testAPIKey + `"
 region = "eu"
+timeout = "15s"
 
 [sending]
 domain = "mg.example.com"
@@ -40,6 +41,7 @@ defer = false
 defer_dir = "~/deferred"
 max_size = "1G"
 resend_cooldown = "10m"
+max_age = "168h"
 `
 
 // minimalTOML contains only the mandatory keys.
@@ -83,8 +85,10 @@ func loadErr(t *testing.T, flagPath string) string {
 	if err == nil {
 		t.Fatal("Load: expected error, got nil")
 	}
-	if strings.Contains(err.Error(), testAPIKey) || strings.Contains(stderr.String(), testAPIKey) {
-		t.Fatalf("API key leaked; err=%q stderr=%q", err, stderr.String())
+	for _, key := range []string{testAPIKey, envTestKey} {
+		if strings.Contains(err.Error(), key) || strings.Contains(stderr.String(), key) {
+			t.Fatalf("API key leaked; err=%q stderr=%q", err, stderr.String())
+		}
 	}
 	return err.Error()
 }
@@ -117,6 +121,9 @@ func TestLoadExplicitPath(t *testing.T) {
 	if cfg.Region != "eu" {
 		t.Errorf("Region = %q, want %q", cfg.Region, "eu")
 	}
+	if cfg.Timeout != 15*time.Second {
+		t.Errorf("Timeout = %v, want 15s", cfg.Timeout)
+	}
 	if cfg.Domain != "mg.example.com" {
 		t.Errorf("Domain = %q, want %q", cfg.Domain, "mg.example.com")
 	}
@@ -143,6 +150,9 @@ func TestLoadExplicitPath(t *testing.T) {
 	}
 	if cfg.ResendCooldown != 10*time.Minute {
 		t.Errorf("ResendCooldown = %v, want 10m", cfg.ResendCooldown)
+	}
+	if cfg.DeferMaxAge != 168*time.Hour {
+		t.Errorf("DeferMaxAge = %v, want 168h", cfg.DeferMaxAge)
 	}
 }
 
@@ -175,6 +185,14 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.ResendCooldown != DefaultCooldown {
 		t.Errorf("ResendCooldown = %v, want %v", cfg.ResendCooldown, DefaultCooldown)
+	}
+	// Age-based expiry is disabled by default.
+	if cfg.DeferMaxAge != 0 {
+		t.Errorf("DeferMaxAge = %v, want 0 (disabled)", cfg.DeferMaxAge)
+	}
+	// Zero means unset: the mailgun client's built-in default applies.
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (client default preserved)", cfg.Timeout)
 	}
 	if cfg.From != "" {
 		t.Errorf("From = %q, want empty", cfg.From)
@@ -293,6 +311,16 @@ func TestLoadValidationErrors(t *testing.T) {
 		{"invalid defer max_size", minimalTOML + "\n[defer]\nmax_size = \"-5M\"\n", "defer.max_size"},
 		{"invalid resend_cooldown", minimalTOML + "\n[defer]\nresend_cooldown = \"soon\"\n", "defer.resend_cooldown"},
 		{"zero resend_cooldown", minimalTOML + "\n[defer]\nresend_cooldown = \"0s\"\n", "defer.resend_cooldown"},
+		{"invalid max_age", minimalTOML + "\n[defer]\nmax_age = \"7d\"\n", "defer.max_age"},
+		{"zero max_age", minimalTOML + "\n[defer]\nmax_age = \"0s\"\n", "defer.max_age"},
+		{"negative max_age", minimalTOML + "\n[defer]\nmax_age = \"-1h\"\n", "defer.max_age"},
+		{"malformed timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"soon\"", 1), "mailgun.timeout"},
+		{"empty timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"\"", 1), "mailgun.timeout"},
+		{"whitespace timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"   \"", 1), "mailgun.timeout"},
+		{"unitless timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"10\"", 1), "mailgun.timeout"},
+		{"zero timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"0s\"", 1), "mailgun.timeout"},
+		{"negative timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"-5s\"", 1), "mailgun.timeout"},
+		{"overflowing timeout", strings.Replace(minimalTOML, "region = \"us\"", "region = \"us\"\ntimeout = \"9999999h\"", 1), "mailgun.timeout"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -576,13 +604,13 @@ func TestLoadExplicitPathIsDirectory(t *testing.T) {
 func TestLoadNoHomeDeferDir(t *testing.T) {
 	path := writeConfig(t, t.TempDir(), minimalTOML)
 	noEnv := func(string) string { return "" }
-	_, err := load(path, nil, "linux", noEnv)
+	_, err := load(path, nil, "linux", noEnv, Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "defer.defer_dir") {
 		t.Errorf("err = %v, want defer.defer_dir error", err)
 	}
 	// With defer disabled the missing default does not matter.
 	path = writeConfig(t, t.TempDir(), minimalTOML+"\n[defer]\ndefer = false\n")
-	if _, err := load(path, nil, "linux", noEnv); err != nil {
+	if _, err := load(path, nil, "linux", noEnv, Overrides{}); err != nil {
 		t.Errorf("defer = false: unexpected error %v", err)
 	}
 }

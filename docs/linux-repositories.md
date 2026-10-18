@@ -8,27 +8,122 @@ Ubuntu 24.04, and Fedora 44 on both architectures.
 
 ## Signing key
 
-Download the repository key and check its fingerprint before importing it:
-
-```shell
-curl -fsSL https://dl.cloudsmith.io/public/thorstenkramm/mailfire/gpg.B43413AD5FA82F43.key -o mailfire.key
-gpg --show-keys --with-fingerprint mailfire.key
-```
+Repository key: `https://dl.cloudsmith.io/public/thorstenkramm/mailfire/gpg.B43413AD5FA82F43.key`
 
 Expected fingerprint: `6479 EED4 2348 F9DA 6963 2428 B434 13AD 5FA8 2F43`.
-Install `curl`, CA certificates, and GnuPG first if needed. On Debian/Ubuntu:
+Do not install a key that does not match.
+
+## Debian / Ubuntu
+
+Already added this repository earlier and `apt update` reports
+`NO_PUBKEY B43413AD5FA82F43`? Do not run the block below; see
+[Manual setup and recovery](#manual-setup-and-recovery).
+
+### Install
+
+```shell
+(
+  set -e
+  sudo apt update
+  sudo apt install -y ca-certificates curl
+  sudo tee /etc/apt/preferences.d/mailfire > /dev/null <<'EOF'
+Package: mailfire
+Pin: release o=cloudsmith/thorstenkramm/mailfire
+Pin-Priority: 500
+
+Package: *
+Pin: release o=cloudsmith/thorstenkramm/mailfire
+Pin-Priority: -1
+EOF
+  curl -fsSL https://dl.cloudsmith.io/public/thorstenkramm/mailfire/setup.deb.sh -o mailfire-setup.sh
+  sudo bash mailfire-setup.sh
+  sudo apt install mailfire
+  mailfire version
+)
+```
+
+The block stops at the first failing command. It first restricts the repository
+to the single package `mailfire`; every other package name from it gets priority
+`-1` and can never be installed. Then Cloudsmith's official setup script installs
+`gnupg` if needed, adds the signing key, adds the repository with `signed-by`
+(so APT accepts only that key for it), and runs `apt update`.
+
+The script is saved to `mailfire-setup.sh` before it runs, so a failed download
+stops the block before anything runs as root. To read the script first, run the
+`curl` line on its own, open `mailfire-setup.sh`, then run the rest.
+`apt-cache policy mailfire` should show the Cloudsmith version at priority `500`.
+
+### Updates and removal
+
+Upgrade with `sudo apt update && sudo apt install --only-upgrade mailfire`.
+Remove the package with `sudo apt remove mailfire`.
+
+To stop using the repository, delete its files and run `sudo apt update`:
+
+- Setup script: `/etc/apt/sources.list.d/thorstenkramm-mailfire.list` and
+  `/usr/share/keyrings/thorstenkramm-mailfire-archive-keyring.gpg`
+- Manual setup: `/etc/apt/sources.list.d/mailfire.list` (or `mailfire.sources`)
+  and `/usr/share/keyrings/mailfire.gpg`; very old README instructions used
+  `/etc/apt/keyrings/mailfire.gpg` instead
+- Both: `/etc/apt/preferences.d/mailfire`
+
+### Manual setup and recovery
+
+Use either the setup script or the manual setup, never both. Two entries for the
+same repository with different keyrings make `apt update` fail.
+
+<details>
+<summary>Fixing <code>NO_PUBKEY B43413AD5FA82F43</code> after an earlier manual setup</summary>
+
+This error means the Mailfire source exists but the keyring it points to is
+missing or empty (older versions of these instructions could cause this). Do not
+disable signature checks. Reinstall the key; this does not need a working
+`apt update`.
+
+First check which keyring your source expects:
+
+```shell
+grep -i signed-by /etc/apt/sources.list.d/mailfire*
+```
+
+This prints `signed-by=…` (`mailfire.list`) or `Signed-By: …` (`mailfire.sources`).
+The block below installs the key to `/usr/share/keyrings/mailfire.gpg`. If the
+path shown is `/etc/apt/keyrings/mailfire.gpg` (used by older instructions),
+change the first line to `keyring=/etc/apt/keyrings/mailfire.gpg`. The key must
+be installed at exactly the path the source names.
+
+```shell
+keyring=/usr/share/keyrings/mailfire.gpg
+(
+  set -e
+  cd "$(mktemp -d)"
+  curl -fsSL https://dl.cloudsmith.io/public/thorstenkramm/mailfire/gpg.B43413AD5FA82F43.key -o mailfire.key
+  fpr=$(gpg --show-keys --with-colons mailfire.key | awk -F: '$1 == "fpr" {print $10}')
+  [ "$fpr" = 6479EED42348F9DA69632428B43413AD5FA82F43 ] || { echo "Wrong key fingerprint: $fpr" >&2; exit 1; }
+  gpg --dearmor -o mailfire.gpg mailfire.key
+  sudo install -d -m 0755 "$(dirname "$keyring")"
+  sudo install -m 0644 mailfire.gpg "$keyring"
+)
+sudo apt update
+```
+
+If `curl` or `gpg` is missing, first run `sudo apt install -y ca-certificates curl gnupg`;
+this uses the package lists already on the system. If
+`/etc/apt/preferences.d/mailfire` does not exist, create it as shown in the
+[Install](#install) block before installing Mailfire.
+
+</details>
+
+<details>
+<summary>Manual setup without the setup script</summary>
+
+This does the same as the setup script, but downloads the key yourself, checks the
+[fingerprint](#signing-key), and uses the file names `mailfire.list` and
+`mailfire.gpg`. It stops before adding the repository if the key does not match.
 
 ```shell
 sudo apt update
 sudo apt install -y ca-certificates curl gnupg
-```
-
-## Debian / Ubuntu
-
-```shell
-gpg --dearmor < mailfire.key | sudo tee /usr/share/keyrings/mailfire.gpg > /dev/null
-. /etc/os-release
-echo "deb [signed-by=/usr/share/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/mailfire.list
 sudo tee /etc/apt/preferences.d/mailfire > /dev/null <<'EOF'
 Package: mailfire
 Pin: release o=cloudsmith/thorstenkramm/mailfire
@@ -38,28 +133,29 @@ Package: *
 Pin: release o=cloudsmith/thorstenkramm/mailfire
 Pin-Priority: -1
 EOF
+(
+  set -e
+  cd "$(mktemp -d)"
+  curl -fsSL https://dl.cloudsmith.io/public/thorstenkramm/mailfire/gpg.B43413AD5FA82F43.key -o mailfire.key
+  fpr=$(gpg --show-keys --with-colons mailfire.key | awk -F: '$1 == "fpr" {print $10}')
+  [ "$fpr" = 6479EED42348F9DA69632428B43413AD5FA82F43 ] || { echo "Wrong key fingerprint: $fpr" >&2; exit 1; }
+  gpg --dearmor -o mailfire.gpg mailfire.key
+  sudo install -m 0644 mailfire.gpg /usr/share/keyrings/mailfire.gpg
+  . /etc/os-release
+  echo "deb [signed-by=/usr/share/keyrings/mailfire.gpg] https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID $VERSION_CODENAME main" | sudo tee /etc/apt/sources.list.d/mailfire.list > /dev/null
+)
 sudo apt update
-apt-cache policy mailfire
 sudo apt install mailfire
 mailfire version
 ```
 
-The preferences allow only the exact package `mailfire` from this repository;
-all other package names receive priority `-1` and cannot be selected from it.
-The rules match the signed Release `Origin: cloudsmith/thorstenkramm/mailfire`,
-not the shared Cloudsmith hostname. They work with both traditional `.list`
-and deb822 `.sources` files.
-Keep `signed-by` / `Signed-By` enabled as well: key trust and package selection
-are separate controls. `apt-cache policy mailfire` should show the Cloudsmith
-version at priority `500`; `apt-cache policy` shows the repository-wide `-1` default.
+If it prints `Wrong key fingerprint`, neither the key nor the repository was
+added; do not work around the check.
 
-### Alternative: deb822 source format
-
-The example above uses a traditional `mailfire.list` file. To use the modern deb822 format instead,
-replace the command that writes `mailfire.list` with this block. Choose only one source format:
+To use a deb822 `mailfire.sources` file instead of `mailfire.list`, replace the
+`echo "deb ..."` line above with the following (and use only one of the two files):
 
 ```shell
-. /etc/os-release
 sudo tee /etc/apt/sources.list.d/mailfire.sources > /dev/null <<EOF
 Types: deb
 URIs: https://dl.cloudsmith.io/public/thorstenkramm/mailfire/deb/$ID
@@ -69,21 +165,20 @@ Signed-By: /usr/share/keyrings/mailfire.gpg
 EOF
 ```
 
-Use the same signing key and package preferences as above, then run `sudo apt update` and install Mailfire.
-`Signed-By` limits which key APT accepts for this source; the preferences limit which packages it can provide.
-
-### Updates and removal
-
-Upgrade with `sudo apt update && sudo apt install --only-upgrade mailfire`.
-Remove with `sudo apt remove mailfire`. To stop using the repository, remove
-`/etc/apt/sources.list.d/mailfire.list` (or `mailfire.sources`) and `/usr/share/keyrings/mailfire.gpg`,
-then remove `/etc/apt/preferences.d/mailfire` and run `sudo apt update`.
-Earlier README instructions stored the key in `/etc/apt/keyrings/mailfire.gpg`;
-if you followed those, remove that key file instead.
+</details>
 
 ## Fedora / RPM
 
-After checking the key above:
+Install the prerequisites if needed, then download the key and check that the
+fingerprint matches the [signing key](#signing-key) above:
+
+```shell
+sudo dnf install -y ca-certificates curl gnupg2
+curl -fsSL https://dl.cloudsmith.io/public/thorstenkramm/mailfire/gpg.B43413AD5FA82F43.key -o mailfire.key
+gpg --show-keys --with-fingerprint mailfire.key
+```
+
+Only after the fingerprint matches:
 
 ```shell
 sudo install -m 0644 mailfire.key /etc/pki/rpm-gpg/mailfire.key

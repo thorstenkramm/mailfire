@@ -1,6 +1,8 @@
 // Package config loads and validates mailfire's TOML configuration from
 // the platform-specific search locations, with an explicit -c/--config
-// override.
+// override. MAILFIRE_* environment variables override file settings and
+// can replace the file entirely when they supply all required settings
+// (see env.go and docs/environment.md).
 //
 // The API key is a secret: it is never included in error messages, and the
 // loader warns on stderr when the config file is readable by group/others
@@ -13,6 +15,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -20,6 +23,8 @@ import (
 	"time"
 
 	"github.com/pelletier/go-toml/v2"
+	"github.com/thorstenkramm/mailfire/internal/dedup"
+	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/mailbox"
 	"github.com/thorstenkramm/mailfire/internal/render"
 )
@@ -29,17 +34,28 @@ const (
 	DefaultLogLevel       = "information"
 	DefaultMaxSize  int64 = 50 * 1024 * 1024 // 50M
 	DefaultCooldown       = 5 * time.Minute
+	// DefaultDedupCooldown is the notification-deduplication window
+	// (task 24).
+	DefaultDedupCooldown = dedup.DefaultCooldown
 )
 
 // Config is the validated, normalized mailfire configuration. Sizes are in
 // bytes; paths have ~ expanded.
 type Config struct {
-	// Path is the file the configuration was loaded from.
+	// Path is the file the configuration was loaded from, or "" for
+	// environment-only configuration.
 	Path string
 
+	// EnvSource maps each config key whose value came from the
+	// environment to the MAILFIRE_* variable that supplied it. It lets
+	// validate explain where settings came from without exposing
+	// secrets. File settings and defaults are not listed.
+	EnvSource map[string]string
+
 	// [mailgun]
-	APIKey string // required; never log or include in errors
-	Region string // "us" or "eu"
+	APIKey  string        // required; never log or include in errors
+	Region  string        // "us" or "eu"
+	Timeout time.Duration // per-request timeout; zero keeps the mailgun client's default
 
 	// [sending]
 	Domain       string // required
@@ -56,7 +72,12 @@ type Config struct {
 	Defer          bool          // default true
 	DeferDir       string        // default per-platform data dir
 	DeferMaxSize   int64         // default 50M
-	ResendCooldown time.Duration // default 5m
+	ResendCooldown time.Duration // default 5m; base of the resend backoff
+	DeferMaxAge    time.Duration // optional; zero (default) keeps messages until sent or deleted
+
+	// [dedup]
+	DedupDir      string        // notification-deduplication state; default per-platform data dir + "dedup"
+	DedupCooldown time.Duration // default 1h; suppression window after a delivered notification
 }
 
 // rawConfig mirrors the TOML schema. Everything is optional at parse time;
@@ -66,6 +87,9 @@ type rawConfig struct {
 	Mailgun struct {
 		APIKey string `toml:"api_key"`
 		Region string `toml:"region"`
+		// A pointer distinguishes an absent key (client default) from an
+		// explicitly empty value, which is a configuration error.
+		Timeout *string `toml:"timeout"`
 	} `toml:"mailgun"`
 	Sending struct {
 		Domain       string `toml:"domain"`
@@ -83,21 +107,83 @@ type rawConfig struct {
 		Dir            string `toml:"defer_dir"`
 		MaxSize        string `toml:"max_size"`
 		ResendCooldown string `toml:"resend_cooldown"`
+		MaxAge         string `toml:"max_age"`
 	} `toml:"defer"`
+	Dedup struct {
+		StateDir string `toml:"state_dir"`
+		Cooldown string `toml:"cooldown"`
+	} `toml:"dedup"`
 }
 
 // Load finds, parses, and validates the configuration. When flagPath is
 // non-empty (the -c/--config flag), only that file is tried; otherwise the
 // platform search order applies and the first existing file wins. A warning
 // about overly permissive file permissions is written to stderr (Unix only).
+// MAILFIRE_* environment variables override file settings; with no config
+// file and at least one variable set, the environment is the only source.
 func Load(flagPath string, stderr io.Writer) (*Config, error) {
-	return load(flagPath, stderr, runtime.GOOS, os.Getenv)
+	return LoadWith(flagPath, stderr, Overrides{})
 }
 
-func load(flagPath string, stderr io.Writer, goos string, getenv func(string) string) (*Config, error) {
+// Overrides names the settings a command-line option supplies. Their file
+// and environment values are discarded before validation, so an invalid
+// lower-priority value cannot fail a run that overrides it; the caller
+// validates and applies its own value. The corresponding Config fields
+// hold no value from lower-priority sources: From is empty, Template is
+// the default, TemplateFile is empty, Timeout is zero, and DedupCooldown
+// is the default.
+type Overrides struct {
+	From     bool // --from: sending.from
+	Template bool // --template or --template-file: the template selection
+	Timeout  bool // --timeout: mailgun.timeout
+	Cooldown bool // --cooldown: dedup.cooldown
+}
+
+// LoadWith is Load for a command whose options override the settings
+// named in ov.
+func LoadWith(flagPath string, stderr io.Writer, ov Overrides) (*Config, error) {
+	return load(flagPath, stderr, runtime.GOOS, os.Getenv, ov)
+}
+
+// discard drops the overridden settings from raw and from the
+// environment sources, after file parsing and the environment overlay.
+func (ov Overrides) discard(raw *rawConfig, sources map[string]string) {
+	if ov.From {
+		raw.Sending.From = ""
+		delete(sources, "sending.from")
+	}
+	if ov.Template {
+		raw.Sending.Template, raw.Sending.TemplateFile = "", ""
+		delete(sources, "sending.template")
+		delete(sources, "sending.template_file")
+	}
+	if ov.Timeout {
+		raw.Mailgun.Timeout = nil
+		delete(sources, "mailgun.timeout")
+	}
+	if ov.Cooldown {
+		raw.Dedup.Cooldown = ""
+		delete(sources, "dedup.cooldown")
+	}
+}
+
+func load(flagPath string, stderr io.Writer, goos string, getenv func(string) string, ov Overrides) (*Config, error) {
 	path, err := find(flagPath, goos, getenv)
 	if err != nil {
-		return nil, err
+		// An explicitly requested file (-c) that is missing or unusable
+		// always fails. Otherwise fall back to environment-only
+		// configuration when MAILFIRE_* variables are set; without any,
+		// keep reporting that no configuration file was found.
+		if flagPath != "" || !envActive(getenv) {
+			return nil, err
+		}
+		var raw rawConfig
+		sources, oerr := applyEnv(&raw, getenv)
+		if oerr != nil {
+			return nil, oerr
+		}
+		ov.discard(&raw, sources)
+		return build("", nil, &raw, goos, getenv, sources)
 	}
 	warnIfPermissive(goos, path, stderr)
 
@@ -109,7 +195,12 @@ func load(flagPath string, stderr io.Writer, goos string, getenv func(string) st
 	if err := toml.Unmarshal(data, &raw); err != nil {
 		return nil, parseError(path, data, err)
 	}
-	return build(path, data, &raw, goos, getenv)
+	sources, err := applyEnv(&raw, getenv)
+	if err != nil {
+		return nil, err
+	}
+	ov.discard(&raw, sources)
+	return build(path, data, &raw, goos, getenv, sources)
 }
 
 // Find resolves the config file path for flagPath (the -c/--config
@@ -156,7 +247,7 @@ func find(flagPath, goos string, getenv func(string) string) (string, error) {
 			return p, nil
 		}
 	}
-	return "", fmt.Errorf("config: no configuration file found (searched: %s)", strings.Join(paths, ", "))
+	return "", fmt.Errorf("config: no configuration file found (searched: %s); create one, or set MAILFIRE_MAILGUN_API_KEY, MAILFIRE_MAILGUN_REGION, and MAILFIRE_SENDING_DOMAIN to configure via the environment", strings.Join(paths, ", "))
 }
 
 func fileExists(p string) bool {
@@ -263,13 +354,12 @@ func keyLine(data []byte, section, key string) int {
 	return 0
 }
 
-// build validates the raw config and applies defaults.
-func build(path string, data []byte, raw *rawConfig, goos string, getenv func(string) string) (*Config, error) {
-	cfg := &Config{Path: path}
-	keyErr := func(key, msg string) error {
-		section, name, _ := strings.Cut(key, ".")
-		return keyError(path, keyLine(data, section, name), key, msg)
-	}
+// build validates the raw config and applies defaults. envSource maps
+// config keys to the MAILFIRE_* variable that supplied their value;
+// validation errors for those keys name the variable, not the file.
+func build(path string, data []byte, raw *rawConfig, goos string, getenv func(string) string, envSource map[string]string) (*Config, error) {
+	cfg := &Config{Path: path, EnvSource: envSource}
+	keyErr := keyErrorFunc(path, data, envSource)
 	sizeOrDefault := func(key, s string) (int64, error) {
 		if strings.TrimSpace(s) == "" {
 			return DefaultMaxSize, nil
@@ -283,21 +373,34 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 
 	cfg.APIKey = strings.TrimSpace(raw.Mailgun.APIKey)
 	if cfg.APIKey == "" {
-		return nil, keyErr("mailgun.api_key", "is required and must not be empty")
+		return nil, keyErr("mailgun.api_key", "is required and must not be empty (or set MAILFIRE_MAILGUN_API_KEY)")
 	}
 
 	cfg.Region = strings.ToLower(strings.TrimSpace(raw.Mailgun.Region))
 	switch cfg.Region {
 	case "":
-		return nil, keyErr("mailgun.region", `is required: must be "us" or "eu"`)
+		return nil, keyErr("mailgun.region", `is required: must be "us" or "eu" (or set MAILFIRE_MAILGUN_REGION)`)
 	case "us", "eu":
 	default:
 		return nil, keyErr("mailgun.region", fmt.Sprintf("invalid value %q: must be \"us\" or \"eu\"", cfg.Region))
 	}
 
+	// Empty, zero, negative, malformed, and overflowing durations are
+	// rejected: empty and zero would disable the timeout and let a stalled
+	// request hang forever. An absent key keeps the mailgun client's
+	// built-in default.
+	if raw.Mailgun.Timeout != nil {
+		s := strings.TrimSpace(*raw.Mailgun.Timeout)
+		d, terr := time.ParseDuration(s)
+		if terr != nil || d <= 0 {
+			return nil, keyErr("mailgun.timeout", fmt.Sprintf("invalid duration %q: use a positive Go duration, e.g. \"15s\", \"1m\"", s))
+		}
+		cfg.Timeout = d
+	}
+
 	cfg.Domain = strings.TrimSpace(raw.Sending.Domain)
 	if cfg.Domain == "" {
-		return nil, keyErr("sending.domain", "is required and must not be empty")
+		return nil, keyErr("sending.domain", "is required and must not be empty (or set MAILFIRE_SENDING_DOMAIN)")
 	}
 
 	cfg.From = strings.TrimSpace(raw.Sending.From)
@@ -307,16 +410,8 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		}
 	}
 
-	cfg.Template = strings.ToLower(strings.TrimSpace(raw.Sending.Template))
-	cfg.TemplateFile = expandPath(strings.TrimSpace(raw.Sending.TemplateFile), getenv)
-	if cfg.Template != "" && cfg.TemplateFile != "" {
-		return nil, keyErr("sending.template_file", "mutually exclusive with sending.template")
-	}
-	if cfg.Template == "" {
-		cfg.Template = render.DefaultTemplate
-	}
-	if !render.Valid(cfg.Template) {
-		return nil, keyErr("sending.template", fmt.Sprintf("invalid value %q: must be one of %s", cfg.Template, TemplateList()))
+	if err := cfg.setTemplate(raw, getenv, keyErr); err != nil {
+		return nil, err
 	}
 
 	cfg.Logfile = expandPath(strings.TrimSpace(raw.Logging.Logfile), getenv)
@@ -357,7 +452,164 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		}
 		cfg.ResendCooldown = d
 	}
+	if s := strings.TrimSpace(raw.Defer.MaxAge); s != "" {
+		d, derr := time.ParseDuration(s)
+		if derr != nil || d <= 0 {
+			return nil, keyErr("defer.max_age", fmt.Sprintf("invalid duration %q: use a positive Go duration, e.g. \"72h\", \"168h\"", s))
+		}
+		cfg.DeferMaxAge = d
+	}
+
+	cfg.DedupDir = expandPath(strings.TrimSpace(raw.Dedup.StateDir), getenv)
+	if cfg.DedupDir == "" {
+		if d := defaultDeferDir(goos, getenv); d != "" {
+			cfg.DedupDir = filepath.Join(d, deferral.ReservedDir)
+		}
+	}
+	cfg.DedupCooldown = DefaultDedupCooldown
+	if s := strings.TrimSpace(raw.Dedup.Cooldown); s != "" {
+		d, derr := time.ParseDuration(s)
+		if derr != nil || d <= 0 {
+			return nil, keyErr("dedup.cooldown", fmt.Sprintf("invalid duration %q: use a positive Go duration, e.g. \"30m\", \"1h\"", s))
+		}
+		cfg.DedupCooldown = d
+	}
 	return cfg, nil
+}
+
+// keyErrorFunc returns the error constructor for an invalid key: it names
+// the MAILFIRE_* variable that supplied the value, or the file and line.
+func keyErrorFunc(path string, data []byte, envSource map[string]string) func(key, msg string) error {
+	return func(key, msg string) error {
+		if env := envSource[key]; env != "" {
+			return fmt.Errorf("config: environment variable %s: %s", env, msg)
+		}
+		if path == "" {
+			// Environment-only configuration: there is no file to cite.
+			return fmt.Errorf("config: %s: %s", key, msg)
+		}
+		section, name, _ := strings.Cut(key, ".")
+		return keyError(path, keyLine(data, section, name), key, msg)
+	}
+}
+
+// setTemplate validates and applies the template selection.
+func (c *Config) setTemplate(raw *rawConfig, getenv func(string) string, keyErr func(key, msg string) error) error {
+	c.Template = strings.ToLower(strings.TrimSpace(raw.Sending.Template))
+	c.TemplateFile = expandPath(strings.TrimSpace(raw.Sending.TemplateFile), getenv)
+	if c.Template != "" && c.TemplateFile != "" {
+		return keyErr("sending.template_file", "mutually exclusive with sending.template")
+	}
+	if c.Template == "" {
+		c.Template = render.DefaultTemplate
+	}
+	if !render.Valid(c.Template) {
+		return keyErr("sending.template", fmt.Sprintf("invalid value %q: must be one of %s", c.Template, TemplateList()))
+	}
+	return nil
+}
+
+// LoadRender loads only the settings needed to render a message locally
+// (send --preview, task 29): the template selection from the config file
+// and the MAILFIRE_SENDING_TEMPLATE / MAILFIRE_SENDING_TEMPLATE_FILE
+// variables; other variables are ignored. Unlike Load, a missing config file is not an
+// error unless flagPath names one, and the Mailgun credentials, domain,
+// sender, and the other sections are neither required nor validated. Only
+// Path, EnvSource, Template, and TemplateFile are set.
+func LoadRender(flagPath string, stderr io.Writer, ov Overrides) (*Config, error) {
+	return loadRender(flagPath, stderr, runtime.GOOS, os.Getenv, ov)
+}
+
+func loadRender(flagPath string, stderr io.Writer, goos string, getenv func(string) string, ov Overrides) (*Config, error) {
+	var raw rawConfig
+	var data []byte
+	path, err := find(flagPath, goos, getenv)
+	switch {
+	case err != nil && flagPath != "":
+		return nil, err
+	case err != nil:
+		path = ""
+	default:
+		warnIfPermissive(goos, path, stderr)
+		if data, err = os.ReadFile(path); err != nil {
+			return nil, fmt.Errorf("config: reading %s: %w", path, err)
+		}
+		if err := toml.Unmarshal(data, &raw); err != nil {
+			return nil, parseError(path, data, err)
+		}
+	}
+	// Only the template variables matter for rendering: an invalid
+	// unrelated variable (e.g. MAILFIRE_DEFER_DEFER) must not fail it.
+	sources := map[string]string{}
+	if err := applyTemplateEnv(&raw, getenv, sources); err != nil {
+		return nil, err
+	}
+	ov.discard(&raw, sources)
+	cfg := &Config{Path: path, EnvSource: sources}
+	if err := cfg.setTemplate(&raw, getenv, keyErrorFunc(path, data, sources)); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// CheckDedupDir reports a dedup state_dir that is unusable: unknown (no
+// home directory), or nested inside the defer_dir anywhere but its
+// reserved "dedup" subdirectory, where the deferred-message cleanup would
+// mistake it for a broken message and delete it. Symbolic links in the
+// existing parts of both paths are resolved. It is checked only when
+// deduplication is used (send with --dedup-key, resend of a message
+// sent with one), so configurations without it are unaffected.
+func (c *Config) CheckDedupDir() error {
+	if c.DedupDir == "" {
+		return errors.New("config: dedup.state_dir: no default available (home directory unknown): set state_dir or MAILFIRE_DEDUP_STATE_DIR")
+	}
+	if c.DeferDir == "" {
+		return nil
+	}
+	rel, inside := relInside(c.DeferDir, c.DedupDir)
+	if !inside || rel == deferral.ReservedDir {
+		return nil
+	}
+	return fmt.Errorf("config: dedup.state_dir %s is inside defer.defer_dir %s: use %s or a directory outside defer_dir",
+		c.DedupDir, c.DeferDir, filepath.Join(c.DeferDir, deferral.ReservedDir))
+}
+
+// relInside reports whether child lies strictly inside parent, and its
+// relative path. Symbolic links in the existing parts of both paths are
+// resolved first, so an alias cannot place the state inside the
+// defer_dir unnoticed. Paths that cannot be made absolute count as not
+// inside.
+func relInside(parent, child string) (string, bool) {
+	p, perr := resolvePath(parent)
+	c, cerr := resolvePath(child)
+	if perr != nil || cerr != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(p, c)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return rel, true
+}
+
+// resolvePath returns the absolute form of p with symbolic links
+// resolved in its longest existing prefix; the components that do not
+// exist yet are appended as they are.
+func resolvePath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	rest := ""
+	for dir := abs; ; dir = filepath.Dir(dir) {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(resolved, rest), nil
+		}
+		if filepath.Dir(dir) == dir {
+			return abs, nil
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+	}
 }
 
 // TemplateList returns the template names quoted and comma separated,

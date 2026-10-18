@@ -1,4 +1,4 @@
-.TH MAILFIRE 1 "October 16, 2026" "mailfire" "User Commands"
+.TH MAILFIRE 1 "October 17, 2026" "mailfire" "User Commands"
 .SH NAME
 mailfire \- send email from the command line via the Mailgun API
 .SH SYNOPSIS
@@ -6,18 +6,46 @@ mailfire \- send email from the command line via the Mailgun API
 .RB [ send ]
 .RI [ flags ]
 .br
+.B mailfire
+.RB [ send ]
+.BI \-\-preview " path"
+.RI [ flags ]
+.br
 .B mailfire validate
+.RB [ \-\-json ]
 .RB [ \-c
 .IR path ]
 .br
 .B mailfire resend
 .RB [ \-\-list " | " \-\-force " | " \fIid\fR...]\&
+.RB [ \-\-json ]
+.RB [ \-c
+.IR path ]
+.br
+.B mailfire queue
+.BR list " | " stats
+.RB [ \-\-json ]
+.RB [ \-c
+.IR path ]
+.br
+.B mailfire queue show
+.RB [ \-\-raw ]
+.RB [ \-\-json ]
+.I id
+.RB [ \-c
+.IR path ]
+.br
+.B mailfire queue delete
+.IR id ...
+.RB [ \-\-json ]
 .RB [ \-c
 .IR path ]
 .br
 .B mailfire version
+.RB [ \-\-json ]
 .br
 .B mailfire export\-templates
+.RB [ \-\-json ]
 .I folder
 .br
 .B mailfire
@@ -48,7 +76,10 @@ Compose and send an email.
 This is the default subcommand.
 .TP
 .B validate
-Check, step by step, that the configuration file is found and valid TOML,
+Check, step by step, that the configuration file is found and valid TOML
+(or that
+.B MAILFIRE_*
+environment variables replace it),
 that all mandatory keys are well-formed, and that the API key and domain are
 accepted by Mailgun.
 No mail is sent.
@@ -56,11 +87,23 @@ No mail is sent.
 .B resend
 Retry deferred messages, oldest first.
 A message is removed only after successful delivery.
-Messages deferred less than
-.B resend_cooldown
-ago are skipped unless
+Messages that are not yet eligible for a retry are skipped unless
 .B \-\-force
-is given.
+is given; see
+.BR "DEFERRED MESSAGES" .
+.TP
+.B queue
+Inspect and delete deferred messages without sending.
+.B queue list
+shows each message with its attempt count and next retry;
+.BI "queue show " id
+shows its recipients, subject, age, attempts, last error, and next retry;
+.B queue stats
+shows totals;
+.BI "queue delete " id ...
+deletes the given messages.
+.BR list ", " show ", and " stats
+never send, change, or remove messages.
 .TP
 .B version
 Print the version, commit, and build date.
@@ -77,7 +120,9 @@ Every subcommand accepts
 .TP
 .BI \-\-to " addr"
 Recipient, repeatable.
-Required, at least once.
+Required, at least once, unless
+.B \-\-preview
+is given.
 Accepts
 .B user@example.com
 or
@@ -100,7 +145,9 @@ Required if the configuration file does not set
 .TP
 .BI \-\-subject " text"
 Subject line.
-Required.
+Required unless
+.B \-\-preview
+is given.
 .TP
 .B \-\-txt
 Body is plain text.
@@ -198,6 +245,49 @@ Test sends are never deferred.
 .B \-\-no\-defer
 Fail immediately instead of storing the message for a later resend.
 .TP
+.BI \-\-timeout " duration"
+Per-request timeout for Mailgun API calls, covering connection setup,
+upload, and response reading.
+Accepts Go duration syntax such as
+.BR 15s " or " 1m .
+Overrides
+.B timeout
+in the
+.B [mailgun]
+section of the configuration file; the default is 30 seconds.
+.TP
+.BI \-\-dedup\-key " key"
+Skip repeats of this notification: a send with the same key, sending
+domain, and recipients is skipped (exit status 0) within the cooldown
+after a delivery, while an earlier one is deferred, or for one minute
+after an interrupted attempt.
+See
+.BR "NOTIFICATION DEDUPLICATION" .
+.TP
+.BI \-\-cooldown " duration"
+Suppression window started by this send when it is delivered, such as
+.BR 30m .
+Requires
+.BR \-\-dedup\-key .
+Overrides
+.BR [dedup].cooldown ;
+the default is one hour.
+.TP
+.BI \-\-preview " path"
+Render the body locally and write the HTML to
+.I path
+instead of sending; with
+.BR \- ,
+write only the HTML to standard output.
+See
+.BR "LOCAL PREVIEW" .
+.TP
+.B \-\-json
+Print the result as one JSON document on standard output; see
+.BR "JSON OUTPUT" .
+Cannot be combined with
+.BR \-\-preview .
+.TP
 .BI \-c ", " \-\-config " path"
 Use this configuration file instead of searching the default locations.
 .TP
@@ -209,7 +299,23 @@ Show help.
 Show deferred messages (ID, date, to, subject, size) without sending.
 .TP
 .B \-\-force
-Resend even messages younger than the cooldown.
+Ignore the cooldown and backoff.
+With
+.I id
+arguments, also retry messages that Mailgun rejected permanently.
+.TP
+.BI \-\-timeout " duration"
+Per-request timeout for each resent message, covering connection setup,
+upload, and response reading. Overrides
+.BR [mailgun].timeout .
+A run retrying several messages may therefore take longer than a single
+timeout.
+.TP
+.B \-\-json
+Print the result, or with
+.B \-\-list
+the listing, as one JSON document; see
+.BR "JSON OUTPUT" .
 .TP
 .BI \-c ", " \-\-config " path"
 Use this configuration file.
@@ -223,10 +329,51 @@ with one or more
 arguments only those messages are retried.
 .B \-\-list
 cannot be combined with IDs.
-.SS Flags of validate
+.SS Flags of queue
+.TP
+.B \-\-raw
+For
+.BR show :
+print the stored request (message content, attachments included) instead of
+the metadata. It never contains credentials.
+.TP
+.B \-\-json
+Print the result as one JSON document; see
+.BR "JSON OUTPUT" .
+With
+.BR "show \-\-raw" ,
+the stored request is included base64-encoded.
 .TP
 .BI \-c ", " \-\-config " path"
 Use this configuration file.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.PP
+.B queue delete
+validates all IDs first: if any is unknown, it reports them and deletes
+nothing.
+.SS Flags of validate
+.TP
+.BI \-\-timeout " duration"
+Per-request timeout for the Mailgun check, covering connection setup and
+response reading. Overrides
+.BR [mailgun].timeout .
+.TP
+.B \-\-json
+Print the result as one JSON document; see
+.BR "JSON OUTPUT" .
+.TP
+.BI \-c ", " \-\-config " path"
+Use this configuration file.
+.TP
+.BR \-h ", " \-\-help
+Show help.
+.SS Flags of version and export-templates
+.TP
+.B \-\-json
+Print the result as one JSON document; see
+.BR "JSON OUTPUT" .
 .TP
 .BR \-h ", " \-\-help
 Show help.
@@ -256,6 +403,9 @@ Windows:
 The option
 .B \-\-config
 overrides the search.
+Environment variables override individual settings and can replace the
+file; see
+.BR ENVIRONMENT .
 Strings must be quoted.
 On Linux and macOS a warning is printed when the file is accessible by group
 or others; fix it with
@@ -275,6 +425,18 @@ Either
 .B us
 or
 .BR eu .
+.TP
+.B timeout
+Duration string, optional, default
+.BR 30s .
+Per-request timeout for Mailgun API calls, covering connection setup,
+upload, and response reading.
+Empty, zero, negative, and malformed values are rejected.
+Can be overridden with
+.BR \-\-timeout .
+A
+.B resend
+run retrying several messages may take longer than a single timeout.
 .SS [sending]
 .TP
 .B domain
@@ -364,8 +526,49 @@ When exceeded, the oldest deferred messages are removed.
 .B resend_cooldown
 Duration string, optional, default
 .BR 5m .
-Messages younger than this are skipped by
-.BR "mailfire resend" .
+Wait after deferral before
+.B mailfire resend
+retries a message; also the base of the retry backoff.
+.TP
+.B max_age
+Duration string, optional, no default.
+When set (for example
+.BR 168h ),
+messages deferred longer ago are removed whenever a message is deferred
+or
+.B mailfire resend
+runs, and each removal is reported.
+.B resend
+checks the age again right before each retry, so a message that exceeds
+.B max_age
+during a run is removed rather than sent.
+Without it, messages are kept until sent or deleted, subject to
+.BR max_size .
+.SS [dedup]
+.TP
+.B state_dir
+String, optional.
+Directory for notification deduplication state; created on demand.
+Independent of the
+.B [defer]
+settings: deduplication also works with
+.BR "defer = false" .
+Defaults to
+.I $HOME/.local/share/mailfire/dedup
+(\fI%LOCALAPPDATA%\emailfire\ededup\fR on Windows).
+Inside
+.B defer_dir
+only its subdirectory
+.I dedup
+may be used; symbolic links are resolved for this check.
+.TP
+.B cooldown
+Duration string, optional, default
+.BR 1h .
+How long a delivered notification suppresses repeats with the same
+.BR \-\-dedup\-key .
+Can be overridden with
+.BR \-\-cooldown .
 .SS Example
 .nf
 [mailgun]
@@ -386,6 +589,289 @@ Messages younger than this are skipped by
   max_size = "100M"
   resend_cooldown = "5m"
 .fi
+.SH DEFERRED MESSAGES
+A deferred message becomes eligible for
+.B mailfire resend
+once
+.B resend_cooldown
+has passed.
+Each failed retry doubles the wait, measured from the latest attempt and
+capped at one hour; a cooldown longer than one hour is used unchanged.
+The stored message is never changed; only its retry information
+(attempts, last attempt, last error) is recorded.
+Messages deferred by older versions have no retry information and are
+treated as never retried.
+.PP
+A message that Mailgun rejects permanently is kept, marked failed, and
+skipped by later runs.
+Retry it with
+.BI "mailfire resend \-\-force " id
+or remove it with
+.BI "mailfire queue delete " id .
+.PP
+Concurrent
+.B mailfire
+processes coordinate through the lock file
+.I .lock
+in the defer directory, so overlapping runs cannot resend or delete the
+same message twice.
+Exactly-once delivery is still not guaranteed: when a request times out
+or the connection drops after Mailgun accepted the message, it stays
+deferred and a later resend may deliver it again.
+.SH LOCAL PREVIEW
+.BI "send \-\-preview " path
+renders the message body through the same pipeline as a send (Markdown,
+template, preheader, footer, and CSS inlining) and writes the result to
+.IR path ,
+or to standard output for
+.BR \- .
+Unlike
+.BR \-\-test ,
+which asks Mailgun to validate a complete request, a preview never contacts
+Mailgun and needs no configuration file, Mailgun settings, recipients,
+sender, or subject.
+Only the template selection is read from a configuration file,
+.BR MAILFIRE_SENDING_TEMPLATE ,
+or
+.BR MAILFIRE_SENDING_TEMPLATE_FILE ;
+other settings and variables are ignored.
+Supplied addresses and subjects are still checked.
+Nothing is sent, deferred, deduplicated, or logged.
+.IP \(bu 2
+.BR \-\-md " and " \-\-html
+produce the rendered HTML part.
+Local Markdown images are embedded as
+.B data:
+URLs, so the preview is one portable file; remote image URLs are unchanged.
+A send attaches local images instead.
+.IP \(bu 2
+.B \-\-txt
+shows the escaped body in a
+.B <pre>
+block.
+.IP \(bu 2
+.B \-\-html\-raw
+writes the supplied document unchanged.
+.PP
+An existing output file is replaced atomically, keeping its permissions,
+but only after rendering succeeded; a failed preview leaves it untouched.
+A symbolic link as output is followed; a link to a missing file is
+refused and left unchanged.
+An output that is one of the inputs (body file or standard input
+redirected from a file, footer, template, Markdown image, or
+configuration file), also through a symbolic or hard link, is refused.
+With
+.BR "\-\-preview \-" ,
+diagnostics go to standard error; use
+.B ./\-
+for a file named
+.BR \- .
+.PP
+.BR \-\-attach ", " \-\-test ", " \-\-no\-defer ", " \-\-timeout ", " \-\-dedup\-key ", and " \-\-cooldown
+only affect sending and are rejected with
+.BR \-\-preview .
+.B \-\-json
+is rejected too: a preview writes HTML, not a command result.
+A failed preview exits with status 1, or with 2 for an invalid
+configuration file or template setting.
+.SH JSON OUTPUT
+With
+.BR \-\-json ,
+.BR send ,
+.B resend
+(also with
+.BR \-\-list ),
+.BR queue ,
+.BR validate ,
+.BR version ,
+and
+.B export\-templates
+print exactly one JSON document on standard output, on one line, instead of
+the human-readable output; also for failures, including invalid
+invocations, whenever the command line contains a
+.B \-\-json
+flag.
+.B \-\-json
+counts only where it is read as a flag: not as the value of another flag
+and not after a
+.B \-\-
+terminator.
+Every document has
+.BR schema_version " (currently 1), " command ", " outcome ", and " exit_code ;
+when the exit status is not 0, an
+.B error
+object adds a stable
+.B code
+(such as
+.BR usage_error ", " config_error ", " auth_failed ", " temporary_failure ", or " rejected )
+and a human-readable
+.BR message .
+Timestamps are RFC 3339 in UTC.
+Exit statuses are unchanged.
+Diagnostics and warnings stay on standard error, and
+.B \-\-help
+always prints text.
+Documents never contain the API key or message content, except the stored
+request with
+.BR "queue show \-\-raw \-\-json" .
+.PP
+.B resend
+reports one record per message (sent, skipped, failed, or expired) and a
+summary; its outcome is
+.B partial
+when some messages were sent and others failed.
+The full schema, error codes, and compatibility rules are documented in
+.I docs/json-output.md
+of the project.
+.SH NOTIFICATION DEDUPLICATION
+Deduplication is opt-in: only sends with
+.B \-\-dedup\-key
+are checked.
+A notification is identified by the key, the sending domain, and all
+recipients (to, cc, and bcc, compared case-insensitively in any order);
+different keys, domains, or recipients never interfere.
+A send is skipped, with exit status 0 and a line starting with
+.B skipped:
+on standard output that says when it becomes eligible again, while
+.IP \(bu 2
+the same notification was delivered within its cooldown (the
+.B \-\-cooldown
+or
+.B cooldown
+of the delivered send; skipped repeats do not extend it),
+.IP \(bu 2
+the same notification is still deferred, even if marked permanently
+rejected (retry it with
+.B "resend \-\-force"
+or remove it with
+.BR "queue delete" ):
+the first deferred message is kept and no duplicate is queued, or
+.IP \(bu 2
+an attempt was interrupted (for example by a crash) less than one minute
+ago and may have been delivered.
+.PP
+Only a delivery starts the cooldown, by
+.B send
+or by a successful
+.BR resend .
+Failed and deferred sends do not, and
+.B \-\-test
+sends neither check nor start it.
+If the system clock moves backward, affected cooldowns end immediately.
+A concurrent send of the same notification waits until the first one's
+outcome is recorded, so the two cannot both slip through.
+Corrupt or unreadable state is an error and nothing is sent:
+.B send
+exits with status 2.
+.B resend
+keeps a deferred notification whose state it cannot use (unsafe
+.BR state_dir ,
+corrupt or unreadable state, a lock failure) queued without sending it,
+reports it as failed, and exits with status 5.
+Remove the named file to reset that notification.
+.PP
+To send a repeat anyway, omit
+.BR \-\-dedup\-key .
+.B "resend \-\-force"
+is unrelated: it ignores the retry wait of deferred messages, not the
+notification cooldown.
+.SH ENVIRONMENT
+Every configuration setting can be supplied through an environment
+variable named
+.BI MAILFIRE_ SECTION _ KEY\fR,
+using the uppercased TOML names.
+Precedence, highest first: command-line options, environment variables,
+the configuration file, defaults.
+A setting supplied by a command-line option ignores its environment and
+file values without validating them.
+Exception: setting both
+.B MAILFIRE_SENDING_TEMPLATE
+and
+.B MAILFIRE_SENDING_TEMPLATE_FILE
+to nonempty values is always a configuration error, even with
+.B \-\-template
+or
+.BR \-\-template\-file .
+Values use the same syntax and validation as in the configuration file.
+Empty or whitespace-only variables are treated as unset and never clear a
+file setting or default.
+.PP
+When no configuration file is found and at least one variable is set,
+the environment is the only source; it must then supply the API key,
+region, and domain.
+A file given with
+.B \-\-config
+must still exist and be valid.
+.TP
+.B MAILFIRE_MAILGUN_API_KEY
+.TQ
+.B MAILFIRE_MAILGUN_REGION
+.TQ
+.B MAILFIRE_MAILGUN_TIMEOUT
+The
+.B [mailgun]
+settings.
+.TP
+.B MAILFIRE_SENDING_DOMAIN
+.TQ
+.B MAILFIRE_SENDING_FROM
+.TQ
+.B MAILFIRE_SENDING_TEMPLATE
+.TQ
+.B MAILFIRE_SENDING_TEMPLATE_FILE
+The
+.B [sending]
+settings.
+A nonempty template variable replaces the file's
+.B template
+or
+.B template_file
+selection; setting both variables is always an error, even with a
+template option.
+.B \-\-template
+and
+.B \-\-template\-file
+override a single template variable, even an invalid one.
+.TP
+.B MAILFIRE_LOGGING_LOGFILE
+.TQ
+.B MAILFIRE_LOGGING_LOGLEVEL
+.TQ
+.B MAILFIRE_LOGGING_MAX_SIZE
+The
+.B [logging]
+settings.
+.TP
+.B MAILFIRE_DEFER_DEFER
+.TQ
+.B MAILFIRE_DEFER_DEFER_DIR
+.TQ
+.B MAILFIRE_DEFER_MAX_SIZE
+.TQ
+.B MAILFIRE_DEFER_RESEND_COOLDOWN
+.TQ
+.B MAILFIRE_DEFER_MAX_AGE
+The
+.B [defer]
+settings.
+.B MAILFIRE_DEFER_DEFER
+accepts
+.B true
+or
+.BR false .
+.TP
+.B MAILFIRE_DEDUP_STATE_DIR
+.TQ
+.B MAILFIRE_DEDUP_COOLDOWN
+The
+.B [dedup]
+settings.
+.B \-\-cooldown
+overrides the environment.
+.PP
+Errors name the variable that supplied an invalid value.
+.B mailfire validate
+reports where settings came from; the API key is never shown.
 .SH EXIT STATUS
 .TP
 .B 0
@@ -421,8 +907,22 @@ retried later), and with 2 when Mailgun does not know the domain.
 .B resend
 returns the most severe outcome of all attempts, ranked 3, 5, 4, 0;
 a message that fails with 4 stays deferred.
+.B queue
+exits with 1 for an unknown message ID and with 5 when the defer directory
+cannot be read or a message cannot be deleted.
+.B send
+exits with 0 when
+.B \-\-dedup\-key
+skips a repeated notification, and with 2 when the deduplication state
+cannot be used.
+.B \-\-preview
+exits with 1 when rendering or writing the output fails.
 .PP
 Errors are written to standard error in plain language, naming the failing step.
+With
+.BR \-\-json ,
+the JSON document reports the same exit status in
+.BR exit_code .
 .SH EXAMPLES
 Export and use a custom template:
 .PP
@@ -430,6 +930,13 @@ Export and use a custom template:
 mailfire export\-templates ./my\-templates
 mailfire \-\-md \-\-template\-file ./my\-templates/card.html \e
   \-\-to user@example.com \-\-subject "Report" \-\-file report.md
+.fi
+.PP
+Preview a custom template locally, without credentials:
+.PP
+.nf
+mailfire \-\-md \-\-template\-file ./my\-templates/card.html \e
+  \-\-footer footer.html \-\-file report.md \-\-preview report.html
 .fi
 .PP
 Send a Markdown message from standard input:
@@ -467,6 +974,30 @@ List, then retry deferred messages:
 mailfire resend \-\-list
 mailfire resend
 .fi
+.PP
+Alert at most once per 30 minutes, for example from a monitoring check:
+.PP
+.nf
+mailfire \-\-dedup\-key disk\-full\-db1 \-\-cooldown 30m \e
+  \-\-to ops@example.com \-\-subject "Disk full on db1" <<< "df: 98%"
+.fi
+.PP
+Inspect and delete a deferred message:
+.PP
+.nf
+mailfire queue stats
+mailfire queue show 20261015T123045.123456789\-9f3ab2c17e4d88aa
+mailfire queue delete 20261015T123045.123456789\-9f3ab2c17e4d88aa
+.fi
+.PP
+Use the JSON output in scripts:
+.PP
+.nf
+mailfire \-\-json \-\-to ops@example.com \-\-subject "Backup" \-\-message ok \e
+  | jq \-r .message_id
+mailfire queue list \-\-json \e
+  | jq \-r '.messages[] | select(.status == "failed") | .id'
+.fi
 .SH FILES
 .TP
 .I ./.mailfire.conf
@@ -485,6 +1016,11 @@ Configuration file locations on Windows, after
 .I $HOME/.local/share/mailfire
 Default directory for deferred messages
 .RI ( %LOCALAPPDATA%\emailfire
+on Windows).
+.TP
+.I $HOME/.local/share/mailfire/dedup
+Default directory for notification deduplication state
+.RI ( %LOCALAPPDATA%\emailfire\ededup
 on Windows).
 .SH SEE ALSO
 Project home and full documentation:

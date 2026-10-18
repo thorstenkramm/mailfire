@@ -14,7 +14,7 @@ _mailfire() {
 
     # Flags taking a path argument.
     case "$prev" in
-        --file | --template-file | --footer | --attach | -c | --config)
+        --file | --template-file | --footer | --attach | --preview | -c | --config)
             compopt -o filenames 2>/dev/null
             # shellcheck disable=SC2207
             COMPREPLY=($(compgen -f -- "$cur"))
@@ -26,7 +26,7 @@ _mailfire() {
             return 0
             ;;
         # Flags taking a free-form value: nothing to complete.
-        --to | --cc | --bcc | --from | --subject | --preheader | --message | --m | -m)
+        --to | --cc | --bcc | --from | --subject | --preheader | --message | --m | -m | --timeout | --dedup-key | --cooldown)
             return 0
             ;;
     esac
@@ -35,7 +35,7 @@ _mailfire() {
     sub="send"
     if [[ $COMP_CWORD -ge 2 ]]; then
         case "${COMP_WORDS[1]}" in
-            send | validate | resend | version | export-templates) sub="${COMP_WORDS[1]}" ;;
+            send | validate | resend | queue | version | export-templates) sub="${COMP_WORDS[1]}" ;;
         esac
     fi
 
@@ -43,16 +43,25 @@ _mailfire() {
         send)
             opts="--to --cc --bcc --from --subject --txt --md --html --html-raw
                   --file --message --m -m --template --template-file --preheader --footer --attach --test --no-defer
-                  -c --config -h --help"
+                  --timeout --dedup-key --cooldown --preview --json -c --config -h --help"
             ;;
         validate)
-            opts="-c --config -h --help"
+            opts="--timeout --json -c --config -h --help"
             ;;
         resend)
-            opts="--list --force -c --config -h --help"
+            opts="--list --force --timeout --json -c --config -h --help"
+            ;;
+        queue)
+            if [[ $COMP_CWORD -eq 2 && $cur != -* ]]; then
+                opts="list show delete stats"
+            elif [[ ${COMP_WORDS[2]} == show ]]; then
+                opts="--raw --json -c --config -h --help"
+            else
+                opts="--json -c --config -h --help"
+            fi
             ;;
         version)
-            opts="-h --help"
+            opts="--json -h --help"
             ;;
         export-templates)
             if [[ $cur != -* || $prev == -- ]]; then
@@ -61,12 +70,12 @@ _mailfire() {
                 COMPREPLY=($(compgen -d -- "$cur"))
                 return 0
             fi
-            opts="-h --help"
+            opts="--json -h --help"
             ;;
     esac
 
     if [[ $COMP_CWORD -eq 1 && $cur != -* ]]; then
-        opts="send validate resend version export-templates"
+        opts="send validate resend queue version export-templates"
     fi
 
     # shellcheck disable=SC2207

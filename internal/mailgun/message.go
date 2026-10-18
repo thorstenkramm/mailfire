@@ -139,6 +139,10 @@ func (c *Client) postMessages(ctx context.Context, op, contentType string, body 
 		return nil, &Error{Op: op, StatusCode: status, Kind: KindDeferrable,
 			Message: "invalid response: expected JSON with a message id"}
 	}
+	// The decoded fields are server-supplied and reach stdout (also as
+	// JSON) and the log; redact them like the raw body.
+	parsed.ID = c.redact(parsed.ID)
+	parsed.Message = c.redact(parsed.Message)
 	parsed.StatusCode = status
 	parsed.RawBody = c.redact(string(respBody))
 	return &parsed, nil

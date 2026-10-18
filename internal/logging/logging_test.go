@@ -615,6 +615,21 @@ func TestLogDrop(t *testing.T) {
 	}
 }
 
+// A max_age expiry is logged like a drop, with its own event name.
+func TestLogDropExpired(t *testing.T) {
+	l, path := openLogger(t, LevelError, 1<<20)
+	if err := l.LogDrop(Drop{Time: testTime, ID: "x", To: []string{"a@example.com"}, Expired: true}); err != nil {
+		t.Fatalf("LogDrop: %v", err)
+	}
+	entries := readEntries(t, path)
+	if len(entries) != 1 || entries[0]["event"] != "defer_expire" {
+		t.Fatalf("entries = %v, want one defer_expire entry", entries)
+	}
+	if !equalKeys(keys(entries[0]), "timestamp", "event", "message_id", "to", "subject", "size") {
+		t.Errorf("keys = %v, want the drop field set", keys(entries[0]))
+	}
+}
+
 // A drop entry obeys the same append rules as attempts: it lands intact
 // after a partial line left by a crash mid-write.
 func TestLogDropAfterPartialLine(t *testing.T) {

@@ -63,7 +63,8 @@ func TestUsageMatchesREADME(t *testing.T) {
 func TestHelpTextsAreClean(t *testing.T) {
 	for name, text := range map[string]string{
 		"usageText": usageText, "sendUsage": sendUsage, "resendUsage": resendUsage,
-		"validateUsage": validateUsage, "versionUsage": versionUsage,
+		"validateUsage": validateUsage, "versionUsage": versionUsage, "queueUsage": queueUsage,
+		"exportTemplatesUsage": exportTemplatesUsage,
 	} {
 		if text != trimTrailingSpace(text) {
 			t.Errorf("%s has trailing whitespace", name)
@@ -87,6 +88,9 @@ func TestSubcommandHelp(t *testing.T) {
 		{args: []string{"validate", "--help"}, want: []string{"Flags (validate):"}},
 		{args: []string{"resend", "--help"}, want: []string{"Usage:\n  mailfire resend", "Flags (resend):", "--list", "--force", "-c, --config <p>", "-h, --help"}, wantNot: []string{"--to <addr>"}},
 		{args: []string{"resend", "-h"}, want: []string{"Flags (resend):"}},
+		{args: []string{"queue", "--help"}, want: []string{"Usage:\n  mailfire queue list", "queue show [--raw] <id>", "queue delete <id>...", "queue stats", "Flags (queue):", "--raw", "-c, --config <p>"}, wantNot: []string{"--to <addr>", "--force"}},
+		{args: []string{"queue", "show", "-h"}, want: []string{"Flags (queue):"}},
+		{args: []string{"queue", "delete", "--help"}, want: []string{"Flags (queue):"}},
 		{args: []string{"version", "--help"}, want: []string{"Usage:\n  mailfire version", "Flags (version):", "-h, --help"}, wantNot: []string{"--config", "--to <addr>"}},
 		{args: []string{"version", "-h"}, want: []string{"Flags (version):"}},
 	}
@@ -117,13 +121,21 @@ func TestSendHelpListsAllFlags(t *testing.T) {
 	for _, f := range []string{
 		"--to", "--cc", "--bcc", "--from", "--subject", "--txt", "--md", "--html",
 		"--html-raw", "--file", "--preheader", "--footer", "--attach", "--test",
-		"--no-defer", "--config", "--help",
+		"--no-defer", "--timeout", "--dedup-key", "--cooldown", "--preview", "--json", "--config", "--help",
 	} {
 		if !strings.Contains(sendUsage, f+" ") && !strings.Contains(sendUsage, f+"\n") {
 			t.Errorf("send help does not document %s", f)
 		}
 	}
-	for _, sub := range []string{"validate", "resend", "version"} {
+	for name, text := range map[string]string{
+		"resend": resendUsage, "queue": queueUsage, "validate": validateUsage,
+		"version": versionUsage, "export-templates": exportTemplatesUsage,
+	} {
+		if !strings.Contains(text, "--json ") {
+			t.Errorf("%s help does not document --json", name)
+		}
+	}
+	for _, sub := range []string{"validate", "resend", "queue", "version"} {
 		if !strings.Contains(usageText, "mailfire "+sub) {
 			t.Errorf("top-level help does not mention %q", sub)
 		}
@@ -138,6 +150,7 @@ func TestUsageErrorsShowSubcommandUsage(t *testing.T) {
 		{[]string{"--subject", "s"}, "Flags (send):"},
 		{[]string{"validate", "extra"}, "Flags (validate):"},
 		{[]string{"resend", "--bogus"}, "Flags (resend):"},
+		{[]string{"queue", "list", "--bogus"}, "Flags (queue):"},
 		{[]string{"version", "extra"}, "Flags (version):"},
 	}
 	for _, tc := range cases {

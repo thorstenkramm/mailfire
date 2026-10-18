@@ -24,15 +24,22 @@ _mailfire_send() {
         '(--template)--template-file=[custom HTML template]:file:_files' \
         '--preheader=[inbox preview text]:text:' \
         '--footer=[HTML fragment appended as footer]:file:_files' \
-        '*--attach=[attach a file, repeatable]:file:_files' \
-        '--test[use Mailgun test mode]' \
-        '--no-defer[fail immediately instead of deferring on error]' \
+        '(--preview)*--attach=[attach a file, repeatable]:file:_files' \
+        '(--preview)--test[use Mailgun test mode]' \
+        '(--preview)--no-defer[fail immediately instead of deferring on error]' \
+        '(--preview)--timeout=[per-request timeout, overrides mailgun.timeout]:duration:' \
+        '(--preview)--dedup-key=[skip repeats of this notification within the cooldown]:key:' \
+        '(--preview)--cooldown=[suppression window for --dedup-key]:duration:' \
+        '(--attach --test --no-defer --timeout --dedup-key --cooldown --json)--preview=[write the rendered HTML instead of sending]:file:_files' \
+        '(--preview)--json[print the result as one JSON document]' \
         '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
         '(-h --help)'{-h,--help}'[show help]'
 }
 
 _mailfire_validate() {
     _arguments -S \
+        '--json[print the result as one JSON document]' \
+        '--timeout=[per-request timeout, overrides mailgun.timeout]:duration:' \
         '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
         '(-h --help)'{-h,--help}'[show help]'
 }
@@ -40,19 +47,60 @@ _mailfire_validate() {
 _mailfire_resend() {
     _arguments -S \
         '(--force)--list[list deferred messages without sending]' \
-        '(--list)--force[ignore the resend cooldown]' \
+        '(--list)--force[ignore the cooldown and backoff]' \
+        '--json[print the result as one JSON document]' \
+        '--timeout=[per-request timeout, overrides mailgun.timeout]:duration:' \
         '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
         '(-h --help)'{-h,--help}'[show help]' \
         '*:deferred message id:'
 }
 
+_mailfire_queue() {
+    local -a queue_subcommands
+    queue_subcommands=(
+        'list:list deferred messages and retry state'
+        'show:show the metadata of one message'
+        'delete:delete the given messages'
+        'stats:show queue totals'
+    )
+    if (( CURRENT == 2 )); then
+        _describe -t commands 'queue command' queue_subcommands
+        return
+    fi
+    case $words[2] in
+        show)
+            _arguments -S \
+                '--raw[print the stored request]' \
+                '--json[print the result as one JSON document]' \
+                '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
+                '(-h --help)'{-h,--help}'[show help]' \
+                ':deferred message id:'
+            ;;
+        delete)
+            _arguments -S \
+                '--json[print the result as one JSON document]' \
+                '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
+                '(-h --help)'{-h,--help}'[show help]' \
+                '*:deferred message id:'
+            ;;
+        *)
+            _arguments -S \
+                '--json[print the result as one JSON document]' \
+                '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
+                '(-h --help)'{-h,--help}'[show help]'
+            ;;
+    esac
+}
+
 _mailfire_version() {
     _arguments -S \
+        '--json[print the result as one JSON document]' \
         '(-h --help)'{-h,--help}'[show help]'
 }
 
 _mailfire_export-templates() {
     _arguments -S \
+        '--json[print the result as one JSON document]' \
         '(-h --help)'{-h,--help}'[show help]' \
         '1:export folder:_files -/'
 }
@@ -63,6 +111,7 @@ _mailfire() {
         'send:compose and send an email (default)'
         'validate:check config and Mailgun credentials'
         'resend:retry deferred messages'
+        'queue:inspect and delete deferred messages'
         'version:show version information'
         'export-templates:export editable built-in templates'
     )
@@ -75,7 +124,7 @@ _mailfire() {
     local sub=send
     if (( CURRENT > 2 )); then
         case $words[2] in
-            send|validate|resend|version|export-templates) sub=$words[2] ;;
+            send|validate|resend|queue|version|export-templates) sub=$words[2] ;;
         esac
     fi
 

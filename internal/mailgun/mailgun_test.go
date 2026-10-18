@@ -251,6 +251,34 @@ func TestSendMessageRawBodyRedacted(t *testing.T) {
 	}
 }
 
+// The decoded ID and message reach stdout and JSON output: a server
+// echoing the key in them must not leak it, for sends and replays alike.
+func TestSendResponseFieldsRedacted(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := io.WriteString(w, `{"id":"<`+testAPIKey+`@mg>","message":"queued `+testAPIKey+`"}`); err != nil {
+			t.Error(err)
+		}
+	}))
+	send := func() (*SendResponse, error) {
+		return c.SendMessage(context.Background(), &Message{
+			From: "a@example.com", To: []string{"b@example.com"}, Subject: "s", Text: "t",
+		})
+	}
+	replay := func() (*SendResponse, error) {
+		return c.SendRaw(context.Background(), "multipart/form-data; boundary=x", []byte("--x--\r\n"))
+	}
+	for name, call := range map[string]func() (*SendResponse, error){"SendMessage": send, "SendRaw": replay} {
+		resp, err := call()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if resp.ID != "<[redacted]@mg>" || resp.Message != "queued [redacted]" {
+			t.Errorf("%s: ID = %q, Message = %q, want the key redacted", name, resp.ID, resp.Message)
+		}
+	}
+}
+
 func TestSendMessageTestMode(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	m.SendResponse = testutil.Queued("<t@mg.example.com>")

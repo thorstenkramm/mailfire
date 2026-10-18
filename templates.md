@@ -42,6 +42,14 @@ and `{{html .Preheader}}`; insert HTML with `{{.Body}}` and `{{.Footer}}`.
 Use `{{with .Footer}}...{{.}}...{{end}}` for optional blocks. Outlook conditional comments
 are preserved, and CSS is inlined just as for built-in templates.
 
+While editing, render a local preview instead of sending test emails. It needs no Mailgun credentials:
+
+```shell
+mailfire --md --template-file ./my-templates/card.html --file report.md --preview report.html
+```
+
+See [Local preview](README.md#local-preview) for details.
+
 To configure a custom default:
 
 ```toml

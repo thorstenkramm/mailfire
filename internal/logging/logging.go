@@ -24,8 +24,9 @@
 // Besides sending attempts, the log records deferral drops (PRD FR-4):
 // when the defer_dir exceeds [defer].max_size and the oldest deferred
 // message is discarded, LogDrop appends an entry with "event":
-// "defer_drop". Drops are recorded at every level — a lost message is
-// never routine.
+// "defer_drop". Messages removed because they are older than
+// [defer].max_age are logged the same way with "event": "defer_expire".
+// Drops are recorded at every level — a lost message is never routine.
 //
 // Concurrency: a Logger is safe for concurrent use within one process, and
 // appends use O_APPEND, so lines from concurrent mailfire processes do not
@@ -101,13 +102,15 @@ type debugEntry struct {
 }
 
 // Drop describes a deferred message evicted from the defer_dir because
-// the directory exceeded [defer].max_size (PRD FR-4).
+// the directory exceeded [defer].max_size (PRD FR-4), or, with Expired,
+// because the message was older than [defer].max_age.
 type Drop struct {
 	Time    time.Time // stamped as RFC3339 in UTC
 	ID      string    // deferred message ID (logged as message_id)
 	To      []string  // recipients of the dropped message
 	Subject string
 	Size    int64 // stored request size in bytes
+	Expired bool  // logged as "defer_expire" instead of "defer_drop"
 }
 
 // dropEntry is the JSONL record of a Drop. It reuses the field names of
@@ -116,7 +119,7 @@ type Drop struct {
 // is no status: no sending attempt happened.
 type dropEntry struct {
 	Timestamp string   `json:"timestamp"`
-	Event     string   `json:"event"` // always "defer_drop"
+	Event     string   `json:"event"` // "defer_drop" or "defer_expire"
 	MessageID string   `json:"message_id"`
 	To        []string `json:"to"`
 	Subject   string   `json:"subject"`
@@ -177,15 +180,20 @@ func (l *Logger) Log(a Attempt) error {
 }
 
 // LogDrop writes one JSON line for a deferred message dropped from the
-// defer_dir by the max_size cleanup (PRD FR-4). Drops are logged at every
-// level, including error: a discarded message is never routine.
+// defer_dir by the max_size cleanup (PRD FR-4) or the max_age expiry.
+// Drops are logged at every level, including error: a discarded message
+// is never routine.
 func (l *Logger) LogDrop(d Drop) error {
+	event := "defer_drop"
+	if d.Expired {
+		event = "defer_expire"
+	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	if err := enc.Encode(dropEntry{
 		Timestamp: d.Time.UTC().Format(time.RFC3339),
-		Event:     "defer_drop",
+		Event:     event,
 		MessageID: d.ID,
 		To:        d.To,
 		Subject:   d.Subject,

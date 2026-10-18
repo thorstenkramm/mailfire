@@ -26,10 +26,11 @@ import (
 // --md, --html and --html-raw) from the parsed flags and the body read
 // from stdin or --file, posts it via the Mailgun client, and maps the
 // outcome to an exit code per PRD §8.
-func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr io.Writer) int {
+func send(cfg *config.Config, opts *SendOptions, rc *runContext, res *sendResult, stdout, stderr io.Writer) int {
 	msg, err := compose(cfg, opts, rc.stdin)
 	if err != nil {
 		printfOutput(stderr, "mailfire: send: %v\n", err)
+		res.setError(errUsage, err)
 		return ExitUsage
 	}
 	// Attachment and inline-image files stay open until the message is
@@ -37,10 +38,11 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 	defer closeFiles(msg.Attachments)
 	defer closeFiles(msg.Inline)
 
-	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, rc.clientOpts...)
+	client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...)
 	if err != nil {
 		// Cannot happen: config.Load already validated these fields.
 		printfOutput(stderr, "mailfire: %v\n", err)
+		res.setError(errConfig, err)
 		return ExitConfig
 	}
 
@@ -49,18 +51,44 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, stdout, stderr 
 	logger, err := openLogger(cfg)
 	if err != nil {
 		printfOutput(stderr, "mailfire: %v\n", err)
+		res.setError(errConfig, err)
 		return ExitConfig
 	}
 	defer closeLogger(logger, stderr)
+
+	// Notification deduplication (task 24) is opt-in via --dedup-key.
+	// Test sends deliver nothing, so they neither check nor start the
+	// cooldown.
+	var n *notification
+	if opts.DedupKey != "" && opts.Test {
+		printfOutput(stderr, "mailfire: send: --test: notification deduplication not applied (test sends neither check nor start the cooldown)\n")
+	} else if opts.DedupKey != "" {
+		var code int
+		var done bool
+		if n, code, done = startNotification(cfg, opts, msg, rc, res, stdout, stderr); done {
+			return code
+		}
+		defer n.close()
+	}
 
 	resp, err := client.SendMessage(context.Background(), msg)
 	if logger != nil {
 		logAttempt(logger, msg, opts.Test, resp, err, stderr)
 	}
 	if err != nil {
-		return reportSendError(cfg, opts, msg, logger, err, stderr)
+		code := reportSendError(cfg, opts, msg, logger, n, err, res, stderr)
+		if n != nil {
+			n.notDelivered()
+		}
+		return code
 	}
+	if n != nil {
+		n.delivered()
+	}
+	res.MessageID = resp.ID
+	res.Outcome = "sent"
 	if opts.Test {
+		res.Outcome = "accepted"
 		// Test mode (FR-1, Decision Q5): Mailgun accepted and validated
 		// the request but delivers nothing — say so explicitly, so the
 		// message id is not mistaken for proof of delivery.
@@ -82,7 +110,7 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		from = cfg.From
 	}
 	if from == "" {
-		return nil, fmt.Errorf("no sender: set sending.from in the config file or pass --from")
+		return nil, fmt.Errorf("no sender: set sending.from in the config file or MAILFIRE_SENDING_FROM, or pass --from")
 	}
 	fromAddr, err := parseAddress(from)
 	if err != nil {
@@ -102,64 +130,16 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		return nil, err
 	}
 
-	// A line break in a header value is never legitimate and could be
-	// used for header injection; refuse it rather than rely on Mailgun.
-	if strings.ContainsAny(opts.Subject, "\r\n") {
-		return nil, errors.New("invalid --subject: must not contain line breaks")
+	if err := checkSubject(opts.Subject); err != nil {
+		return nil, err
 	}
 
-	body := opts.Message
-	if !opts.MessageSet {
-		body, err = readBody(opts.File, stdin)
-	}
+	body, err := readMessageBody(opts, stdin)
 	if err != nil {
 		return nil, err
 	}
 	if body == "" && len(opts.Attach) == 0 {
 		return nil, errors.New("mail body missing: use stdin, --file or --message")
-	}
-
-	// Bodies piped on Windows or saved by Windows editors use CRLF line
-	// endings. The Markdown renderer and the HTML-to-text derivation
-	// normalize CRLF internally; normalize here too, so --txt and --html
-	// compose the same message no matter which platform produced the
-	// body. --html-raw is exempt: it is sent byte-identical (FR-1).
-	if opts.Format != "html-raw" {
-		body = strings.ReplaceAll(body, "\r\n", "\n")
-	}
-
-	// --preheader and --footer only reach here with --md or --html
-	// (checkFlags). The footer is trusted HTML read from a file and
-	// inserted into the template as is (FR-1, FR-7).
-	var footer render.HTML
-	if opts.Footer != "" {
-		footer, err = readFooter(opts.Footer)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	// --template overrides the config's template (default "card").
-	template := cfg.Template
-	templateFile := cfg.TemplateFile
-	if opts.Template != "" {
-		template = opts.Template
-		templateFile = ""
-	}
-	if opts.TemplateFile != "" {
-		templateFile = opts.TemplateFile
-	}
-	renderHTML := func(d render.Data) (string, error) {
-		var doc string
-		if templateFile != "" {
-			doc, err = render.File(config.ExpandPath(templateFile), d)
-			if err != nil {
-				return "", err
-			}
-		} else {
-			doc = render.Base(d)
-		}
-		return inliner.Inline(doc)
 	}
 
 	msg := &mailgun.Message{
@@ -170,6 +150,105 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		Subject:  opts.Subject,
 		TestMode: opts.Test,
 	}
+	msg.HTML, msg.Text, msg.Inline, err = renderMessage(cfg, opts, body)
+	if err != nil {
+		return nil, err
+	}
+
+	// Opened last, so no earlier failure has to close them; from here on
+	// the caller owns the handles.
+	attachments, err := openAttachments(opts.Attach)
+	if err != nil {
+		closeFiles(msg.Inline)
+		return nil, err
+	}
+	msg.Attachments = attachments
+	return msg, nil
+}
+
+// checkSubject refuses a subject with line breaks. A line break in a
+// header value is never legitimate and could be used for header
+// injection; refuse it rather than rely on Mailgun.
+func checkSubject(subject string) error {
+	if strings.ContainsAny(subject, "\r\n") {
+		return errors.New("invalid --subject: must not contain line breaks")
+	}
+	return nil
+}
+
+// readMessageBody reads the body from --message, --file or stdin.
+//
+// Bodies piped on Windows or saved by Windows editors use CRLF line
+// endings. The Markdown renderer and the HTML-to-text derivation
+// normalize CRLF internally; normalize here too, so --txt and --html
+// compose the same message no matter which platform produced the
+// body. --html-raw is exempt: it is sent byte-identical (FR-1).
+func readMessageBody(opts *SendOptions, stdin io.Reader) (string, error) {
+	body := opts.Message
+	if !opts.MessageSet {
+		var err error
+		if body, err = readBody(opts.File, stdin); err != nil {
+			return "", err
+		}
+	}
+	if opts.Format != "html-raw" {
+		body = strings.ReplaceAll(body, "\r\n", "\n")
+	}
+	return body, nil
+}
+
+// templateSelection returns the effective template name and custom
+// template file: --template and --template-file override the config's
+// selection (default "card").
+func templateSelection(cfg *config.Config, opts *SendOptions) (name, file string) {
+	name, file = cfg.Template, cfg.TemplateFile
+	if opts.Template != "" {
+		name, file = opts.Template, ""
+	}
+	if opts.TemplateFile != "" {
+		file = opts.TemplateFile
+	}
+	return name, file
+}
+
+// renderMessage renders body in opts.Format into the html part (empty
+// for --txt), the text part and, for --md, the inline image parts the
+// html references via cid:. It is shared by sending and --preview, so a
+// preview shows exactly what would be sent. The caller owns the inline
+// files and must close them (closeFiles). Inlining is deterministic, so
+// a CSS inlining failure fails the render instead of silently falling
+// back to an uninlined (differently rendered) mail.
+func renderMessage(cfg *config.Config, opts *SendOptions, body string) (html, text string, inline []mailgun.File, err error) {
+	// --preheader and --footer only reach here with --md or --html
+	// (checkFlags). The footer is trusted HTML read from a file and
+	// inserted into the template as is (FR-1, FR-7).
+	var footer render.HTML
+	if opts.Footer != "" {
+		if footer, err = readFooter(opts.Footer); err != nil {
+			return "", "", nil, err
+		}
+	}
+	template, templateFile := templateSelection(cfg, opts)
+	renderHTML := func(fragment string) (string, error) {
+		d := render.Data{
+			Template:  template,
+			Subject:   opts.Subject,
+			Preheader: opts.Preheader,
+			Body:      render.HTML(fragment),
+			Footer:    footer,
+		}
+		var doc string
+		if templateFile != "" {
+			var err error
+			if doc, err = render.File(config.ExpandPath(templateFile), d); err != nil {
+				return "", err
+			}
+		} else {
+			doc = render.Base(d)
+		}
+		return inliner.Inline(doc)
+	}
+
 	switch opts.Format {
 	case "md":
 		// Multipart/alternative (FR-1): the Markdown rendered into the
@@ -179,9 +258,9 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		// via cid: (Decision Q4); the cid: rewrite happens on the
 		// Markdown fragment before inlining, and the inliner only
 		// touches style attributes, so the cid: srcs survive.
-		cids, inline, err := inlineImages(body, opts.File)
+		cids, files, err := inlineImages(body, opts.File)
 		if err != nil {
-			return nil, err
+			return "", "", nil, err
 		}
 		fragment := markdown.HTML(body)
 		if cids != nil {
@@ -189,60 +268,34 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 				return cids[dest]
 			})
 		}
-		html, err := renderHTML(render.Data{
-			Template:  template,
-			Subject:   opts.Subject,
-			Preheader: opts.Preheader,
-			Body:      render.HTML(fragment),
-			Footer:    footer,
-		})
+		html, err := renderHTML(fragment)
 		if err != nil {
-			closeFiles(inline)
-			return nil, err
+			closeFiles(files)
+			return "", "", nil, err
 		}
-		msg.HTML = html
-		msg.Text = markdown.Text(body)
-		msg.Inline = inline
+		return html, markdown.Text(body), files, nil
 	case "html":
 		// The fragment is trusted markup and goes into the base
 		// template as is — inline styles and colors survive (the
 		// template sets text color once on .content and inherits, and
 		// existing style attributes win over inlined rules). The
 		// template's CSS is inlined after rendering (FR-7).
-		html, err := renderHTML(render.Data{
-			Template:  template,
-			Subject:   opts.Subject,
-			Preheader: opts.Preheader,
-			Body:      render.HTML(body),
-			Footer:    footer,
-		})
+		html, err := renderHTML(body)
 		if err != nil {
-			return nil, err
+			return "", "", nil, err
 		}
-		msg.HTML = html
-		msg.Text = htmltext.Text(body)
+		return html, htmltext.Text(body), nil, nil
 	case "html-raw":
 		// A complete document, sent byte-identical: no template, no
 		// inlining, no additions. Only the text part is derived.
-		msg.HTML = body
-		msg.Text = htmltext.Text(body)
-	default:
-		msg.Text = body
+		return body, htmltext.Text(body), nil, nil
 	}
 	// Local image srcs in --html and --html-raw bodies are left
 	// untouched: cid: rewriting is scoped to --md (task 10). --html-raw
 	// must be sent byte-identical, so rewriting is impossible there by
 	// definition, and both formats are trusted markup whose author can
 	// attach files explicitly with --attach.
-
-	// Opened last, so no earlier failure has to close them; from here on
-	// the caller owns the handles.
-	attachments, err := openAttachments(opts.Attach)
-	if err != nil {
-		return nil, err
-	}
-	msg.Attachments = attachments
-	return msg, nil
+	return "", body, nil, nil
 }
 
 // openAttachments resolves the --attach paths into message attachments.
@@ -478,8 +531,9 @@ func logOutcome(logger *logging.Logger, a logging.Attempt,
 // validates the request rather than delivering it, and a stored body
 // would carry o:testmode=yes into a resend (FR-1, Decision Q5).
 func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message,
-	logger *logging.Logger, sendErr error, stderr io.Writer) int {
+	logger *logging.Logger, n *notification, sendErr error, res *sendResult, stderr io.Writer) int {
 	printfOutput(stderr, "mailfire: send: %v\n", sendErr)
+	res.setError(sendErrorCode(sendErr), sendErr)
 	switch {
 	case mailgun.IsAuth(sendErr):
 		return ExitAuth
@@ -494,18 +548,32 @@ func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message
 		printfOutput(stderr, "mailfire: send: not deferring (--no-defer); the message was NOT saved\n")
 		return ExitSendFail
 	case !cfg.Defer:
-		printfOutput(stderr, "mailfire: send: not deferring (defer = false in %s); the message was NOT saved\n", cfg.Path)
+		printfOutput(stderr, "mailfire: send: not deferring (%s); the message was NOT saved\n", deferDisabledBy(cfg))
 		return ExitSendFail
 	}
-	return deferMessage(cfg, msg, logger, stderr)
+	return deferMessage(cfg, msg, sendErr, logger, n, res, stderr)
 }
 
-// deferMessage persists the encoded request in the defer_dir and enforces
-// max_size, dropping the oldest deferred messages (FR-4); each drop is
-// reported on stderr and logged when logging is enabled. When the message
-// cannot be stored, the send degrades to a plain failure (exit 5) — the
-// exit code must not promise a retry that will never happen.
-func deferMessage(cfg *config.Config, msg *mailgun.Message, logger *logging.Logger, stderr io.Writer) int {
+// deferDisabledBy describes the source that disabled deferral, for
+// diagnostics: the config file, or the MAILFIRE_DEFER_DEFER variable
+// (with environment-only configuration there is no file to name).
+func deferDisabledBy(cfg *config.Config) string {
+	if env := cfg.EnvSource["defer.defer"]; env != "" {
+		return env + "=false"
+	}
+	return "defer = false in " + cfg.Path
+}
+
+// deferMessage persists the encoded request in the defer_dir, recording
+// sendErr as its last error, removes messages older than max_age, and
+// enforces max_size, dropping the oldest deferred messages (FR-4); each
+// removal is reported on stderr and logged when logging is enabled. When
+// the message cannot be stored, the send degrades to a plain failure
+// (exit 5) — the exit code must not promise a retry that will never
+// happen. A message sent with --dedup-key (n non-nil) records its
+// deduplication scope, so duplicates are skipped while it is queued.
+func deferMessage(cfg *config.Config, msg *mailgun.Message, sendErr error, logger *logging.Logger,
+	n *notification, res *sendResult, stderr io.Writer) int {
 	if msg.TestMode {
 		// Cannot happen: reportSendError never defers --test sends. Guard
 		// anyway — a stored body would carry o:testmode=yes into resend.
@@ -517,28 +585,52 @@ func deferMessage(cfg *config.Config, msg *mailgun.Message, logger *logging.Logg
 		// encoded (encoding errors are permanent). Guard anyway —
 		// storing nothing would silently lose the mail.
 		printfOutput(stderr, "mailfire: defer: no encoded request to store; the message was NOT saved and is lost\n")
+		res.setError(errDeferFailed, errors.New("no encoded request to store; the message was NOT saved"))
 		return ExitSendFail
 	}
-	store := &deferral.Store{Dir: cfg.DeferDir, MaxSize: cfg.DeferMaxSize}
+	store := &deferral.Store{Dir: cfg.DeferDir, MaxSize: cfg.DeferMaxSize, MaxAge: cfg.DeferMaxAge}
 	store.OnDrop = func(meta deferral.Metadata) {
 		printfOutput(stderr, "mailfire: defer: dropped %s (to %s, subject %q, %d bytes): defer_dir exceeds max_size\n",
 			meta.ID, strings.Join(meta.To, ", "), meta.Subject, meta.Size)
-		if logger != nil {
-			d := logging.Drop{Time: time.Now(), ID: meta.ID, To: meta.To, Subject: meta.Subject, Size: meta.Size}
-			if err := logger.LogDrop(d); err != nil {
-				printfOutput(stderr, "mailfire: %v\n", err)
-			}
-		}
+		logDrop(logger, meta, false, time.Now(), stderr)
 	}
-	meta, err := store.Save(msg.To, msg.Subject, msg.Encoded, msg.EncodedType)
+	store.OnExpire = expireReporter("defer", logger, time.Now, stderr)
+	meta, err := store.SaveMessage(deferMetadata(msg, sendErr, n), msg.Encoded)
 	if err != nil {
 		if meta.ID == "" {
 			printfOutput(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)
+			res.setError(errDeferFailed, fmt.Errorf("%w; the message was NOT saved", err))
 			return ExitSendFail
 		}
 		// The message is stored; only the max_size cleanup failed.
 		printfOutput(stderr, "mailfire: defer: %v\n", err)
 	}
 	printfOutput(stderr, "mailfire: defer: message saved as %s in %s; retry with: mailfire resend\n", meta.ID, cfg.DeferDir)
+	res.Outcome = "deferred"
+	res.DeferredID = meta.ID
 	return ExitDeferred
+}
+
+// logDrop records a message removed from the defer_dir (max_size drop or
+// max_age expiry) in the send log, when logging is enabled.
+func logDrop(logger *logging.Logger, meta deferral.Metadata, expired bool, at time.Time, stderr io.Writer) {
+	if logger == nil {
+		return
+	}
+	d := logging.Drop{Time: at, ID: meta.ID, To: meta.To, Subject: meta.Subject, Size: meta.Size, Expired: expired}
+	if err := logger.LogDrop(d); err != nil {
+		printfOutput(stderr, "mailfire: %v\n", err)
+	}
+}
+
+// expireReporter returns a deferral.Store OnExpire callback that reports
+// each message removed for exceeding max_age on stderr (prefixed with
+// the command name) and in the send log.
+func expireReporter(cmd string, logger *logging.Logger, now func() time.Time, stderr io.Writer) func(deferral.Metadata) {
+	return func(meta deferral.Metadata) {
+		printfOutput(stderr, "mailfire: %s: expired %s (to %s, subject %q, %d bytes): deferred %s ago, older than max_age\n",
+			cmd, meta.ID, strings.Join(meta.To, ", "), meta.Subject, meta.Size,
+			now().Sub(meta.Timestamp).Round(time.Second))
+		logDrop(logger, meta, true, now(), stderr)
+	}
 }

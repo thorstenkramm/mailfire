@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
@@ -42,6 +43,21 @@ type Option func(*runContext)
 type runContext struct {
 	stdin      io.Reader
 	clientOpts []mailgun.Option
+	clock      func() time.Time // nil: time.Now
+}
+
+// now returns the current time from the injected clock, if any.
+func (rc *runContext) now() time.Time {
+	if rc != nil && rc.clock != nil {
+		return rc.clock()
+	}
+	return time.Now()
+}
+
+// WithClock replaces the clock used for deferred-message ages, retry
+// backoff, and expiry. Intended for tests.
+func WithClock(now func() time.Time) Option {
+	return func(rc *runContext) { rc.clock = now }
 }
 
 // WithStdin sets the reader the send subcommand reads the message body
@@ -81,6 +97,8 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 				return ExitOK
 			}
 			return runResend(args[1:], rc, stdout, stderr)
+		case "queue":
+			return runQueue(args[1:], rc, stdout, stderr)
 		case "validate":
 			if wantsHelp(args[1:]) {
 				printOutput(stdout, validateUsage)
@@ -97,7 +115,8 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 			if !strings.HasPrefix(args[0], "-") {
 				printfOutput(stderr, "mailfire: unknown subcommand %q\n\n", args[0])
 				printOutput(stderr, usageText)
-				return ExitUsage
+				return jsonFail(stdout, jsonRequested(args[1:]), "mailfire", errUsage,
+					fmt.Errorf("unknown subcommand %q", args[0]), ExitUsage)
 			}
 			return runSend(args, rc, stdout, stderr)
 		}
@@ -130,18 +149,31 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	if err != nil {
 		printfOutput(stderr, "mailfire: send: %v\n\n", err)
 		printOutput(stderr, sendUsage)
-		return ExitUsage
+		return jsonFail(stdout, opts.JSON, "send", errUsage, err, ExitUsage)
 	}
 	if err := checkFlags(&opts); err != nil {
 		printfOutput(stderr, "mailfire: send: %v\n", err)
-		return ExitUsage
+		return jsonFail(stdout, opts.JSON, "send", errUsage, err, ExitUsage)
 	}
-	cfg, err := config.Load(opts.Config, stderr)
+	if opts.Preview != "" {
+		return runPreview(&opts, rc, stdout, stderr)
+	}
+	res := &sendResult{envelope: envelope{Command: "send"}, TestMode: opts.Test}
+	cfg, err := config.LoadWith(opts.Config, stderr, config.Overrides{
+		From:     opts.From != "",
+		Template: opts.Template != "" || opts.TemplateFile != "",
+		Timeout:  opts.Timeout > 0,
+		Cooldown: opts.Cooldown > 0,
+	})
 	if err != nil {
 		printfOutput(stderr, "mailfire: %v\n", err)
-		return ExitConfig
+		return jsonFail(stdout, opts.JSON, "send", errConfig, err, ExitConfig)
 	}
-	return send(cfg, &opts, rc, stdout, stderr)
+	code := send(cfg, &opts, rc, res, humanOut(stdout, opts.JSON), stderr)
+	if opts.JSON {
+		return emitJSON(stdout, res, code)
+	}
+	return code
 }
 
 // checkFlags rejects flag combinations that are usage errors (exit 1),
@@ -150,6 +182,9 @@ func runSend(args []string, rc *runContext, stdout, stderr io.Writer) int {
 // with --md or --html (FR-1); with --txt or --html-raw they would be
 // silently ignored, so they fail loudly instead.
 func checkFlags(opts *SendOptions) error {
+	if err := checkPreviewFlags(opts); err != nil {
+		return err
+	}
 	if opts.Template != "" && opts.TemplateFile != "" {
 		return errors.New("--template-file is mutually exclusive with --template")
 	}
@@ -186,32 +221,39 @@ func (s *stringSlice) Set(v string) error {
 
 // SendOptions holds the parsed flags of the send subcommand.
 type SendOptions struct {
-	To           []string // --to, repeatable, at least one required
-	Cc           []string // --cc, repeatable
-	Bcc          []string // --bcc, repeatable
-	From         string   // --from
-	Subject      string   // --subject, required
-	Format       string   // one of "txt" (default), "md", "html", "html-raw"
-	File         string   // --file
-	Message      string   // --message / --m / -m
-	MessageSet   bool     // explicit body, even when empty
-	Template     string   // --template; empty: the config's template
-	TemplateFile string   // --template-file; custom template
-	Preheader    string   // --preheader
-	Footer       string   // --footer
-	Attach       []string // --attach, repeatable
-	Test         bool     // --test
-	NoDefer      bool     // --no-defer
-	Config       string   // -c / --config
+	To           []string      // --to, repeatable, at least one required
+	Cc           []string      // --cc, repeatable
+	Bcc          []string      // --bcc, repeatable
+	From         string        // --from
+	Subject      string        // --subject, required
+	Format       string        // one of "txt" (default), "md", "html", "html-raw"
+	File         string        // --file
+	Message      string        // --message / --m / -m
+	MessageSet   bool          // explicit body, even when empty
+	Template     string        // --template; empty: the config's template
+	TemplateFile string        // --template-file; custom template
+	Preheader    string        // --preheader
+	Footer       string        // --footer
+	Attach       []string      // --attach, repeatable
+	Test         bool          // --test
+	NoDefer      bool          // --no-defer
+	Timeout      time.Duration // --timeout; zero: mailgun.timeout or the client default
+	DedupKey     string        // --dedup-key; empty: no notification deduplication
+	Cooldown     time.Duration // --cooldown; zero: dedup.cooldown or its default
+	Config       string        // -c / --config
+	Preview      string        // --preview; output path, "-" for stdout; empty: send
+	JSON         bool          // --json: print the result as one JSON document
 }
 
 // ParseSendFlags parses the flags of the send subcommand. It returns
 // showHelp == true when -h/--help was given; in that case the other return
-// values are meaningless and the caller should print usage and exit 0.
+// values are meaningless and the caller should print usage and exit 0. On
+// error, only opts.JSON is meaningful: the output mode for the error.
 func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) {
 	var txt, md, html, htmlRaw bool
 	var configShort string
-	var fileSet bool
+	var timeoutFlag, cooldownFlag string
+	var fileSet, dedupKeySet, cooldownSet, previewSet bool
 	var templateSet, templateFileSet bool
 
 	fs := flag.NewFlagSet("send", flag.ContinueOnError)
@@ -236,14 +278,19 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 	fs.Var((*stringSlice)(&opts.Attach), "attach", "")
 	fs.BoolVar(&opts.Test, "test", false, "")
 	fs.BoolVar(&opts.NoDefer, "no-defer", false, "")
+	fs.StringVar(&timeoutFlag, "timeout", "", "")
+	fs.StringVar(&opts.DedupKey, "dedup-key", "", "")
+	fs.StringVar(&cooldownFlag, "cooldown", "", "")
 	fs.StringVar(&configShort, "c", "", "")
 	fs.StringVar(&opts.Config, "config", "", "")
+	fs.StringVar(&opts.Preview, "preview", "", "")
+	fs.BoolVar(&opts.JSON, "json", false, "")
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return SendOptions{}, true, nil
 		}
-		return SendOptions{}, false, err
+		return SendOptions{JSON: scanJSON(fs, args, false)}, false, err
 	}
 
 	fs.Visit(func(f *flag.Flag) {
@@ -259,39 +306,73 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 			templateSet = true
 		case "message", "m":
 			opts.MessageSet = true
+		case "dedup-key":
+			dedupKeySet = true
+		case "cooldown":
+			cooldownSet = true
+		case "preview":
+			previewSet = true
+			if opts.Preview == "" {
+				err = errors.New("--preview: empty path (use - for stdout)")
+			}
 		}
 	})
 	if templateSet && templateFileSet {
-		return SendOptions{}, false, errors.New("--template-file is mutually exclusive with --template")
+		return SendOptions{JSON: opts.JSON}, false, errors.New("--template-file is mutually exclusive with --template")
 	}
 	if err != nil {
-		return SendOptions{}, false, err
+		return SendOptions{JSON: opts.JSON}, false, err
 	}
 	if fileSet && opts.MessageSet {
-		return SendOptions{}, false, errors.New("conflicting body sources: use either --file or --message")
+		return SendOptions{JSON: opts.JSON}, false, errors.New("conflicting body sources: use either --file or --message")
 	}
 	if fileSet && opts.File == "" {
-		return SendOptions{}, false, errors.New("--file: empty path")
+		return SendOptions{JSON: opts.JSON}, false, errors.New("--file: empty path")
 	}
 	if opts.Format, err = resolveFormat(txt, md, html, htmlRaw); err != nil {
-		return SendOptions{}, false, err
+		return SendOptions{JSON: opts.JSON}, false, err
+	}
+	// An explicitly supplied but empty --timeout is rejected like any other
+	// invalid value; only an absent flag leaves config/default in charge.
+	d, terr := parseTimeoutOption(fs, timeoutFlag)
+	if terr != nil {
+		return SendOptions{JSON: opts.JSON}, false, terr
+	}
+	opts.Timeout = d
+	if dedupKeySet && strings.TrimSpace(opts.DedupKey) == "" {
+		return SendOptions{JSON: opts.JSON}, false, errors.New("--dedup-key: empty key")
+	}
+	if cooldownSet {
+		if !dedupKeySet {
+			return SendOptions{JSON: opts.JSON}, false, errors.New("--cooldown requires --dedup-key")
+		}
+		c, cerr := time.ParseDuration(cooldownFlag)
+		if cerr != nil || c <= 0 {
+			return SendOptions{JSON: opts.JSON}, false, fmt.Errorf("invalid --cooldown %q: use a positive Go duration, e.g. \"30m\", \"1h\"", cooldownFlag)
+		}
+		opts.Cooldown = c
 	}
 
 	if configShort != "" {
 		if opts.Config != "" && opts.Config != configShort {
-			return SendOptions{}, false, fmt.Errorf("conflicting config paths: use either -c or --config, not both")
+			return SendOptions{JSON: opts.JSON}, false, fmt.Errorf("conflicting config paths: use either -c or --config, not both")
 		}
 		opts.Config = configShort
 	}
 
 	if rest := fs.Args(); len(rest) > 0 {
-		return SendOptions{}, false, fmt.Errorf("unexpected arguments: %s", strings.Join(rest, " "))
+		return SendOptions{JSON: opts.JSON}, false, fmt.Errorf("unexpected arguments: %s", strings.Join(rest, " "))
+	}
+	if previewSet {
+		// A preview renders the body only: recipients, sender and
+		// subject are optional (task 29).
+		return opts, false, nil
 	}
 	if len(opts.To) == 0 {
-		return SendOptions{}, false, errors.New("missing required flag: --to")
+		return SendOptions{JSON: opts.JSON}, false, errors.New("missing required flag: --to")
 	}
 	if opts.Subject == "" {
-		return SendOptions{}, false, errors.New("missing required flag: --subject")
+		return SendOptions{JSON: opts.JSON}, false, errors.New("missing required flag: --subject")
 	}
 	return opts, false, nil
 }

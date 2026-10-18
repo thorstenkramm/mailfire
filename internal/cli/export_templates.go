@@ -10,33 +10,50 @@ import (
 )
 
 const exportTemplatesUsage = `Usage:
-  mailfire export-templates <folder>
+  mailfire export-templates [--json] <folder>
 
 Export all built-in templates as editable HTML template files.
 Creates the folder if needed; refuses to overwrite existing templates.
+
+Flags (export-templates):
+  --json             print the result as one JSON document
+  -h, --help         show help
 ` + moreHelp
 
+// exportResult is the JSON document of export-templates.
+type exportResult struct {
+	envelope
+	Directory string `json:"directory"`
+}
+
 func runExportTemplates(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("export-templates", flag.ContinueOnError)
+	const command = "export-templates"
+	var jsonMode bool
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	if err := fs.Parse(args); err != nil {
+	fs.BoolVar(&jsonMode, "json", false, "")
+	folders, err := parseInterspersed(fs, args)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			printOutput(stdout, exportTemplatesUsage)
 			return ExitOK
 		}
 		printfOutput(stderr, "mailfire: export-templates: %v\n", err)
 		printOutput(stderr, exportTemplatesUsage)
-		return ExitUsage
+		return jsonFail(stdout, scanJSON(fs, args, true), command, errUsage, err, ExitUsage)
 	}
-	args = fs.Args()
-	if len(args) != 1 || args[0] == "" {
+	if len(folders) != 1 || folders[0] == "" {
 		printOutput(stderr, exportTemplatesUsage)
-		return ExitUsage
+		return jsonFail(stdout, jsonMode, command, errUsage, errors.New("expected exactly one folder"), ExitUsage)
 	}
-	if err := render.Export(config.ExpandPath(args[0])); err != nil {
+	dir := config.ExpandPath(folders[0])
+	if err := render.Export(dir); err != nil {
 		printfOutput(stderr, "mailfire: export-templates: %v\n", err)
-		return ExitUsage
+		return jsonFail(stdout, jsonMode, command, errExport, err, ExitUsage)
 	}
-	printfOutput(stdout, "Exported templates to %s\n", args[0])
+	if jsonMode {
+		return emitJSON(stdout, &exportResult{envelope: envelope{Command: command}, Directory: dir}, ExitOK)
+	}
+	printfOutput(stdout, "Exported templates to %s\n", folders[0])
 	return ExitOK
 }

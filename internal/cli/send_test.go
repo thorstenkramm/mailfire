@@ -370,7 +370,7 @@ func TestSendClientConstructionError(t *testing.T) {
 	opts := &SendOptions{To: []string{"a@example.com"}, Subject: "s", Format: "txt"}
 	var stdout, stderr bytes.Buffer
 	rc := &runContext{stdin: strings.NewReader("body")}
-	if code := send(cfg, opts, rc, &stdout, &stderr); code != ExitConfig {
+	if code := send(cfg, opts, rc, &sendResult{}, &stdout, &stderr); code != ExitConfig {
 		t.Errorf("exit = %d, want %d", code, ExitConfig)
 	}
 	if !strings.Contains(stderr.String(), "unknown region") {

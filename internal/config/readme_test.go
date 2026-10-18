@@ -4,9 +4,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
 const readmePath = "../../README.md"
@@ -46,46 +48,92 @@ func loadExample(t *testing.T, content string) *Config {
 	return cfg
 }
 
-// TestREADMEConfigExampleLoads makes sure the annotated example in the
-// README is valid TOML and passes mailfire's own validation, so users can
-// copy it as-is.
+// TestREADMEConfigExampleLoads makes sure the minimal quick-start
+// configuration in the README is valid TOML and passes mailfire's own
+// validation, so users can copy it as-is. Everything beyond the shown
+// keys must stay at its documented default.
 func TestREADMEConfigExampleLoads(t *testing.T) {
+	isolate(t)
 	cfg := loadExample(t, readmeConfigExample(t))
 
 	if cfg.Region != "eu" || cfg.Domain != "example.com" || cfg.From != "My Name <user@example.com>" {
 		t.Errorf("unexpected mailgun/sending values: %+v", cfg)
 	}
-	if cfg.LogLevel != "debug" || cfg.LogMaxSize != 100<<20 {
-		t.Errorf("unexpected logging values: level=%q max=%d", cfg.LogLevel, cfg.LogMaxSize)
+	if cfg.Logfile != "" || cfg.LogLevel != DefaultLogLevel || cfg.LogMaxSize != DefaultMaxSize {
+		t.Errorf("logging defaults not preserved: logfile=%q level=%q max=%d",
+			cfg.Logfile, cfg.LogLevel, cfg.LogMaxSize)
 	}
-	if cfg.Defer || cfg.DeferDir != "/var/tmp/mailfire/deferred" || cfg.DeferMaxSize != 100<<20 {
-		t.Errorf("unexpected defer values: %+v", cfg)
+	if !cfg.Defer || cfg.DeferDir == "" || cfg.DeferMaxSize != DefaultMaxSize || cfg.ResendCooldown != DefaultCooldown {
+		t.Errorf("defer defaults not preserved: %+v", cfg)
 	}
-	if cfg.ResendCooldown != 5*time.Minute {
-		t.Errorf("ResendCooldown = %v, want 5m", cfg.ResendCooldown)
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (mailgun client default preserved)", cfg.Timeout)
 	}
 }
 
-// TestREADMEConfigExampleCommentedLogfile uncomments each documented
-// logfile line in turn: users will do exactly that, and the line must be
-// valid TOML (quoted string) once they do.
-func TestREADMEConfigExampleCommentedLogfile(t *testing.T) {
-	example := readmeConfigExample(t)
-	found := 0
+// exampleConf reads the annotated mailfire.example.conf at the repo root,
+// with line endings normalized to LF.
+func exampleConf(t *testing.T) string {
+	t.Helper()
+	data, err := os.ReadFile("../../mailfire.example.conf")
+	if err != nil {
+		t.Skipf("mailfire.example.conf not available (%v); skipping docs test", err)
+	}
+	return strings.ReplaceAll(string(data), "\r\n", "\n")
+}
+
+// TestExampleConfLoads: the annotated example is valid TOML, passes
+// validation, and — with all optional settings commented out — keeps the
+// documented defaults.
+func TestExampleConfLoads(t *testing.T) {
+	isolate(t)
+	cfg := loadExample(t, exampleConf(t))
+
+	if cfg.APIKey != "<your-api-key>" || cfg.Region != "eu" || cfg.Domain != "example.com" {
+		t.Errorf("unexpected required values: %+v", cfg)
+	}
+	if cfg.From != "My Name <user@example.com>" {
+		t.Errorf("From = %q", cfg.From)
+	}
+	if cfg.Template != render.DefaultTemplate || cfg.TemplateFile != "" {
+		t.Errorf("template defaults not preserved: template=%q file=%q", cfg.Template, cfg.TemplateFile)
+	}
+	if cfg.Logfile != "" || cfg.LogLevel != DefaultLogLevel || cfg.LogMaxSize != DefaultMaxSize {
+		t.Errorf("logging defaults not preserved: logfile=%q level=%q max=%d",
+			cfg.Logfile, cfg.LogLevel, cfg.LogMaxSize)
+	}
+	if !cfg.Defer || cfg.DeferDir == "" || cfg.DeferMaxSize != DefaultMaxSize || cfg.ResendCooldown != DefaultCooldown {
+		t.Errorf("defer defaults not preserved: %+v", cfg)
+	}
+	if cfg.Timeout != 0 {
+		t.Errorf("Timeout = %v, want 0 (mailgun client default preserved)", cfg.Timeout)
+	}
+}
+
+// reCommentedSetting matches the example's commented-out settings
+// ("# key = value"), not prose comments.
+var reCommentedSetting = regexp.MustCompile(`^# [a-z_]+ = `)
+
+// TestExampleConfCommentedSettingsLoad: users uncomment the documented
+// optional settings, so every commented "# key = value" line in the
+// example must be valid TOML accepted by the loader once uncommented.
+func TestExampleConfCommentedSettingsLoad(t *testing.T) {
+	isolate(t)
+	example := exampleConf(t)
+	seen := map[string]bool{}
 	for _, line := range strings.Split(example, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "#logfile") {
+		if !reCommentedSetting.MatchString(trimmed) || seen[trimmed] {
 			continue
 		}
-		found++
-		uncommented := strings.Replace(example, line, strings.TrimPrefix(trimmed, "#"), 1)
-		cfg := loadExample(t, uncommented)
-		if cfg.Logfile == "" {
-			t.Errorf("uncommenting %q did not set the logfile", trimmed)
+		seen[trimmed] = true
+		uncommented := strings.Replace(example, line, strings.TrimPrefix(trimmed, "# "), 1)
+		if cfg := loadExample(t, uncommented); cfg == nil {
+			t.Errorf("uncommenting %q did not load", trimmed)
 		}
 	}
-	if found == 0 {
-		t.Error("README example documents no #logfile line")
+	if len(seen) == 0 {
+		t.Error("mailfire.example.conf documents no commented-out settings")
 	}
 }
 

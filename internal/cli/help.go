@@ -14,15 +14,17 @@ Usage:
   mailfire validate           check config and Mailgun credentials
   mailfire resend [--list | --force | <id>...]
                               retry deferred messages
+  mailfire queue list|show|delete|stats
+                              inspect and delete deferred messages
   mailfire version            show version information
   mailfire export-templates <folder>  export editable built-in templates
 
 Flags (send):
-  --to <addr>        recipient, repeatable (required)
+  --to <addr>        recipient, repeatable (required to send)
   --cc <addr>        cc recipient, repeatable
   --bcc <addr>       bcc recipient, repeatable
   --from <addr>      sender, overrides config ("Name <user@example.com>")
-  --subject <text>   subject line (required)
+  --subject <text>   subject line (required to send)
   --txt              body is plain text (default)
   --md               body is Markdown, rendered into the template
   --html             body is an HTML fragment, wrapped in the template
@@ -36,6 +38,11 @@ Flags (send):
   --attach <path>    attach a file, repeatable
   --test             use Mailgun test mode: validate the request, deliver nothing
   --no-defer         fail immediately instead of deferring on error
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --dedup-key <key>  skip repeats of this notification within the cooldown
+  --cooldown <dur>   suppression window for --dedup-key (default 1h)
+  --preview <path>   write the rendered HTML to <path> (- for stdout); send nothing
+  --json             print the result as one JSON document (conflicts with --preview)
   -c, --config <p>   use this config file
   -h, --help         show help
 ` + moreHelp
@@ -49,6 +56,10 @@ Compose and send an email. Read piped stdin unless --file or --message is given.
 Terminal stdin is never read. An empty body requires at least one attachment.
 Sender and recipient domains must be dotted DNS names (no DNS lookup).
 
+With --preview, render the body locally instead of sending: no Mailgun
+credentials, recipients, sender, or subject are needed, and nothing is sent,
+deferred, deduplicated, or logged. Local Markdown images are embedded.
+
 ` + usageText[strings.Index(usageText, "Flags (send):"):]
 
 // resendUsage is printed by "mailfire resend --help" and on resend usage
@@ -56,12 +67,39 @@ Sender and recipient domains must be dotted DNS names (no DNS lookup).
 const resendUsage = `Usage:
   mailfire resend [--list | --force | <id>...]
 
-Retry deferred messages. Without arguments, every deferred message older
-than the resend cooldown is retried; with <id>..., only those messages.
+Retry deferred messages. Without arguments, every eligible deferred message
+is retried; with <id>..., only those messages. A message becomes eligible
+resend_cooldown after it was deferred; each failed retry doubles the wait,
+up to one hour. Permanently rejected messages are kept but only retried
+with --force <id>. The timeout is per request: retrying several messages
+may take longer than a single timeout.
 
 Flags (resend):
   --list             show deferred messages (ID, date, to, subject, size)
-  --force            resend even messages younger than the cooldown
+  --force            ignore the cooldown and backoff; with <id>, also retry
+                     permanently rejected messages
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --json             print the result (or the --list listing) as one JSON document
+  -c, --config <p>   use this config file
+  -h, --help         show help
+` + moreHelp
+
+// queueUsage is printed by "mailfire queue --help" and on queue usage
+// errors.
+const queueUsage = `Usage:
+  mailfire queue list                 list deferred messages and retry state
+  mailfire queue show [--raw] <id>    show one message's metadata
+  mailfire queue delete <id>...       delete the given messages
+  mailfire queue stats                show queue totals
+
+Inspect and delete deferred messages. list, show, and stats never send,
+change, or remove messages. delete removes nothing if any ID is unknown.
+Use mailfire resend to retry.
+
+Flags (queue):
+  --raw              show: print the stored request (message content)
+  --json             print the result as one JSON document (with --raw, the
+                     stored request is included base64-encoded)
   -c, --config <p>   use this config file
   -h, --help         show help
 ` + moreHelp
@@ -71,9 +109,12 @@ Flags (resend):
 const validateUsage = `Usage:
   mailfire validate [flags]
 
-Check the config file and the Mailgun credentials without sending mail.
+Check the configuration (config file and MAILFIRE_* environment variables)
+and the Mailgun credentials without sending mail.
 
 Flags (validate):
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides mailgun.timeout
+  --json             print the result as one JSON document
   -c, --config <p>   use this config file
   -h, --help         show help
 ` + moreHelp
@@ -86,5 +127,6 @@ const versionUsage = `Usage:
 Show version, commit, and build date.
 
 Flags (version):
+  --json             print the result as one JSON document
   -h, --help         show help
 ` + moreHelp
