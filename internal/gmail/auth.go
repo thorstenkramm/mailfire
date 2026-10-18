@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,15 +41,21 @@ const (
 // refreshMargin is how long before expiry an access token is refreshed.
 const refreshMargin = 5 * time.Minute
 
-// BuiltinClientID is intentionally a placeholder until the Mailfire Google
-// Cloud project is registered and verified (a release prerequisite of task
-// 30). Installed-app client metadata is not confidential; refresh tokens
-// are the credentials that must be guarded.
-const BuiltinClientID = "REPLACE-WITH-MAILFIRE-DESKTOP-CLIENT.apps.googleusercontent.com"
+// BuiltinClientID is Mailfire's registered Google OAuth client (type
+// Desktop app, project "mailfire"). Installed-app client metadata is not
+// confidential; refresh tokens are the credentials that must be guarded.
+const BuiltinClientID = "607295572237-5taqu4r757e7ilgt0u60kc7hctdgv28e.apps.googleusercontent.com"
+
+// builtinClientSecret is the secret of BuiltinClientID. Google does not
+// treat Desktop client secrets as confidential either, but it is kept out
+// of the repository: release builds set it with
+// -ldflags "-X github.com/thorstenkramm/mailfire/internal/gmail.builtinClientSecret=..."
+// (see the Makefile and .goreleaser.yaml).
+var builtinClientSecret string
 
 // ErrClientNotConfigured reports that this build has no usable OAuth
 // client. It is a configuration problem, not an authorization failure.
-var ErrClientNotConfigured = errors.New("gmail: sign-in is not available in this build: Mailfire's Google OAuth client is not registered yet (developers can set MAILFIRE_GMAIL_CLIENT_ID)")
+var ErrClientNotConfigured = errors.New("gmail: sign-in is not available in this build: it was built without Mailfire's Google client secret (set MAILFIRE_GMAIL_CLIENT_SECRET, or use a release build)")
 
 // Credentials is the persisted authorization. AccessToken and RefreshToken
 // are secrets; Account (Google's opaque subject ID) is not.
@@ -69,14 +76,20 @@ type OAuthClient struct {
 
 // DefaultOAuthClient returns the built-in client (or the developer
 // override from MAILFIRE_GMAIL_CLIENT_ID / MAILFIRE_GMAIL_CLIENT_SECRET)
-// with the given request timeout (non-positive: DefaultTimeout).
+// with the given request timeout (non-positive: DefaultTimeout). The
+// built-in secret is only ever paired with the built-in client ID.
 func DefaultOAuthClient(timeout time.Duration) OAuthClient {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
+	id := env("MAILFIRE_GMAIL_CLIENT_ID", BuiltinClientID)
+	secret := strings.TrimSpace(os.Getenv("MAILFIRE_GMAIL_CLIENT_SECRET"))
+	if secret == "" && id == BuiltinClientID {
+		secret = builtinClientSecret
+	}
 	return OAuthClient{
-		ClientID:     env("MAILFIRE_GMAIL_CLIENT_ID", BuiltinClientID),
-		ClientSecret: os.Getenv("MAILFIRE_GMAIL_CLIENT_SECRET"),
+		ClientID:     id,
+		ClientSecret: secret,
 		HTTP:         &http.Client{Timeout: timeout},
 		TokenURL:     tokenURL,
 		AuthURL:      authURL,
@@ -276,9 +289,32 @@ func (o OAuthClient) Exchange(ctx context.Context, code, redirect, verifier stri
 		"redirect_uri": {redirect}, "code_verifier": {verifier}})
 }
 
+// checkGranted rejects a token without the send permission. Google's
+// consent screen lets the user grant each scope separately, so a sign-in
+// can succeed with only "openid"; such a token could never send. Google
+// lists the granted scopes in every token response (an absent list is
+// accepted, as it says nothing).
+func checkGranted(op, scope string) error {
+	if scope == "" || slices.Contains(strings.Fields(scope), ScopeSend) {
+		return nil
+	}
+	return newError(op, 0, message.KindAuth, "Google did not grant permission to send email (granted: "+scope+
+		"); run 'mailfire auth login --provider gmail' again and allow \"Send email on your behalf\"")
+}
+
+// Configured reports ErrClientNotConfigured when the client cannot sign
+// in: no client ID, or the built-in client without its secret (a build
+// without the release ldflags), which Google rejects.
+func (o OAuthClient) Configured() error {
+	if o.ClientID == "" || (o.ClientID == BuiltinClientID && o.ClientSecret == "") {
+		return ErrClientNotConfigured
+	}
+	return nil
+}
+
 func (o OAuthClient) exchange(ctx context.Context, op string, v url.Values) (Credentials, error) {
-	if o.ClientID == "" || o.ClientID == BuiltinClientID {
-		return Credentials{}, ErrClientNotConfigured
+	if err := o.Configured(); err != nil {
+		return Credentials{}, err
 	}
 	v.Set("client_id", o.ClientID)
 	if o.ClientSecret != "" {
@@ -311,6 +347,7 @@ func (o OAuthClient) exchange(ctx context.Context, op string, v url.Values) (Cre
 		RefreshToken     string `json:"refresh_token"`
 		IDToken          string `json:"id_token"`
 		ExpiresIn        int64  `json:"expires_in"`
+		Scope            string `json:"scope"`
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
@@ -339,6 +376,9 @@ func (o OAuthClient) exchange(ctx context.Context, op string, v url.Values) (Cre
 	}
 	if parseErr != nil || r.AccessToken == "" {
 		return Credentials{}, temporary(op, resp.StatusCode, "invalid token response")
+	}
+	if err := checkGranted(op, r.Scope); err != nil {
+		return Credentials{}, err
 	}
 	return Credentials{
 		AccessToken:  r.AccessToken,

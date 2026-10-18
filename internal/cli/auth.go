@@ -236,8 +236,8 @@ func gmailLogin(o authOptions, store *gmail.Store, oauth gmail.OAuthClient, rc *
 		printfOutput(stderr, "mailfire: auth login: %v\n", err)
 		return ExitSendFail
 	}
-	if oauth.ClientID == "" || oauth.ClientID == gmail.BuiltinClientID {
-		printfOutput(stderr, "mailfire: auth login: %v\n", gmail.ErrClientNotConfigured)
+	if err := oauth.Configured(); err != nil {
+		printfOutput(stderr, "mailfire: auth login: %v\n", err)
 		return ExitConfig
 	}
 	if o.manual {

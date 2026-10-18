@@ -28,6 +28,8 @@ builds:
       - -X main.version={{.Version}}
       - -X main.commit={{.ShortCommit}}
       - -X main.buildDate={{ time "2006-01-02" }}
+      # Gmail client secret, from the GMAIL_CLIENT_SECRET repository secret (see release.yml).
+      - -X github.com/thorstenkramm/mailfire/internal/gmail.builtinClientSecret={{ .Env.GMAIL_CLIENT_SECRET }}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
 archives:

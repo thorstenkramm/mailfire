@@ -5,13 +5,22 @@ VERSION ?= $(patsubst v%,%,$(shell git describe --tags --always --dirty 2>/dev/n
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE    ?= $(shell date -u +%Y-%m-%d)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildDate=$(DATE)
+# Google OAuth client secret of the built-in Gmail client: never committed.
+# Taken from GMAIL_CLIENT_SECRET, else from the client file downloaded from
+# the Google Cloud console into tmp/. Without it, Gmail sign-in needs
+# MAILFIRE_GMAIL_CLIENT_SECRET at run time.
+GMAIL_CLIENT_SECRET ?= $(shell sed -n 's/.*"client_secret": *"\([^"]*\)".*/\1/p' tmp/client_secret_*.json 2>/dev/null | head -n 1)
+ifneq ($(GMAIL_CLIENT_SECRET),)
+LDFLAGS += -X github.com/thorstenkramm/mailfire/internal/gmail.builtinClientSecret=$(GMAIL_CLIENT_SECRET)
+endif
 
 .PHONY: build test lint coverage clean docs docs-man docs-serve
 
 COVERAGE_MIN := 85
 
 build:
-	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(BINARY) .
+	@echo "go build $(BINARY)$(if $(GMAIL_CLIENT_SECRET), (with Gmail client secret),)"
+	@CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(BINARY) .
 
 test:
 	go test -race ./...

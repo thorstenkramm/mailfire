@@ -9,10 +9,9 @@ Mailfire can send through the Gmail API of a personal Gmail or Google Workspace 
 settings, an app password, or your own Google Cloud project.
 
 > [!IMPORTANT] Availability
-> Gmail sign-in requires Mailfire's registered Google OAuth client. Until a release ships it,
-> `mailfire auth login` reports that sign-in is not available in this build. Developers can test with their own
-> Desktop OAuth client by setting `MAILFIRE_GMAIL_CLIENT_ID` (and `MAILFIRE_GMAIL_CLIENT_SECRET` if the client has
-> one).
+> Mailfire's Google app is awaiting Google's verification. Until it is verified, only accounts registered as testers
+> can sign in, and released versions up to 0.3.0 do not include the Gmail provider. Developers can use their own
+> Desktop OAuth client by setting `MAILFIRE_GMAIL_CLIENT_ID` and `MAILFIRE_GMAIL_CLIENT_SECRET`.
 
 ## Set up
 
@@ -28,6 +27,9 @@ from = "My Name <me@gmail.com>"
 mailfire auth login --provider gmail
 mailfire validate
 ```
+
+On Google's consent page, tick the checkbox to let Mailfire **send email on your behalf**: Google lists each permission
+separately, and without this one the login fails with an explanation and nothing is saved.
 
 `auth login` opens Google's consent page in your browser and waits for the redirect to a temporary local address
 (`http://127.0.0.1:<port>/oauth2/callback`). The flow uses PKCE and a random state value; requests to the local

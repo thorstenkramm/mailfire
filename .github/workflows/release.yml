@@ -35,6 +35,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Without it, the released binaries could not sign in to Gmail.
+      - name: Check the Gmail client secret
+        env:
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+        run: |
+          if [ -z "$GMAIL_CLIENT_SECRET" ]; then
+            echo "::error::The GMAIL_CLIENT_SECRET repository secret is not set (see docs/internal/gmail-oauth-client-setup.md)."
+            exit 1
+          fi
+
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
@@ -42,6 +52,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
 
   cloudsmith:
     needs: release

@@ -248,9 +248,38 @@ func TestExchangeRecordsAccountID(t *testing.T) {
 }
 
 func TestUnconfiguredClient(t *testing.T) {
-	_, err := OAuthClient{ClientID: BuiltinClientID}.Refresh(context.Background(), "r")
-	if !errors.Is(err, ErrClientNotConfigured) {
-		t.Fatalf("error = %v", err)
+	// The built-in client without its build-time secret, or no client at
+	// all, cannot sign in; Google would reject the request.
+	for _, o := range []OAuthClient{{ClientID: BuiltinClientID}, {}} {
+		if _, err := o.Refresh(context.Background(), "r"); !errors.Is(err, ErrClientNotConfigured) {
+			t.Errorf("%q: error = %v", o.ClientID, err)
+		}
+	}
+	for _, o := range []OAuthClient{{ClientID: BuiltinClientID, ClientSecret: "s"}, {ClientID: "dev-client"}} {
+		if err := o.Configured(); err != nil {
+			t.Errorf("%q: Configured() = %v", o.ClientID, err)
+		}
+	}
+}
+
+// The build-time secret belongs to the built-in client only: it is never
+// sent with a developer's own client ID, and the variable overrides it.
+func TestDefaultOAuthClientSecret(t *testing.T) {
+	saved := builtinClientSecret
+	t.Cleanup(func() { builtinClientSecret = saved })
+	builtinClientSecret = "built-in"
+	for _, tc := range []struct{ id, secret, wantID, wantSecret string }{
+		{"", "", BuiltinClientID, "built-in"},
+		{"", " env-secret ", BuiltinClientID, "env-secret"},
+		{BuiltinClientID, "", BuiltinClientID, "built-in"},
+		{"dev-client", "", "dev-client", ""},
+		{"dev-client", "dev-secret", "dev-client", "dev-secret"},
+	} {
+		t.Setenv("MAILFIRE_GMAIL_CLIENT_ID", tc.id)
+		t.Setenv("MAILFIRE_GMAIL_CLIENT_SECRET", tc.secret)
+		if o := DefaultOAuthClient(0); o.ClientID != tc.wantID || o.ClientSecret != tc.wantSecret {
+			t.Errorf("id %q, secret %q: got %q, %q; want %q, %q", tc.id, tc.secret, o.ClientID, o.ClientSecret, tc.wantID, tc.wantSecret)
+		}
 	}
 }
 
@@ -312,6 +341,49 @@ func TestAuthorizationURLScopes(t *testing.T) {
 	q := u.Query()
 	if q.Get("scope") != "openid "+ScopeSend || q.Get("access_type") != "offline" || q.Get("code_challenge_method") != "S256" || q.Get("state") != "st" {
 		t.Errorf("authorization query = %v", q)
+	}
+}
+
+// Google's consent screen grants each scope separately: a token without
+// gmail.send is rejected at sign-in and at refresh, not saved for a send
+// that could never work.
+func TestTokenWithoutSendScopeIsRejected(t *testing.T) {
+	for _, tc := range []struct {
+		scope string
+		ok    bool
+	}{
+		{"openid", false},
+		{"openid " + ScopeSend, true},
+		{ScopeSend, true},
+		{"", true}, // no list: says nothing about the grant
+	} {
+		ts := newTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+			respond(t, w, fmt.Sprintf(`{"access_token":"a","refresh_token":"r","expires_in":3600,"scope":%q}`, tc.scope))
+		})
+		_, err := ts.client().Exchange(context.Background(), "code", "http://127.0.0.1:1/oauth2/callback", "v")
+		_, rerr := ts.client().Refresh(context.Background(), "r")
+		for op, err := range map[string]error{"exchange": err, "refresh": rerr} {
+			if tc.ok && err != nil {
+				t.Errorf("%s, scope %q: %v", op, tc.scope, err)
+			}
+			if !tc.ok && (!message.IsAuth(err) || !strings.Contains(err.Error(), "Send email on your behalf")) {
+				t.Errorf("%s, scope %q: %v, want an auth error explaining the missing permission", op, tc.scope, err)
+			}
+		}
+	}
+}
+
+func TestSendInsufficientScopeExplainsFix(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		if _, err := w.Write([]byte(`{"error":{"code":403,"message":"Request had insufficient authentication scopes."}}`)); err != nil {
+			t.Errorf("writing the reply: %v", err)
+		}
+	}))
+	defer s.Close()
+	_, err := mustClient(t, "tok", WithBaseURL(s.URL)).SendRaw(context.Background(), "message/rfc822", []byte("x"))
+	if !message.IsAuth(err) || !strings.Contains(err.Error(), "auth login --provider gmail") {
+		t.Errorf("error = %v, want an auth error with the login hint", err)
 	}
 }
 

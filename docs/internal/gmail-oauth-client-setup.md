@@ -2,8 +2,23 @@
 
 This guide is for Mailfire maintainers. It describes how to register and verify the Google OAuth client that the
 Gmail provider uses, so users can run `mailfire auth login --provider gmail` without creating their own Google
-Cloud project. Until this is done, `gmail.BuiltinClientID` is a placeholder and `auth login` reports that Gmail
-sign-in is not available in this build.
+Cloud project.
+
+**Status (October 18, 2026):** the client exists (project `mailfire`, client `Mailfire CLI`) and is built in; the
+app is in **Testing**, so only listed test users can sign in until Phase 4 is complete.
+
+## Where the client ID and secret live
+
+- The client ID is public and in the source: `gmail.BuiltinClientID` in `internal/gmail/auth.go`.
+- The client secret is never committed. Builds set `gmail.builtinClientSecret` through `-ldflags -X`:
+  - `make build` takes it from `GMAIL_CLIENT_SECRET`, or else from the client file downloaded from the Cloud console
+    into `tmp/client_secret_*.json` (ignored by git).
+  - Releases take it from the `GMAIL_CLIENT_SECRET` repository secret (Settings → Secrets and variables → Actions);
+    the release workflow fails without it.
+- A build without the secret refuses to sign in with the built-in client and says so;
+  `MAILFIRE_GMAIL_CLIENT_SECRET` supplies it at run time.
+- To rotate the secret: Clients → Mailfire CLI → Add secret, update the repository secret
+  (`gh secret set GMAIL_CLIENT_SECRET`) and `tmp/`, release, then disable the old secret.
 
 Mailfire requests `gmail.send` and `openid`. Google classifies `gmail.send` as a **sensitive** scope, not a
 restricted one: the app needs Google's verification review, but not the paid third-party security assessment
@@ -109,8 +124,8 @@ Until verification passes, users see an "unverified app" warning and at most 100
 
 ## Phase 5: Code changes after approval
 
-1. Put the client ID into `gmail.BuiltinClientID` in `internal/gmail/auth.go`.
-2. If Phase 3 only worked with `MAILFIRE_GMAIL_CLIENT_SECRET` set, build the secret in as well. The code
-   currently reads the secret only from that variable, so this needs a small addition.
+1. Done: the client ID is in `gmail.BuiltinClientID`, and the secret is injected at build time (see
+   [Where the client ID and secret live](#where-the-client-id-and-secret-live)).
+2. Done: the `GMAIL_CLIENT_SECRET` repository secret is set.
 3. Remove the "Availability" note from [docs/content/guides/gmail.md](../content/guides/gmail.md).
 4. Set task 30 to `done` in `tmp/tasks/30-gmail-provider.md` and `tmp/tasks/README.md`.

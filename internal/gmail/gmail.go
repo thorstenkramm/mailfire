@@ -214,6 +214,9 @@ func classify(op string, status int, body string) error {
 	switch {
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
 		k = message.KindAuth
+		if strings.Contains(strings.ToLower(msg), "insufficient authentication scopes") {
+			msg += "; the authorization does not allow sending: run 'mailfire auth login --provider gmail' and allow \"Send email on your behalf\""
+		}
 	case status == http.StatusTooManyRequests || status >= 500:
 		k = message.KindDeferrable
 	}

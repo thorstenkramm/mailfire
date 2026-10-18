@@ -447,6 +447,24 @@ func TestAuthLoginDenied(t *testing.T) {
 	}
 }
 
+// A consent that grants sign-in but not sending (Google shows each scope
+// as its own checkbox) fails the login and saves nothing.
+func TestAuthLoginWithoutSendPermission(t *testing.T) {
+	e := newGmailEnv(t)
+	e.g.set(func(f *fakeGoogle) {
+		f.tokenReply = `{"access_token":"a","refresh_token":"r","expires_in":3600,"scope":"openid"}`
+	})
+	consent, done, stderr := startLogin(t, e, "--no-browser")
+	q := consent.Query()
+	httpStatus(t, q.Get("redirect_uri")+"?state="+url.QueryEscape(q.Get("state"))+"&code=auth-code")
+	if code := <-done; code != ExitAuth || !strings.Contains(stderr.String(), "Send email on your behalf") {
+		t.Fatalf("exit %d, stderr %q; want %d with the missing permission explained", code, stderr.String(), ExitAuth)
+	}
+	if _, err := os.Stat(e.creds); !os.IsNotExist(err) {
+		t.Errorf("credentials saved without the send permission (stat: %v)", err)
+	}
+}
+
 func TestAuthLoginManual(t *testing.T) {
 	e := newGmailEnv(t)
 	r, w := io.Pipe()
