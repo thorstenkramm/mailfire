@@ -14,7 +14,11 @@ set -euo pipefail
 : "${MAILFIRE_SMTP_USERNAME:?export MAILFIRE_SMTP_USERNAME first}"
 : "${MAILFIRE_SMTP_PASSWORD:?export MAILFIRE_SMTP_PASSWORD first}"
 
-cat << EOF > ./mailfire-smtp.conf
+TEMP_DIR=$(mktemp -d)
+CONFIG_FILE=${TEMP_DIR}/mailfire-smtp.conf
+LOG_FILE=${TEMP_DIR}/mailfire-smtp.log
+
+cat << EOF > "$CONFIG_FILE"
 [sending]
 provider = "smtp"
 domain = "example.com"
@@ -27,10 +31,11 @@ security = "starttls"
 timeout = "30s"
 
 [logging]
-logfile = "./mailfire-smtp.log"
+logfile = "${LOG_FILE}"
 loglevel = "debug"
 EOF
-chmod 0600 ./mailfire-smtp.conf
+chmod 0600 "$CONFIG_FILE"
 
-./mailfire -c ./mailfire-smtp.conf --to "tk@system42.io" -m "SMTP TEST" --subject "SMTP TEST"
-cat ./mailfire-smtp.log
+./mailfire -c "$CONFIG_FILE" --to "tk@system42.io" -m "SMTP TEST" --subject "SMTP TEST"
+cat "${LOG_FILE}"
+rm -rf "${TEMP_DIR}"
