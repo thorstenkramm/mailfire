@@ -79,19 +79,42 @@ func TestWatchRemovesLiveSpoolsOnSignal(t *testing.T) {
 	}
 }
 
-// After stop, a signal no longer triggers the cleanup: the spool of the
-// next send must not be removed by a stale handler.
-func TestWatchStopDisarms(t *testing.T) {
+// stop releases the signal delivery and, with no signal delivered, ends
+// the handler without acting.
+func TestWatchStopWithoutSignal(t *testing.T) {
 	called := make(chan os.Signal, 1)
 	afterCleanup = func(sig os.Signal) { called <- sig }
 	t.Cleanup(func() { afterCleanup = reraise })
-	ch := make(chan os.Signal, 1)
-	watch(ch, func() {})()
-	ch <- os.Interrupt
+	released := make(chan struct{}, 2)
+	watch(make(chan os.Signal), func() { released <- struct{}{} })()
+	if len(released) == 0 {
+		t.Error("stop did not release the signal delivery")
+	}
 	select {
 	case <-called:
-		t.Fatal("cleanup ran after stop")
+		t.Fatal("cleanup ran without a signal")
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// A signal delivered just before stop (the user pressed Ctrl+C as the send
+// finished) must still end the process: the default action is suppressed
+// while the handler is armed, so a lost signal would leave mailfire running.
+// Repeated, because the race between the two is what is under test.
+func TestWatchHonoursSignalRacingStop(t *testing.T) {
+	called := make(chan os.Signal, 1)
+	afterCleanup = func(sig os.Signal) { called <- sig }
+	t.Cleanup(func() { afterCleanup = reraise })
+	for i := range 200 {
+		ch := make(chan os.Signal, 1)
+		stop := watch(ch, func() {})
+		ch <- os.Interrupt
+		stop()
+		select {
+		case <-called:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: signal lost when it raced stop", i)
+		}
 	}
 }
 

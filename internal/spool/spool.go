@@ -244,16 +244,27 @@ func CleanupOnSignal() (stop func()) {
 
 // watch is CleanupOnSignal's handler, separate from the OS signal source so
 // it can be tested on every platform. release stops the signal delivery;
-// it may run twice.
+// it may run twice. stop releases the delivery before it disarms, so a
+// signal already delivered is still in ch: the handler drains it rather
+// than losing it — with the default action suppressed, a lost Ctrl+C would
+// leave mailfire running.
 func watch(ch <-chan os.Signal, release func()) (stop func()) {
 	done := make(chan struct{})
+	handle := func(sig os.Signal) {
+		removeLive()
+		release()
+		afterCleanup(sig)
+	}
 	go func() {
 		select {
 		case sig := <-ch:
-			removeLive()
-			release()
-			afterCleanup(sig)
+			handle(sig)
 		case <-done:
+			select {
+			case sig := <-ch:
+				handle(sig)
+			default:
+			}
 		}
 	}()
 	var once sync.Once
