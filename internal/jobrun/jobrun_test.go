@@ -460,6 +460,30 @@ func TestCaptureRingExactBoundaries(t *testing.T) {
 	}
 }
 
+// An unreadable capture file must shorten the content, not fail the reader:
+// the report (and its other parts) is still sent, and the error is recorded.
+func TestContentReaderToleratesReadErrors(t *testing.T) {
+	c := newCapture("stdout", 100)
+	c.mem = 8 // force spilling
+	if _, err := c.Write(bytes.Repeat([]byte("x"), 300)); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.file.Close(); err != nil { // every later ReadAt fails
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll((&Stream{cap: c}).ContentReader())
+	if err != nil {
+		t.Fatalf("ContentReader failed: %v", err)
+	}
+	if !bytes.Contains(got, []byte("bytes omitted")) {
+		t.Errorf("content = %q, want at least the omission marker", got)
+	}
+	if c.Err() == nil {
+		t.Error("the read error was not recorded")
+	}
+	_ = c.Close() // the file is already closed
+}
+
 func TestCaptureTailInMemory(t *testing.T) {
 	c := newCapture("stdout", DefaultLogCap)
 	if _, err := c.Write([]byte("one\ntwo\nthree\n")); err != nil {

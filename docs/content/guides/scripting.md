@@ -84,6 +84,10 @@ Provider requests time out after 30 seconds by default. Set `timeout` in the pro
 `validate`; the flag overrides the setting. A `resend` run retrying several messages may take longer than a single
 timeout.
 
+The timeout includes uploading the message. With large attachments on a slow connection, raise it: a 25 MB message
+needs about 40 seconds at 5 Mbit/s. A timeout defers the message, and with a timeout that is too short every
+`mailfire resend` times out again.
+
 ## Send log
 
 Logging is disabled unless `logfile` is set in `[logging]`. Every sending attempt — successful or not, including test

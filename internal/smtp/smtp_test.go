@@ -118,7 +118,7 @@ func TestSendSTARTTLSAuthMIMEFidelityAndBccPrivacy(t *testing.T) {
 }
 
 func TestAdvertisedSizeRejectedBeforeMail(t *testing.T) {
-	m, c := newServer(t, SecurityNone, func(m *testutil.MockSMTP) { m.MaxSize = 10 })
+	m, c := newServer(t, SecurityNone, func(m *testutil.MockSMTP) { m.SizeParam = "10" })
 	msg := testMessage()
 	if _, err := c.SendMessage(context.Background(), msg); !message.IsPermanent(err) || !strings.Contains(err.Error(), "SIZE limit 10") {
 		t.Fatalf("SendMessage error = %v, want permanent SIZE rejection", err)
@@ -126,6 +126,41 @@ func TestAdvertisedSizeRejectedBeforeMail(t *testing.T) {
 	for _, cmd := range m.Commands() {
 		if cmd.Verb == "MAIL" || cmd.Verb == "DATA" {
 			t.Fatalf("server saw %s after SIZE rejection", cmd.Verb)
+		}
+	}
+}
+
+// A server's SIZE argument is untrusted input: blank, garbage, or 0 (no
+// limit, RFC 1870) must neither crash the client nor block the send.
+func TestMalformedOrUnlimitedSizeIgnored(t *testing.T) {
+	for _, param := range []string{"   ", "garbage", "0"} {
+		m, c := newServer(t, SecurityNone, func(m *testutil.MockSMTP) { m.SizeParam = param })
+		if _, err := c.SendMessage(context.Background(), testMessage()); err != nil {
+			t.Fatalf("SIZE %q: %v", param, err)
+		}
+		if len(m.Messages()) != 1 {
+			t.Fatalf("SIZE %q: server accepted %d messages, want 1", param, len(m.Messages()))
+		}
+	}
+}
+
+// The mock must keep lines longer than its read buffer intact (the
+// retaining path) and survive them (the discarding path).
+func TestMockSMTPLongLines(t *testing.T) {
+	long := strings.Repeat("x", 10000) + "\r\n"
+	raw := []byte("From: <ops@example.com>\r\nSubject: s\r\n\r\n" + long)
+	env := message.Envelope{From: "ops@example.com", Recipients: []string{"to@example.com"}}
+	for _, discard := range []bool{false, true} {
+		m, c := newServer(t, SecurityNone, func(m *testutil.MockSMTP) { m.DiscardData = discard })
+		if _, err := c.SendRaw(context.Background(), env, raw, "<x@example.com>"); err != nil {
+			t.Fatalf("discard=%t: %v", discard, err)
+		}
+		msgs := m.Messages()
+		if len(msgs) != 1 || msgs[0].BareLF {
+			t.Fatalf("discard=%t: messages = %d, bare LF = %t", discard, len(msgs), len(msgs) == 1 && msgs[0].BareLF)
+		}
+		if !discard && !bytes.Equal(msgs[0].Data, raw) {
+			t.Error("long line not kept intact")
 		}
 	}
 }

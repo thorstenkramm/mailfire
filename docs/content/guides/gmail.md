@@ -118,9 +118,10 @@ does not extend that limit.
 - **Bcc:** Gmail takes the recipients, Bcc included, from the message and removes the Bcc header before delivery, so
   recipients do not see Bcc addresses.
 - **Limits:** Mailfire streams messages through Gmail's media-upload endpoint, which accepts a complete message up
-  to 35 MB. Gmail's separate 25 MB attachment limit still applies. Gmail enforces daily sending limits per account
-  (lower for new and free accounts); exceeding them, and other temporary errors (HTTP 429 and 5xx), defer the
-  message for `mailfire resend`.
+  to 35 MB. Gmail's separate 25 MB attachment limit still applies. The `timeout` includes the upload; raise it for
+  large attachments on a slow connection (see [Timeouts](scripting.md#timeouts)). Gmail enforces daily sending
+  limits per account (lower for new and free accounts); exceeding them, and other temporary errors (HTTP 429 and
+  5xx), defer the message for `mailfire resend`.
 - **Test mode:** Gmail has no Mailgun-style validation-only mode. `--test` is rejected (exit 1) rather than
   delivering real email; use `mailfire validate` to check the authorization and `--preview` to check rendering.
 - **Deferred messages** keep the Google account ID. They are resent only from the same account; after a login with a

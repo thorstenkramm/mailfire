@@ -205,35 +205,69 @@ func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) 
 	})
 }
 
-// SaveMessageFile adopts the completed spool at source as body.bin. Rename is
-// attempted first; when the temp and defer directories are on different file
-// systems, it falls back to an owner-only streamed copy. The existing on-disk
-// format and meta.json-last commit protocol are unchanged, so older entries
-// remain replayable.
+// SaveMessageFile adopts the completed spool at source as body.bin. The
+// spool is synced first (it is not synced while sending: only a deferred
+// message must survive a power loss), then renamed into place; when the
+// temp and defer directories are on different file systems, it falls back
+// to an owner-only streamed copy. The on-disk format and the
+// meta.json-last commit protocol are unchanged, so older entries remain
+// replayable.
 func (s *Store) SaveMessageFile(m Metadata, source string, size int64) (meta Metadata, err error) {
 	if source == "" || size <= 0 {
 		return Metadata{}, errors.New("deferral: no encoded request to store")
 	}
 	return s.saveMessage(m, size, func(dest string) error {
-		if err := os.Rename(source, dest); err == nil {
+		if err := syncFile(source); err != nil {
+			return err
+		}
+		if err := renameFile(source, dest); err == nil {
 			return nil
 		}
-		src, err := os.Open(source)
-		if err != nil {
+		if err := copyFileSync(source, dest); err != nil {
 			return err
 		}
-		dst, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
-		if err != nil {
-			_ = src.Close()
-			return err
-		}
-		_, copyErr := io.Copy(dst, src)
-		closeErr := errors.Join(src.Close(), dst.Sync(), dst.Close())
-		if err := errors.Join(copyErr, closeErr); err != nil {
-			return errors.Join(err, os.Remove(dest))
-		}
-		return os.Remove(source)
+		// The copy is complete and synced: the message is stored. A
+		// leftover source is only clutter its owner removes (spool Abort),
+		// so failing here would discard a safely stored message.
+		_ = removeFile(source)
+		return nil
 	})
+}
+
+// renameFile and removeFile are variables so tests can force the
+// cross-file-system copy and a failing cleanup.
+var (
+	renameFile = os.Rename
+	removeFile = os.Remove
+)
+
+// syncFile flushes path to stable storage. It opens the file for writing:
+// Windows cannot flush a read-only handle.
+func syncFile(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Sync(), f.Close())
+}
+
+// copyFileSync copies source to the new owner-only file dest and syncs it;
+// a failed copy removes the partial dest.
+func copyFileSync(source, dest string) error {
+	src, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dst, src)
+	if err := errors.Join(copyErr, dst.Sync(), dst.Close()); err != nil {
+		return errors.Join(err, os.Remove(dest))
+	}
+	return nil
 }
 
 func (s *Store) saveMessage(m Metadata, size int64, writeBody func(string) error) (meta Metadata, err error) {

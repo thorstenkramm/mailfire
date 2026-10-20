@@ -79,7 +79,10 @@ func (s *Stream) Content() []byte { return s.cap.Content() }
 
 // ContentReader returns the captured stream in the same logical order as
 // Content, without materializing a spilled capture. The reader remains valid
-// until the owning Result is closed.
+// until the owning Result is closed. Like Content, it never fails: a read
+// error on the temporary file ends that part of the content early and is
+// recorded for CaptureErr, so an unreadable log shortens the attachment
+// instead of preventing the report.
 func (s *Stream) ContentReader() io.Reader {
 	c := s.cap
 	if c.file == nil {
@@ -88,7 +91,7 @@ func (s *Stream) ContentReader() io.Reader {
 	var readers []io.Reader
 	add := func(off, n int64) {
 		if n > 0 {
-			readers = append(readers, io.NewSectionReader(c.file, off, n))
+			readers = append(readers, &tolerantReader{r: io.NewSectionReader(c.file, off, n), c: c})
 		}
 	}
 	add(0, c.head)
@@ -99,6 +102,22 @@ func (s *Stream) ContentReader() io.Reader {
 		add(region.off, region.length)
 	}
 	return io.MultiReader(readers...)
+}
+
+// tolerantReader turns a read error on a capture file into a recorded
+// capture error and the end of that region (see ContentReader).
+type tolerantReader struct {
+	r io.Reader
+	c *capture
+}
+
+func (t *tolerantReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		t.c.setErr(fmt.Errorf("reading %s capture: %w", t.c.label, err))
+		return n, io.EOF
+	}
+	return n, err
 }
 
 // Tail returns the stream's last n lines, raw and without line endings.

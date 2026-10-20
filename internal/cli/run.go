@@ -332,11 +332,7 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 
 	job := runJobProcess(&opts, rc, stdout, stderr)
 	defer closeReported(job, stderr)
-	for _, s := range []*jobrun.Stream{job.Stdout(), job.Stderr()} {
-		if err := s.CaptureErr(); err != nil {
-			printfOutput(stderr, "mailfire: run: output capture incomplete: %v\n", err)
-		}
-	}
+	captureErrs := reportCaptureErrors(job, [2]error{}, stderr)
 
 	rep := newReport(&opts, loc, reportTmpl, location, job)
 	if opts.Preview != "" {
@@ -357,10 +353,25 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 	defer closeFiles(msg.Attachments)
 	defer closeFiles(msg.Inline)
 	code := delivery.sendMessage(rc, msg, &res.sendResult, humanOut(stdout, opts.JSON), stderr)
+	// Spilled logs are read while the message is composed: a read error
+	// there shortens an attachment and surfaces only now.
+	reportCaptureErrors(job, captureErrs, stderr)
 	if code != ExitOK {
 		return emitRunResult(stdout, &opts, res, rep, reportExitCode(rep, code))
 	}
 	return emitRunResult(stdout, &opts, res, rep, job.ExitCode)
+}
+
+// reportCaptureErrors prints each stream's capture error that is not
+// already in seen and returns the errors now known.
+func reportCaptureErrors(job *jobrun.Result, seen [2]error, stderr io.Writer) [2]error {
+	for i, s := range []*jobrun.Stream{job.Stdout(), job.Stderr()} {
+		if err := s.CaptureErr(); err != nil && err != seen[i] {
+			printfOutput(stderr, "mailfire: run: output capture incomplete: %v\n", err)
+			seen[i] = err
+		}
+	}
+	return seen
 }
 
 // loadRunConfig loads the configuration for run: the full configuration

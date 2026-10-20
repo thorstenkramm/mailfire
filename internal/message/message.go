@@ -14,9 +14,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-
-	"github.com/thorstenkramm/mailfire/internal/spool"
 )
+
+// Payload is a completed transport payload held on disk (internal/spool
+// implements it). Providers set it on the Message; the caller removes it
+// after the attempt (Abort) or adopts the file into the deferral store
+// (Path, Size).
+type Payload interface {
+	Path() string
+	Size() int64
+	CopyTo(w io.Writer) error
+	Abort() error
+}
 
 // File is a file attached to a message, either as a regular attachment or
 // as an inline file referenced from the HTML body via cid:. For inline
@@ -67,7 +76,7 @@ type Message struct {
 	// file rather than memory. EncodedType includes the multipart boundary
 	// where applicable. MessageID is the generated RFC 5322 ID. Providers set
 	// these fields alongside Size; callers remove or persist Spool.
-	Spool       *spool.File
+	Spool       Payload
 	EncodedType string
 	MessageID   string
 }

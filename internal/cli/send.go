@@ -20,6 +20,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/markdown"
 	"github.com/thorstenkramm/mailfire/internal/message"
 	"github.com/thorstenkramm/mailfire/internal/render"
+	"github.com/thorstenkramm/mailfire/internal/spool"
 )
 
 // send composes a message (plain text, or multipart/alternative for
@@ -67,6 +68,10 @@ func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mai
 
 func (p *preparedDelivery) sendMessage(rc *runContext, msg *mailgun.Message, res *sendResult, stdout, stderr io.Writer) int {
 	cfg, opts, logger := &p.cfg, &p.opts, p.logger
+	// The provider spools the message to a temporary file; SIGINT/SIGTERM
+	// end the process without running deferred calls, so they remove it
+	// first. Deferred first, the handler stays until the spool is gone.
+	defer spool.CleanupOnSignal()()
 
 	// Notification deduplication (task 24) is opt-in via --dedup-key.
 	// Test sends deliver nothing, so they neither check nor start the

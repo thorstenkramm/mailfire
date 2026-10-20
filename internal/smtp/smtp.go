@@ -182,13 +182,18 @@ func bareAddress(s string) (string, error) {
 
 // SendRaw submits a previously built RFC 5322 message. The caller supplies
 // the persisted original envelope and Message-ID, so retries keep both.
+// It is SendReader for an in-memory message; mailfire itself streams from
+// files, so it remains as a convenience for small payloads and tests.
 func (c *Client) SendRaw(ctx context.Context, env message.Envelope, raw []byte, messageID string) (*message.SendResponse, error) {
 	return c.SendReader(ctx, env, bytes.NewReader(raw), int64(len(raw)), messageID)
 }
 
 // SendReader submits a previously built RFC 5322 message from r. size is
 // known from the spool or stored body.bin and is checked against an SMTP
-// server's advertised SIZE limit before MAIL FROM or DATA.
+// server's advertised SIZE limit before MAIL FROM or DATA. A read error
+// from r during DATA is reported like a transport error (deferrable): r is
+// a local, already complete file, so such an error is rare and transient,
+// and attachment read errors happened earlier, while composing the spool.
 func (c *Client) SendReader(ctx context.Context, env message.Envelope, r io.Reader, size int64, messageID string) (*message.SendResponse, error) {
 	if size <= 0 || r == nil {
 		return nil, &Error{Op: "resend message", Message: "nothing to replay: stored message is empty", Kind: message.KindPermanent}
@@ -203,10 +208,13 @@ func (c *Client) SendReader(ctx context.Context, env message.Envelope, r io.Read
 	// QUIT also after a rejection: nothing was sent, the session ends
 	// cleanly, and the server releases the transaction.
 	defer finish(cl)
-	if ok, param := cl.Extension("SIZE"); ok && param != "" {
-		limitText := strings.Fields(param)[0]
-		if limit, parseErr := strconv.ParseInt(limitText, 10, 64); parseErr == nil && limit > 0 && size > limit {
-			return nil, &Error{Op: "send message", Message: fmt.Sprintf("message size %d exceeds SMTP server SIZE limit %d", size, limit), Kind: message.KindPermanent}
+	// RFC 1870: SIZE 0 (or no argument) means no fixed limit. The argument
+	// comes from the server, so a malformed one is ignored, never trusted.
+	if ok, param := cl.Extension("SIZE"); ok {
+		if fields := strings.Fields(param); len(fields) > 0 {
+			if limit, parseErr := strconv.ParseInt(fields[0], 10, 64); parseErr == nil && limit > 0 && size > limit {
+				return nil, &Error{Op: "send message", Message: fmt.Sprintf("message size %d exceeds SMTP server SIZE limit %d", size, limit), Kind: message.KindPermanent}
+			}
 		}
 	}
 	if err := cl.Mail(env.From); err != nil {

@@ -23,11 +23,19 @@ import (
 )
 
 func TestEncodeMessageUsesSharedMIMEAndIncludesBccForGmail(t *testing.T) {
-	raw, err := EncodeMessage(&message.Message{From: "Sender <sender@example.com>", To: []string{"to@example.com"}, Bcc: []string{"hidden@example.com"}, Subject: "café", Text: "plain", HTML: "<p>html</p>"})
+	sp, id, err := EncodeMessageToSpool(&message.Message{From: "Sender <sender@example.com>", To: []string{"to@example.com"}, Bcc: []string{"hidden@example.com"}, Subject: "café", Text: "plain", HTML: "<p>html</p>"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(raw)
+	defer sp.Abort()
+	var raw bytes.Buffer
+	if err := sp.CopyTo(&raw); err != nil {
+		t.Fatal(err)
+	}
+	s := raw.String()
+	if !strings.Contains(s, "Message-ID: "+id+"\r\n") {
+		t.Errorf("returned Message-ID %q is not the header's", id)
+	}
 	for _, want := range []string{"Date: ", "Message-ID: ", "Bcc: <hidden@example.com>", "multipart/alternative", "Subject: =?utf-8?"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("MIME lacks %q:\n%s", want, s)
@@ -449,6 +457,38 @@ func TestSendMessageEncodesAndRecords(t *testing.T) {
 	}
 	if _, err := c.SendRaw(context.Background(), "message/rfc822", make([]byte, maxMessageSize+1)); !message.IsPermanent(err) {
 		t.Errorf("oversized: %v, want permanent", err)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A file-backed upload must be rewindable, so net/http can transparently
+// retry it on a stale connection as it did for the in-memory JSON body.
+func TestSendReaderFromFileIsRewindable(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "body.bin")
+	if err := os.WriteFile(path, []byte("From: a@example.com\r\n\r\nx"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	c := mustClient(t, "tok")
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.GetBody == nil {
+			t.Error("request has no GetBody")
+		} else if b, err := r.GetBody(); err != nil {
+			t.Errorf("GetBody: %v", err)
+		} else if got, _ := io.ReadAll(b); string(got) != "From: a@example.com\r\n\r\nx" {
+			t.Errorf("rewound body = %q", got)
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"id":"m1"}`)), Header: http.Header{}}, nil
+	})
+	if _, err := c.SendReader(context.Background(), "message/rfc822", f, 24); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -71,11 +71,19 @@ func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, 
 // included), never re-composed. Response classification is exactly that
 // of SendMessage. An empty body or Content-Type is a permanent error:
 // there is nothing meaningful to replay.
+//
+// SendRaw is SendReader for an in-memory body; mailfire itself streams
+// from files, so it remains as a convenience for small payloads and tests.
 func (c *Client) SendRaw(ctx context.Context, contentType string, body []byte) (*SendResponse, error) {
 	return c.SendReader(ctx, contentType, bytes.NewReader(body), int64(len(body)))
 }
 
-// SendReader replays a stored request body from r without re-composing it.
+// SendReader replays a stored request body of size bytes from r without
+// re-composing it. When r is an io.ReaderAt (a file), net/http can rewind
+// it to retry a request that failed on a stale connection. A read error
+// from r mid-request is reported like a transport error (deferrable): r is
+// a local, already complete file, so such an error is rare and transient,
+// and attachment read errors happened earlier, while composing the spool.
 func (c *Client) SendReader(ctx context.Context, contentType string, r io.Reader, size int64) (*SendResponse, error) {
 	const op = "resend message"
 	if size <= 0 || r == nil || contentType == "" {
@@ -89,14 +97,15 @@ func (c *Client) SendReader(ctx context.Context, contentType string, r io.Reader
 // Content-Type and classifies the response: the error kinds (and hence
 // the caller's exit codes and deferral decisions) are identical whether
 // the body was just encoded or replayed from the defer_dir.
-func (c *Client) postMessages(ctx context.Context, op, contentType string, body io.Reader, size int64) (*SendResponse, error) {
+func (c *Client) postMessages(ctx context.Context, op, contentType string, r io.Reader, size int64) (*SendResponse, error) {
+	body, getBody := spool.HTTPBody(r, size)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v3/"+url.PathEscape(c.domain)+"/messages", body)
 	if err != nil {
 		return nil, &Error{Op: op, Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
 	req.Header.Set("Content-Type", contentType)
-	req.ContentLength = size
+	req.ContentLength, req.GetBody = size, getBody
 
 	respBody, status, err := c.do(req, op)
 	if err != nil {
@@ -257,14 +266,6 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string([]rune(s)[:max]) + "…"
-}
-
-// encodeMessage is retained for byte-level tests. Sending uses
-// encodeMessageTo to write the same form to a spool file.
-func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
-	var buf bytes.Buffer
-	contentType, err := encodeMessageTo(&buf, msg)
-	return &buf, contentType, err
 }
 
 // encodeMessageTo builds the multipart/form-data body in w. The send path

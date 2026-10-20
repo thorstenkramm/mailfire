@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -542,6 +544,43 @@ func TestValidateDomain(t *testing.T) {
 type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// A file-backed request must be rewindable, so net/http can transparently
+// retry it on a stale connection as it did for the in-memory body.
+func TestSendReaderFromFileIsRewindable(t *testing.T) {
+	const payload = "--x\r\nContent-Disposition: form-data; name=\"to\"\r\n\r\na@example.com\r\n--x--\r\n"
+	path := filepath.Join(t.TempDir(), "body.bin")
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	c, err := New(testAPIKey, testDomain, "us")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.GetBody == nil {
+			t.Error("request has no GetBody")
+		} else if b, err := r.GetBody(); err != nil {
+			t.Errorf("GetBody: %v", err)
+		} else if got, _ := io.ReadAll(b); string(got) != payload {
+			t.Errorf("rewound body = %q", got)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{},
+			Body: io.NopCloser(strings.NewReader(`{"id":"<m1>","message":"Queued"}`))}, nil
+	})
+	if _, err := c.SendReader(context.Background(), "multipart/form-data; boundary=x", f, int64(len(payload))); err != nil {
+		t.Fatal(err)
+	}
+}
 
 type zeroStream struct{}
 

@@ -153,6 +153,50 @@ func TestSaveMessageFileAdoptsSpool(t *testing.T) {
 	}
 }
 
+// writeSpool writes body to a fresh file standing in for a send spool.
+func writeSpool(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "message.spool")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// When rename fails (spool and defer_dir on different file systems), the
+// spool is copied; a failure to remove the source afterwards must not
+// discard the safely stored copy.
+func TestSaveMessageFileCopiesAcrossFileSystems(t *testing.T) {
+	const body = "copied request body"
+	for _, removeFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("remove fails %t", removeFails), func(t *testing.T) {
+			renameFile = func(string, string) error { return &os.LinkError{Op: "rename", Err: fmt.Errorf("cross-device link")} }
+			if removeFails {
+				removeFile = func(string) error { return fmt.Errorf("remove failed") }
+			}
+			t.Cleanup(func() { renameFile, removeFile = os.Rename, os.Remove })
+
+			s := newStore(t)
+			source := writeSpool(t, body)
+			meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, source, int64(len(body)))
+			if err != nil {
+				t.Fatalf("SaveMessageFile: %v", err)
+			}
+			got, err := os.ReadFile(filepath.Join(s.Dir, meta.ID, BodyFile))
+			if err != nil || string(got) != body {
+				t.Fatalf("body.bin = %q, %v", got, err)
+			}
+			if msgs, err := s.List(); err != nil || len(msgs) != 1 {
+				t.Fatalf("List = %v, %v; want the stored message", msgs, err)
+			}
+			_, statErr := os.Stat(source)
+			if removed := os.IsNotExist(statErr); removed == removeFails {
+				t.Errorf("source removed = %t with remove failing = %t", removed, removeFails)
+			}
+		})
+	}
+}
+
 type zeroStream struct{}
 
 func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }

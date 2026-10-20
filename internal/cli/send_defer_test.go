@@ -413,6 +413,52 @@ func TestDeferStoresAttachments(t *testing.T) {
 	}
 }
 
+// No message spool may remain in the temporary directory after a send
+// attempt: a permanent failure removes it, a deferral moves it into the
+// defer_dir as body.bin.
+func TestSendLeavesNoSpoolAfterFailureOrDeferral(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		permanent bool
+		want      int
+	}{
+		{"permanent failure", true, ExitSendFail},
+		{"deferral", false, ExitDeferred},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("TMPDIR", tmp)
+			m := testutil.NewMockMailgun(t)
+			m.SendResponse = testutil.InternalError()
+			if tc.permanent {
+				m.SendResponse = testutil.BadRequest()
+			}
+			cfg, deferDir := deferConfig(t, "")
+			code, _, stderr := runMock(t, m, "body", "-c", cfg, "--to", "a@example.com", "--subject", "s",
+				"--attach", writeAttachment(t, t.TempDir(), "report.txt", []byte("attached")))
+			if code != tc.want {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, tc.want, stderr)
+			}
+			entries, err := os.ReadDir(tmp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), "mailfire-message-") {
+					t.Errorf("spool left in the temp dir: %s", e.Name())
+				}
+			}
+			if tc.permanent {
+				if _, err := os.Stat(deferDir); !os.IsNotExist(err) {
+					t.Errorf("defer_dir exists after a permanent failure: %v", err)
+				}
+			} else if ids := deferredIDs(t, deferDir); len(ids) != 1 {
+				t.Errorf("deferred messages = %d, want 1", len(ids))
+			}
+		})
+	}
+}
+
 // Defense in depth: even if reportSendError's --test check were bypassed,
 // deferMessage refuses a test-mode message, so a stored body can never
 // carry o:testmode=yes into a resend. The empty-encoding guard likewise

@@ -52,7 +52,7 @@ type MockSMTP struct {
 	Users       map[string]string // accepted credentials
 	RequireAuth bool              // reply 530 to MAIL before AUTH
 	GreetDelay  time.Duration     // delay before the 220 greeting
-	MaxSize     int64             // advertised SIZE limit; zero omits SIZE
+	SizeParam   string            // SIZE argument advertised verbatim (may be malformed); "" omits SIZE
 	DiscardData bool              // consume DATA without retaining it (memory tests)
 
 	mu        sync.Mutex
@@ -226,8 +226,8 @@ func (s *smtpSession) handle(verb, arg string) bool {
 	switch verb {
 	case "EHLO", "HELO":
 		ext := []string{"mock.example", "8BITMIME"}
-		if m.MaxSize > 0 {
-			ext = append(ext, fmt.Sprintf("SIZE %d", m.MaxSize))
+		if m.SizeParam != "" {
+			ext = append(ext, "SIZE "+m.SizeParam)
 		}
 		if m.StartTLS && !s.tls {
 			ext = append(ext, "STARTTLS")
@@ -300,26 +300,27 @@ func (s *smtpSession) handle(verb, arg string) bool {
 // data reads the message: dot-stuffing removed, line endings kept.
 func (s *smtpSession) data() bool {
 	msg := SMTPMessage{From: s.from, To: s.rcpts, TLS: s.tls, AuthUser: s.authUser}
-	var buf strings.Builder
-	for {
-		l, err := s.r.ReadSlice('\n')
-		if err != nil {
+	if s.m.DiscardData {
+		if !s.discardData(&msg) {
 			return false
 		}
-		if bytes.Equal(l, []byte(".\r\n")) {
-			break
-		}
-		if !bytes.HasSuffix(l, []byte("\r\n")) {
-			msg.BareLF = true
-		}
-		if !s.m.DiscardData {
-			if len(l) > 0 && l[0] == '.' {
-				l = l[1:]
+	} else {
+		var buf strings.Builder
+		for {
+			l, err := s.r.ReadString('\n')
+			if err != nil {
+				return false
 			}
-			_, _ = buf.Write(l)
+			if l == ".\r\n" {
+				break
+			}
+			if !strings.HasSuffix(l, "\r\n") {
+				msg.BareLF = true
+			}
+			buf.WriteString(strings.TrimPrefix(l, "."))
 		}
+		msg.Data = []byte(buf.String())
 	}
-	msg.Data = []byte(buf.String())
 	s.m.mu.Lock()
 	reply, delay := s.m.dataReply, s.m.dataDelay
 	if reply == "" {
@@ -332,6 +333,31 @@ func (s *smtpSession) data() bool {
 	time.Sleep(delay)
 	s.from, s.rcpts = "", nil
 	return s.reply(reply)
+}
+
+// discardData consumes DATA without retaining it, for memory tests:
+// ReadSlice reuses the reader's buffer, and a line longer than the buffer
+// arrives in several chunks (bufio.ErrBufferFull) instead of failing.
+func (s *smtpSession) discardData(msg *SMTPMessage) bool {
+	lineStart, prevCR := true, false
+	for {
+		l, err := s.r.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			lineStart, prevCR = false, l[len(l)-1] == '\r'
+			continue
+		}
+		if err != nil {
+			return false
+		}
+		if lineStart && bytes.Equal(l, []byte(".\r\n")) {
+			return true
+		}
+		// The CR of a CRLF may end the previous chunk of a long line.
+		if crlf := len(l) >= 2 && l[len(l)-2] == '\r' || len(l) == 1 && prevCR; !crlf {
+			msg.BareLF = true
+		}
+		lineStart, prevCR = true, false
+	}
 }
 
 func (s *smtpSession) auth(arg string) bool {

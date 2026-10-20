@@ -1,6 +1,11 @@
 // Package spool owns temporary, owner-only files used to compose transport
 // payloads before a provider is contacted. A completed File can be opened
 // repeatedly for sending and deferral without retaining its contents in memory.
+//
+// Spools must not outlive the send attempt: the caller removes them (Abort)
+// or adopts them into the deferral store. CleanupOnSignal covers SIGINT and
+// SIGTERM, which end the process without running deferred calls, and Create
+// sweeps spools left behind by a process that was killed outright.
 package spool
 
 import (
@@ -8,6 +13,21 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+)
+
+const (
+	namePrefix = "mailfire-message-"
+	nameSuffix = ".spool"
+	// staleAge is how old a spool must be before Create treats it as left
+	// behind by a killed process. A spool lives only for one send attempt,
+	// which is bounded by the provider timeout.
+	staleAge = 24 * time.Hour
 )
 
 // File is one temporary transport payload. Create returns it open for writing;
@@ -20,13 +40,16 @@ type File struct {
 
 // Create creates an owner-only spool in the system temporary directory.
 func Create() (*File, error) {
-	f, err := os.CreateTemp("", "mailfire-message-*.spool")
+	dir := os.TempDir()
+	removeStale(dir, time.Now())
+	f, err := os.CreateTemp(dir, namePrefix+"*"+nameSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("spool: create: %w", err)
 	}
 	if err := f.Chmod(0o600); err != nil {
 		return nil, errors.Join(fmt.Errorf("spool: permissions: %w", err), f.Close(), os.Remove(f.Name()))
 	}
+	register(f.Name())
 	return &File{path: f.Name(), f: f}, nil
 }
 
@@ -38,16 +61,15 @@ func (s *File) Write(p []byte) (int, error) {
 	return s.f.Write(p)
 }
 
-// Finish syncs and closes the spool, then records its size.
+// Finish closes the spool and records its size. It does not sync: only a
+// spool adopted by the deferral store must survive a power loss, and the
+// store syncs it then.
 func (s *File) Finish() error {
 	if s == nil || s.f == nil {
 		return errors.New("spool: file is not open for writing")
 	}
 	f := s.f
 	s.f = nil
-	if err := f.Sync(); err != nil {
-		return errors.Join(fmt.Errorf("spool: sync: %w", err), f.Close())
-	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("spool: close: %w", err)
 	}
@@ -73,6 +95,7 @@ func (s *File) Abort() error {
 	if rerr := os.Remove(s.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 		err = errors.Join(err, rerr)
 	}
+	unregister(s.path)
 	return err
 }
 
@@ -103,4 +126,110 @@ func (s *File) CopyTo(w io.Writer) error {
 	}
 	_, copyErr := io.Copy(w, f)
 	return errors.Join(copyErr, f.Close())
+}
+
+// HTTPBody returns an HTTP request body of size bytes read from r and, when
+// r is an io.ReaderAt (a spool or body.bin file, a bytes.Reader), a GetBody
+// function: with it net/http can rewind the body and transparently retry a
+// request that failed on a stale connection, as it does for in-memory bodies.
+func HTTPBody(r io.Reader, size int64) (io.ReadCloser, func() (io.ReadCloser, error)) {
+	ra, ok := r.(io.ReaderAt)
+	if !ok {
+		return io.NopCloser(r), nil
+	}
+	open := func() (io.ReadCloser, error) {
+		return io.NopCloser(io.NewSectionReader(ra, 0, size)), nil
+	}
+	body, _ := open()
+	return body, open
+}
+
+var (
+	liveMu sync.Mutex
+	live   = map[string]struct{}{}
+)
+
+func register(path string) {
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	live[path] = struct{}{}
+}
+
+func unregister(path string) {
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	delete(live, path)
+}
+
+// removeLive removes every spool not yet removed or adopted.
+func removeLive() {
+	liveMu.Lock()
+	defer liveMu.Unlock()
+	for path := range live {
+		_ = os.Remove(path)
+		delete(live, path)
+	}
+}
+
+// removeStale removes spools in dir older than staleAge: left behind by a
+// process killed without a chance to clean up (SIGKILL, crash, power loss).
+// Errors are ignored; another user's files cannot be removed anyway.
+func removeStale(dir string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || !strings.HasPrefix(name, namePrefix) || !strings.HasSuffix(name, nameSuffix) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > staleAge {
+			_ = os.Remove(filepath.Join(dir, name))
+		}
+	}
+}
+
+// afterCleanup ends the process with sig's default effect once the spools
+// are removed; a variable so tests can observe the cleanup instead.
+var afterCleanup = reraise
+
+// CleanupOnSignal removes every live spool when SIGINT or SIGTERM arrives,
+// then lets the signal take its default effect. Go does not run deferred
+// calls when a signal ends the process, so without it an interrupted send
+// would leave a copy of the message in the temporary directory. The
+// returned stop restores the default handling; call it once no spool
+// exists any more.
+func CleanupOnSignal() (stop func()) {
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	done := make(chan struct{})
+	go func() {
+		select {
+		case sig := <-ch:
+			removeLive()
+			signal.Stop(ch)
+			afterCleanup(sig)
+		case <-done:
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			signal.Stop(ch)
+			close(done)
+		})
+	}
+}
+
+// reraise restores the default handling of sig and delivers it again, so
+// the process ends as it would have without CleanupOnSignal. Where a
+// process cannot signal itself (Windows), it exits with the conventional
+// status 130.
+func reraise(sig os.Signal) {
+	signal.Reset(os.Interrupt, syscall.SIGTERM)
+	if p, err := os.FindProcess(os.Getpid()); err == nil && p.Signal(sig) == nil {
+		time.Sleep(time.Second) // delivery is asynchronous; the default action ends the process
+	}
+	os.Exit(130)
 }

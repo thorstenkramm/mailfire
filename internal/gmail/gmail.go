@@ -26,8 +26,11 @@ import (
 // timeout is configured.
 const DefaultTimeout = 30 * time.Second
 
-// maxMessageSize is Gmail's documented media-upload limit for a message.
+// maxMessageSize is Gmail's documented media-upload limit for a message
+// (35 MB, decimal); Gmail's own 25 MB attachment limit applies on top.
 const maxMessageSize = 35_000_000
+
+const errTooLarge = "message exceeds Gmail's 35 MB size limit"
 
 const apiURL = "https://gmail.googleapis.com/gmail/v1"
 
@@ -91,30 +94,37 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 	return c.SendReader(ctx, mailmime.ContentType, f, s.Size())
 }
 
-// SendRaw sends (or replays) a built RFC 5322 message. contentType is
-// checked deliberately: Mailgun multipart queue entries must never reach
-// Gmail.
+// SendRaw is SendReader for an in-memory message; mailfire itself streams
+// from files, so it remains as a convenience for small payloads and tests.
 func (c *Client) SendRaw(ctx context.Context, contentType string, raw []byte) (*message.SendResponse, error) {
 	return c.SendReader(ctx, contentType, bytes.NewReader(raw), int64(len(raw)))
 }
 
-// SendReader sends (or replays) a built RFC 5322 message through Gmail's
-// media upload endpoint without base64url or JSON expansion.
+// SendReader sends (or replays) a built RFC 5322 message of size bytes
+// from r through Gmail's media upload endpoint, without base64url or JSON
+// expansion. contentType is checked deliberately: Mailgun multipart queue
+// entries must never reach Gmail. When r is an io.ReaderAt (a file),
+// net/http can rewind it to retry a request that failed on a stale
+// connection. A read error from r mid-request is reported like a transport
+// error (deferrable): r is a local, already complete file, so such an
+// error is rare and transient, and attachment read errors happened
+// earlier, while composing the spool.
 func (c *Client) SendReader(ctx context.Context, contentType string, r io.Reader, size int64) (*message.SendResponse, error) {
 	const op = "send message"
 	if contentType != mailmime.ContentType || size <= 0 || r == nil {
 		return nil, permanent(op, 0, "stored message is not a MIME message")
 	}
 	if size > maxMessageSize {
-		return nil, permanent(op, 0, "message exceeds Gmail's 35 MiB size limit")
+		return nil, permanent(op, 0, errTooLarge)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mediaUploadURL(c.baseURL), r)
+	reqBody, getBody := spool.HTTPBody(r, size)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mediaUploadURL(c.baseURL), reqBody)
 	if err != nil {
 		return nil, permanent(op, 0, c.redact(err.Error()))
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Content-Type", mailmime.ContentType)
-	req.ContentLength = size
+	req.ContentLength, req.GetBody = size, getBody
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, c.redactErr(transportError(op, err, c.timeout))
@@ -246,24 +256,13 @@ func classify(op string, status int, body string) error {
 	return newError(op, status, k, msg)
 }
 
-// EncodeMessage produces the RFC 5322 message for Gmail with the shared
-// MIME builder; failures are permanent Gmail errors. Unlike SMTP, Gmail's raw-message API has no separate
-// envelope: it takes the recipients, Bcc included, from the headers and
-// removes the Bcc header before delivery, so recipients never see it.
-func EncodeMessage(msg *message.Message) ([]byte, error) {
-	raw, _, err := mailmime.BuildWithBcc(msg, time.Now())
-	if err != nil {
-		return nil, permanent("encode message", 0, err.Error())
-	}
-	if len(raw) > maxMessageSize {
-		return nil, permanent("encode message", 0, "message exceeds Gmail's 35 MiB size limit")
-	}
-	return raw, nil
-}
-
-// EncodeMessageToSpool streams Gmail's RFC 5322 message to an owner-only
-// temporary file. Attachment read failures happen here, before OAuth refresh
-// or any HTTP request, and are permanent.
+// EncodeMessageToSpool streams the RFC 5322 message for Gmail, built with
+// the shared MIME builder, to an owner-only temporary file and returns it
+// with the generated Message-ID. Unlike SMTP, Gmail's send API has no
+// separate envelope: it takes the recipients, Bcc included, from the
+// headers and removes the Bcc header before delivery, so recipients never
+// see it. Failures, including attachment read errors, happen here — before
+// the OAuth refresh or any HTTP request — and are permanent Gmail errors.
 func EncodeMessageToSpool(msg *message.Message) (*spool.File, string, error) {
 	s, err := spool.Create()
 	if err != nil {
@@ -280,7 +279,7 @@ func EncodeMessageToSpool(msg *message.Message) (*spool.File, string, error) {
 	}
 	if s.Size() > maxMessageSize {
 		_ = s.Abort()
-		return nil, "", permanent("encode message", 0, "message exceeds Gmail's 35 MiB size limit")
+		return nil, "", permanent("encode message", 0, errTooLarge)
 	}
 	return s, id, nil
 }
