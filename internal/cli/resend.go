@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -538,7 +539,11 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 		rec.Error = newJSONError(errQueue, err)
 		return ExitSendFail, false
 	}
-	defer closeReported(body, stderr)
+	// Closed right after the send, before reportResend removes the message
+	// directory: Windows cannot delete a file that is still open, and the
+	// delivered message would stay queued and be sent again.
+	closeBody := sync.OnceFunc(func() { closeReported(body, stderr) })
+	defer closeBody()
 	info, err := body.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
@@ -558,6 +563,7 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 		}
 	}
 	resp, blocked, sendErr := replay(cfg, timeout, rc, meta, body, info.Size())
+	closeBody()
 	if blocked != nil {
 		// Not a delivery failure: nothing was sent. The retry metadata is
 		// left untouched (no attempt, never marked permanently failed), so
