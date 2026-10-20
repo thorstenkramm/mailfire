@@ -2,6 +2,7 @@ package spool
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -79,6 +80,116 @@ func TestWatchRemovesLiveSpoolsOnSignal(t *testing.T) {
 	}
 }
 
+// Windows cannot delete an open file, and an interrupt arrives exactly
+// while a spool is open: being written (attachment encoding) or read (the
+// upload). The cleanup must close those handles before removing. Checked
+// on every OS through the handles themselves, which Unix would not need.
+func TestSignalCleanupClosesOpenHandles(t *testing.T) {
+	isolateTempDir(t)
+	got := make(chan os.Signal, 1)
+	afterCleanup = func(sig os.Signal) { got <- sig }
+	t.Cleanup(func() { afterCleanup = reraise })
+
+	writing, err := Create() // being composed: writer open
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writing.Write([]byte("partial")); err != nil {
+		t.Fatal(err)
+	}
+	sending, err := Compose(func(w io.Writer) error { _, err := io.WriteString(w, "message"); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload, err := sending.Open() // being uploaded: reader open
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan os.Signal, 1)
+	stop := watch(ch, func() {})
+	defer stop()
+	ch <- os.Interrupt
+	select {
+	case <-got:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not run")
+	}
+	if _, err := upload.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("upload handle still open after cleanup: read error %v", err)
+	}
+	if _, err := writing.Write([]byte("x")); err == nil {
+		t.Error("writer still usable after cleanup")
+	}
+	for _, p := range []string{writing.Path(), sending.Path()} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s survived the cleanup: %v", p, err)
+		}
+	}
+}
+
+// Abort likewise closes handles still open on the spool before removing it.
+func TestAbortClosesOpenHandles(t *testing.T) {
+	isolateTempDir(t)
+	s, err := Compose(func(w io.Writer) error { _, err := io.WriteString(w, "message"); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.Open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+		t.Errorf("reader still open after Abort: read error %v", err)
+	}
+	if _, err := os.Stat(s.Path()); !os.IsNotExist(err) {
+		t.Errorf("spool survived Abort: %v", err)
+	}
+}
+
+// A panic while composing (an encoder bug) must not leave the spool behind.
+func TestComposeRemovesSpoolOnPanic(t *testing.T) {
+	dir := isolateTempDir(t)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the panic was swallowed")
+			}
+		}()
+		s, err := Compose(func(w io.Writer) error {
+			if _, err := io.WriteString(w, "partial"); err != nil {
+				return err
+			}
+			panic("encoder bug")
+		})
+		t.Errorf("Compose returned (%v, %v) instead of panicking", s, err)
+	}()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		t.Errorf("left behind after a panic: %s", e.Name())
+	}
+}
+
+// isolateTempDir points the system temporary directory (TMPDIR on Unix,
+// TMP and TEMP on Windows) at a fresh directory and returns it.
+func isolateTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(k, dir)
+	}
+	if os.TempDir() != dir {
+		t.Fatalf("os.TempDir() = %q, want %q", os.TempDir(), dir)
+	}
+	return dir
+}
+
 // stop releases the signal delivery and, with no signal delivered, ends
 // the handler without acting.
 func TestWatchStopWithoutSignal(t *testing.T) {
@@ -134,7 +245,9 @@ func TestRemoveStaleKeepsRecentAndForeignFiles(t *testing.T) {
 	stale := write("mailfire-message-1.spool", 2*staleAge)
 	recent := write("mailfire-message-2.spool", time.Minute)
 	foreign := write("other-1.spool", 2*staleAge)
-	removeStale(dir, now)
+	if n := removeStale(dir, now); n != 1 {
+		t.Errorf("removeStale removed %d, want 1", n)
+	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Errorf("stale spool kept: %v", err)
 	}

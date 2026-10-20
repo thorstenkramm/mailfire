@@ -16,13 +16,15 @@ import (
 const envKey = "env-key-not-real-7c1d"
 
 // TestMain clears MAILFIRE_* variables so the developer's shell
-// environment cannot change which configuration the tests load.
+// environment cannot change which configuration the tests load, and runs
+// the tests in a private temporary directory, so a regression that leaks
+// message spools or capture files never reaches the system one.
 func TestMain(m *testing.M) {
 	if err := testutil.ClearMailfireEnv(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	os.Exit(m.Run())
+	os.Exit(testutil.RunWithPrivateTempDir(m))
 }
 
 // envOnly isolates the config search (no file anywhere) and supplies a

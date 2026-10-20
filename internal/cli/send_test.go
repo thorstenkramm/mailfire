@@ -81,8 +81,7 @@ func TestSendFromStdin(t *testing.T) {
 }
 
 func TestSendRemovesMessageSpoolAfterSuccess(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", tmp)
+	tmp := isolateTemp(t)
 	m := testutil.NewMockMailgun(t)
 	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
 	code, _, stderr := runMock(t, m, "body", "send", "-c", cfg, "--to", "a@example.com", "--subject", "s")

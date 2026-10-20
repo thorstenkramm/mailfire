@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
 
 // TestHelperProcess is the job run by the tests. It is not a test: it
@@ -486,6 +488,49 @@ func TestContentReaderToleratesReadErrors(t *testing.T) {
 	if err := c.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 		t.Errorf("Close: %v", err)
 	}
+}
+
+// A capture file truncated underneath (disk full, another process) ends
+// the content early and is recorded, not passed off as complete.
+func TestContentReaderRecordsTruncation(t *testing.T) {
+	c := newCapture("stdout", 100)
+	c.mem = 8 // force spilling
+	if _, err := c.Write(bytes.Repeat([]byte("x"), 300)); err != nil {
+		t.Fatal(err)
+	}
+	defer testutil.Check(t, c.Close)
+	c.file = truncatedCaptureFile{captureFile: c.file, size: 20} // inside the 50-byte head
+	got, err := io.ReadAll((&Stream{cap: c}).ContentReader())
+	if err != nil {
+		t.Fatalf("ContentReader failed: %v", err)
+	}
+	if !bytes.HasPrefix(got, bytes.Repeat([]byte("x"), 20)) || bytes.HasPrefix(got, bytes.Repeat([]byte("x"), 21)) {
+		t.Errorf("content = %q, want the 20 surviving head bytes first", got)
+	}
+	if err := c.Err(); err == nil || !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("capture error = %v, want the truncation recorded", err)
+	}
+}
+
+// truncatedCaptureFile reads like a capture file cut to size bytes: reads
+// beyond it are short and end with io.EOF, as os.File.ReadAt reports.
+type truncatedCaptureFile struct {
+	captureFile
+	size int64
+}
+
+func (f truncatedCaptureFile) ReadAt(p []byte, off int64) (int, error) {
+	if off >= f.size {
+		return 0, io.EOF
+	}
+	if rem := f.size - off; int64(len(p)) > rem {
+		n, err := f.captureFile.ReadAt(p[:rem], off)
+		if err == nil {
+			err = io.EOF
+		}
+		return n, err
+	}
+	return f.captureFile.ReadAt(p, off)
 }
 
 func TestCaptureTailInMemory(t *testing.T) {

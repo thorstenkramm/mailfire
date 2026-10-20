@@ -318,9 +318,9 @@ func TestOpenAttachmentsLifecycle(t *testing.T) {
 	if err != nil || len(files) != 1 {
 		t.Fatalf("openAttachments = %v, %v", files, err)
 	}
-	f, isFile := files[0].Reader.(*os.File)
+	f, isFile := files[0].Reader.(*sizedFile)
 	if !isFile {
-		t.Fatalf("reader type = %T, want *os.File", files[0].Reader)
+		t.Fatalf("reader type = %T, want *sizedFile", files[0].Reader)
 	}
 	closeFiles(files)
 	if _, err := f.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {

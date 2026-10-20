@@ -199,7 +199,10 @@ func textPreview(subject, body string) string {
 // content as a base64 data: URL. The media type comes from the file
 // extension, or from the content when the extension is unknown.
 func dataURL(f mailgun.File) (string, string, error) {
-	file, ok := f.Reader.(*os.File)
+	file, ok := f.Reader.(interface {
+		io.Reader
+		Name() string
+	})
 	if !ok {
 		return "", "", fmt.Errorf("image %s: not a file", f.Name) // cannot happen: inlineImages opens files
 	}

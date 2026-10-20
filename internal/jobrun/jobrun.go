@@ -91,7 +91,7 @@ func (s *Stream) ContentReader() io.Reader {
 	var readers []io.Reader
 	add := func(off, n int64) {
 		if n > 0 {
-			readers = append(readers, &tolerantReader{r: io.NewSectionReader(c.file, off, n), c: c})
+			readers = append(readers, &tolerantReader{r: io.NewSectionReader(c.file, off, n), c: c, want: n})
 		}
 	}
 	add(0, c.head)
@@ -105,17 +105,24 @@ func (s *Stream) ContentReader() io.Reader {
 }
 
 // tolerantReader turns a read error on a capture file into a recorded
-// capture error and the end of that region (see ContentReader).
+// capture error and the end of that region (see ContentReader). A region
+// that ends before its want bytes (the file was truncated underneath) is
+// recorded too, as Content's ReadAt would.
 type tolerantReader struct {
-	r io.Reader
-	c *capture
+	r         io.Reader
+	c         *capture
+	want, got int64
 }
 
 func (t *tolerantReader) Read(p []byte) (int, error) {
 	n, err := t.r.Read(p)
-	if err != nil && !errors.Is(err, io.EOF) {
+	t.got += int64(n)
+	switch {
+	case err != nil && !errors.Is(err, io.EOF):
 		t.c.setErr(fmt.Errorf("reading %s capture: %w", t.c.label, err))
 		return n, io.EOF
+	case errors.Is(err, io.EOF) && t.got < t.want:
+		t.c.setErr(fmt.Errorf("reading %s capture: %w (%d of %d bytes)", t.c.label, io.ErrUnexpectedEOF, t.got, t.want))
 	}
 	return n, err
 }

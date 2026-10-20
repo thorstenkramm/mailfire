@@ -426,8 +426,7 @@ func TestSendLeavesNoSpoolAfterFailureOrDeferral(t *testing.T) {
 		{"deferral", false, ExitDeferred},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("TMPDIR", tmp)
+			tmp := isolateTemp(t)
 			m := testutil.NewMockMailgun(t)
 			m.SendResponse = testutil.InternalError()
 			if tc.permanent {
@@ -454,6 +453,57 @@ func TestSendLeavesNoSpoolAfterFailureOrDeferral(t *testing.T) {
 				}
 			} else if ids := deferredIDs(t, deferDir); len(ids) != 1 {
 				t.Errorf("deferred messages = %d, want 1", len(ids))
+			}
+		})
+	}
+}
+
+// spoolWatchingWriter collects output and records whether a message spool
+// existed in dir at any write.
+type spoolWatchingWriter struct {
+	t        *testing.T
+	dir      string
+	buf      bytes.Buffer
+	sawSpool bool
+}
+
+func (w *spoolWatchingWriter) Write(p []byte) (int, error) {
+	entries, err := os.ReadDir(w.dir)
+	if err != nil {
+		w.t.Errorf("reading the temp dir: %v", err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "mailfire-message-") {
+			w.sawSpool = true
+		}
+	}
+	return w.buf.Write(p)
+}
+
+// Writing to a closed stdout or stderr pipe kills the process with SIGPIPE,
+// which no deferred cleanup survives. So the spool must be gone before any
+// output: the message ID on success, the error on a permanent failure.
+func TestSpoolRemovedBeforeOutput(t *testing.T) {
+	for _, permanent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success", true: "permanent failure"}[permanent], func(t *testing.T) {
+			tmp := isolateTemp(t)
+			m := testutil.NewMockMailgun(t)
+			if permanent {
+				m.SendResponse = testutil.BadRequest()
+			}
+			cfg, _ := deferConfig(t, "")
+			stdout := &spoolWatchingWriter{t: t, dir: tmp}
+			stderr := &spoolWatchingWriter{t: t, dir: tmp}
+			code := Run([]string{"-c", cfg, "--to", "a@example.com", "--subject", "s"}, stdout, stderr, testInfo,
+				WithStdin(strings.NewReader("body")), WithBaseURL(m.URL()))
+			if want := map[bool]int{false: ExitOK, true: ExitSendFail}[permanent]; code != want {
+				t.Fatalf("exit = %d, want %d; stderr:\n%s", code, want, stderr.buf.String())
+			}
+			if stdout.buf.Len()+stderr.buf.Len() == 0 {
+				t.Fatal("no output written; the test checks nothing")
+			}
+			if stdout.sawSpool || stderr.sawSpool {
+				t.Errorf("output was written while the spool still existed (stdout %t, stderr %t)", stdout.sawSpool, stderr.sawSpool)
 			}
 		})
 	}

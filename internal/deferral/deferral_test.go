@@ -193,28 +193,46 @@ type zeroStream struct{}
 
 func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
+// Adopting a large spool stays bounded in memory on both paths: the rename,
+// and the streamed copy used across file systems.
 func TestSaveMessageFileLargeBodyBoundedAllocation(t *testing.T) {
 	const size = 20 << 20
-	tmp, err := os.CreateTemp(t.TempDir(), "message-*.spool")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := io.CopyN(tmp, zeroStream{}, size); err != nil {
-		t.Fatal(err)
-	}
-	if err := tmp.Close(); err != nil {
-		t.Fatal(err)
-	}
-	s := newStore(t)
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	if _, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, tmp.Name(), size); err != nil {
-		t.Fatal(err)
-	}
-	runtime.ReadMemStats(&after)
-	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
-		t.Fatalf("TotalAlloc grew by %d bytes adopting a 20 MiB spool", delta)
+	for _, viaCopy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "rename", true: "copy"}[viaCopy], func(t *testing.T) {
+			if viaCopy {
+				renameFile = func(string, string) error { return fmt.Errorf("cross-device link") }
+				t.Cleanup(func() { renameFile = os.Rename })
+			}
+			tmp, err := os.CreateTemp(t.TempDir(), "message-*.spool")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.CopyN(tmp, zeroStream{}, size); err != nil {
+				t.Fatal(err)
+			}
+			if err := tmp.Close(); err != nil {
+				t.Fatal(err)
+			}
+			s := newStore(t)
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, tmp.Name(), size)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.ReadMemStats(&after)
+			if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+				t.Fatalf("TotalAlloc grew by %d bytes adopting a 20 MiB spool", delta)
+			}
+			info, err := os.Stat(filepath.Join(s.Dir, meta.ID, BodyFile))
+			if err != nil || info.Size() != size {
+				t.Fatalf("body.bin = %v, %v; want %d bytes", info, err, size)
+			}
+			if _, err := os.Stat(tmp.Name()); viaCopy == os.IsNotExist(err) {
+				t.Errorf("source exists = %t after %s", !os.IsNotExist(err), map[bool]string{false: "rename", true: "copy"}[viaCopy])
+			}
+		})
 	}
 }
 

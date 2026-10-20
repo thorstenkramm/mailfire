@@ -3,8 +3,8 @@
 // repeatedly for sending and deferral without retaining its contents in memory.
 //
 // Spools must not outlive the send attempt: the caller removes them (Abort)
-// or adopts them into the deferral store. CleanupOnSignal covers SIGINT and
-// SIGTERM, which end the process without running deferred calls, and Create
+// or adopts them into the deferral store. CleanupOnSignal covers the
+// signals that end the process without running deferred calls, and Create
 // sweeps spools left behind by a process that was killed outright.
 package spool
 
@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -40,10 +39,18 @@ type File struct {
 	size int64
 }
 
+// sweepOnce limits the stale-spool sweep to the first spool of a process:
+// a sweep reads the whole (possibly large, shared) temporary directory.
+var sweepOnce sync.Once
+
 // Create creates an owner-only spool in the system temporary directory.
+// The file is created and registered under the registry lock, so a signal
+// handler cleaning up concurrently either sees it or runs before it exists.
 func Create() (*File, error) {
 	dir := os.TempDir()
-	removeStale(dir, time.Now())
+	sweepOnce.Do(func() { removeStale(dir, time.Now()) })
+	liveMu.Lock()
+	defer liveMu.Unlock()
 	f, err := os.CreateTemp(dir, namePrefix+"*"+nameSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("spool: create: %w", err)
@@ -51,18 +58,26 @@ func Create() (*File, error) {
 	if err := f.Chmod(0o600); err != nil {
 		return nil, errors.Join(fmt.Errorf("spool: permissions: %w", err), f.Close(), os.Remove(f.Name()))
 	}
-	register(f.Name())
+	live[f.Name()] = []*os.File{f}
 	return &File{path: f.Name(), f: f}, nil
 }
 
 // Compose creates a spool, lets write fill it, and finishes it. When write
-// or Finish fails, the spool is removed and the error returned (joined
-// with a removal failure, if any): nothing is left behind.
+// or Finish fails, or write panics, the spool is removed and the error
+// returned (joined with a removal failure, if any): nothing is left behind.
 func Compose(write func(w io.Writer) error) (*File, error) {
 	s, err := Create()
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			if err := s.Abort(); err != nil {
+				log.Printf("mailfire: removing message spool: %v", err)
+			}
+			panic(r)
+		}
+	}()
 	if err := write(s); err != nil {
 		return nil, errors.Join(err, s.Abort())
 	}
@@ -76,7 +91,7 @@ func Compose(write func(w io.Writer) error) (*File, error) {
 // close error cannot change any outcome; it is logged, as the providers log
 // a failure to close a response body.
 func CloseRead(f io.Closer) {
-	if err := f.Close(); err != nil {
+	if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
 		log.Printf("mailfire: %v", err)
 	}
 }
@@ -109,32 +124,35 @@ func (s *File) Finish() error {
 	return nil
 }
 
-// Abort closes and removes a partial or completed spool. A missing file is
-// success, which also makes this safe after deferral renamed the spool.
+// Abort closes every handle on the spool — Windows cannot delete an open
+// file — and removes it. A missing file is success, which also makes this
+// safe after deferral renamed the spool.
 func (s *File) Abort() error {
 	if s == nil {
 		return nil
 	}
-	var err error
-	if s.f != nil {
-		err = s.f.Close()
-		s.f = nil
-	}
+	s.f = nil // closed with the other handles below
+	err := release(s.path)
 	if rerr := os.Remove(s.path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 		err = errors.Join(err, rerr)
 	}
-	unregister(s.path)
 	return err
 }
 
-// Open opens a completed spool at its beginning.
+// Open opens a completed spool at its beginning. The handle is registered,
+// so Abort and the signal cleanup can close it before removing the file.
 func (s *File) Open() (*os.File, error) {
 	if s == nil || s.f != nil {
 		return nil, errors.New("spool: file is not complete")
 	}
+	liveMu.Lock()
+	defer liveMu.Unlock()
 	f, err := os.Open(s.path)
 	if err != nil {
 		return nil, fmt.Errorf("spool: open: %w", err)
+	}
+	if handles, ok := live[s.path]; ok {
+		live[s.path] = append(handles, f)
 	}
 	return f, nil
 }
@@ -173,42 +191,58 @@ func HTTPBody(r io.Reader, size int64) (io.ReadCloser, func() (io.ReadCloser, er
 
 var (
 	liveMu sync.Mutex
-	live   = map[string]struct{}{}
+	// live maps each spool not yet removed or adopted to the handles
+	// opened on it (the writer and every Open). Closed handles stay listed
+	// until the spool is released; closing them again is harmless.
+	live = map[string][]*os.File{}
 )
 
-func register(path string) {
+// release closes every handle on path and forgets the spool. Handles the
+// caller already closed report os.ErrClosed, which is not an error here.
+func release(path string) error {
 	liveMu.Lock()
 	defer liveMu.Unlock()
-	live[path] = struct{}{}
+	return releaseLocked(path)
 }
 
-func unregister(path string) {
-	liveMu.Lock()
-	defer liveMu.Unlock()
+func releaseLocked(path string) error {
+	var err error
+	for _, f := range live[path] {
+		if cerr := f.Close(); cerr != nil && !errors.Is(cerr, os.ErrClosed) {
+			err = errors.Join(err, cerr)
+		}
+	}
 	delete(live, path)
+	return err
 }
 
-// removeLive removes every spool not yet removed or adopted.
+// removeLive closes and removes every spool not yet removed or adopted.
 func removeLive() {
 	liveMu.Lock()
 	defer liveMu.Unlock()
 	for path := range live {
-		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		err := releaseLocked(path)
+		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, fs.ErrNotExist) {
+			err = errors.Join(err, rerr)
+		}
+		if err != nil {
 			log.Printf("mailfire: removing message spool: %v", err)
 		}
-		delete(live, path)
 	}
 }
 
-// removeStale removes spools in dir older than staleAge: left behind by a
-// process killed without a chance to clean up (SIGKILL, crash, power loss).
-// It is best effort: in a shared temporary directory, other users' spools
-// cannot be removed (permission denied), which is expected and not logged.
-func removeStale(dir string, now time.Time) {
+// removeStale removes spools in dir older than staleAge — left behind by a
+// process killed without a chance to clean up (SIGKILL, crash, power loss)
+// — and returns how many it removed. It is best effort and silent: in a
+// shared temporary directory other users' spools cannot be removed, and on
+// Windows a spool held open by a hung process cannot be either; reporting
+// that on every send would only be noise.
+func removeStale(dir string, now time.Time) int {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return
+		return 0
 	}
+	removed := 0
 	for _, e := range entries {
 		name := e.Name()
 		if !e.Type().IsRegular() || !strings.HasPrefix(name, namePrefix) || !strings.HasSuffix(name, nameSuffix) {
@@ -218,11 +252,11 @@ func removeStale(dir string, now time.Time) {
 		if err != nil || now.Sub(info.ModTime()) <= staleAge {
 			continue
 		}
-		err = os.Remove(filepath.Join(dir, name))
-		if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrPermission) {
-			log.Printf("mailfire: removing stale message spool: %v", err)
+		if err := os.Remove(filepath.Join(dir, name)); err == nil {
+			removed++
 		}
 	}
+	return removed
 }
 
 // afterCleanup ends the process as sig would have (reraise, per OS) once
@@ -230,15 +264,29 @@ func removeStale(dir string, now time.Time) {
 // instead.
 var afterCleanup = reraise
 
-// CleanupOnSignal removes every live spool when SIGINT or SIGTERM (on
-// Windows: Ctrl+C, Ctrl+Break, console close) arrives, then ends the
-// process as the signal would have. Go does not run deferred calls when a
-// signal ends the process, so without it an interrupted send would leave a
-// copy of the message in the temporary directory. The returned stop
-// restores the default handling; call it once no spool exists any more.
+// CleanupOnSignal removes every live spool when one of the signals that
+// end the process arrives (handledSignals: SIGINT, SIGTERM, SIGHUP; on
+// Windows Ctrl+C, Ctrl+Break, console close), then ends the process as the
+// signal would have. Go does not run deferred calls when a signal ends the
+// process, so without it an interrupted send would leave a copy of the
+// message in the temporary directory.
+//
+// A signal the process ignores (inherited, as for "mailfire &" in a script
+// or under nohup) stays ignored: installing a handler would make it end
+// the send. The returned stop restores the default handling; call it once
+// no spool exists any more.
 func CleanupOnSignal() (stop func()) {
+	var sigs []os.Signal
+	for _, sig := range handledSignals {
+		if !signal.Ignored(sig) {
+			sigs = append(sigs, sig)
+		}
+	}
+	if len(sigs) == 0 {
+		return func() {}
+	}
 	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	signal.Notify(ch, sigs...)
 	return watch(ch, func() { signal.Stop(ch) })
 }
 

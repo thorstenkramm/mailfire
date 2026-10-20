@@ -1,6 +1,14 @@
 package spool
 
-import "os"
+import (
+	"os"
+	"syscall"
+)
+
+// handledSignals end the process by default and so need the spool cleanup:
+// Go maps Ctrl+C and Ctrl+Break to os.Interrupt, and console close, logoff
+// and shutdown to SIGTERM.
+var handledSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
 // exitControlC is STATUS_CONTROL_C_EXIT, the status Windows gives a console
 // process ended by Ctrl+C (or a console close) when it does not handle it.

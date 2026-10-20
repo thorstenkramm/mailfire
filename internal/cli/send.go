@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mattn/go-isatty"
@@ -88,13 +89,24 @@ func (p *preparedDelivery) sendMessage(rc *runContext, msg *mailgun.Message, res
 		defer n.close()
 	}
 
+	// The provider sets msg.Spool. releaseSpool removes it (after a
+	// deferral it is already adopted, and removing finds nothing). It is
+	// deferred before the send so a panic cleans up too, and called as soon
+	// as the outcome is decided — before any output, because writing to a
+	// closed stdout or stderr pipe kills the process with SIGPIPE, which no
+	// deferred call survives.
+	releaseSpool := sync.OnceFunc(func() {
+		if msg.Spool == nil {
+			return
+		}
+		if err := msg.Spool.Abort(); err != nil {
+			printfOutput(stderr, "mailfire: removing message spool: %v\n", err)
+		}
+	})
+	defer releaseSpool()
 	resp, err, setupErr := p.provider.send(msg)
-	if msg.Spool != nil {
-		defer func() {
-			if cleanupErr := msg.Spool.Abort(); cleanupErr != nil {
-				printfOutput(stderr, "mailfire: removing message spool: %v\n", cleanupErr)
-			}
-		}()
+	if setupErr != nil || err == nil {
+		releaseSpool() // nothing to defer: sent, or not sent at all
 	}
 	if setupErr != nil {
 		// Nothing was sent: the provider is not usable as configured.
@@ -109,7 +121,8 @@ func (p *preparedDelivery) sendMessage(rc *runContext, msg *mailgun.Message, res
 		logAttempt(logger, msg, opts.Test, resp, err, stderr)
 	}
 	if err != nil {
-		code := reportSendError(cfg, opts, msg, logger, n, err, res, stderr)
+		code := reportSendError(cfg, opts, msg, logger, n, err, res, stderr, releaseSpool)
+		releaseSpool() // after a deferral: already adopted, nothing left to remove
 		if n != nil {
 			n.notDelivered()
 		}
@@ -389,15 +402,15 @@ func openAttachments(paths []string) ([]mailgun.File, error) {
 // and accepts only regular files. The Stat before Open refuses FIFOs
 // early, because opening one blocks until a writer appears; the Stat on
 // the open handle is the authoritative check against the path changing
-// in between.
-func openAttachment(p string) (*os.File, error) {
-	return openRegular("attachment", p)
+// in between. The file must keep that size while it is read (sizedFile).
+func openAttachment(p string) (*sizedFile, error) {
+	return openSized("attachment", p)
 }
 
 // openImage opens one inline image path; the rules are exactly those of
 // attachments, only the error prefix differs.
-func openImage(p string) (*os.File, error) {
-	return openRegular("image", p)
+func openImage(p string) (*sizedFile, error) {
+	return openSized("image", p)
 }
 
 // openRegular opens path (~ expanded) for streaming and accepts only
@@ -587,28 +600,45 @@ func logOutcome(logger *logging.Logger, a logging.Attempt,
 // 4. Test sends are never deferred (design decision, review 12): --test
 // validates the request rather than delivering it, and a stored body
 // would carry o:testmode=yes into a resend (FR-1, Decision Q5).
+//
+// When the message will not be deferred, releaseSpool runs before any
+// output (see sendMessage: a write to a closed pipe ends the process).
 func reportSendError(cfg *config.Config, opts *SendOptions, msg *mailgun.Message,
-	logger *logging.Logger, n *notification, sendErr error, res *sendResult, stderr io.Writer) int {
+	logger *logging.Logger, n *notification, sendErr error, res *sendResult, stderr io.Writer, releaseSpool func()) int {
+	deferring, code, note := deferralFor(cfg, opts, sendErr)
+	if !deferring {
+		releaseSpool()
+	}
 	printfOutput(stderr, "mailfire: send: %v\n", sendErr)
 	res.setError(sendErrorCode(sendErr), sendErr)
+	if !deferring {
+		if note != "" {
+			printfOutput(stderr, "mailfire: send: %s; the message was NOT saved\n", note)
+		}
+		return code
+	}
+	return deferMessage(cfg, msg, sendErr, logger, n, res, stderr)
+}
+
+// deferralFor decides what a failed send leads to: deferral, or the exit
+// code of a failure that is not deferred and, where the user may have
+// expected a deferral, the reason it did not happen.
+func deferralFor(cfg *config.Config, opts *SendOptions, sendErr error) (deferring bool, code int, note string) {
 	switch {
 	case message.IsAuth(sendErr):
-		return ExitAuth
+		return false, ExitAuth, ""
 	case !message.IsDeferrable(sendErr):
 		// Permanent failure (other 4xx, encoding error, cancellation):
 		// retrying cannot succeed, so nothing is ever stored.
-		return ExitSendFail
+		return false, ExitSendFail, ""
 	case opts.Test:
-		printfOutput(stderr, "mailfire: send: --test sends are never deferred (test mode only validates the request); the message was NOT saved\n")
-		return ExitSendFail
+		return false, ExitSendFail, "--test sends are never deferred (test mode only validates the request)"
 	case opts.NoDefer:
-		printfOutput(stderr, "mailfire: send: not deferring (--no-defer); the message was NOT saved\n")
-		return ExitSendFail
+		return false, ExitSendFail, "not deferring (--no-defer)"
 	case !cfg.Defer:
-		printfOutput(stderr, "mailfire: send: not deferring (%s); the message was NOT saved\n", deferDisabledBy(cfg))
-		return ExitSendFail
+		return false, ExitSendFail, fmt.Sprintf("not deferring (%s)", deferDisabledBy(cfg))
 	}
-	return deferMessage(cfg, msg, sendErr, logger, n, res, stderr)
+	return true, 0, ""
 }
 
 // deferDisabledBy describes the source that disabled deferral, for

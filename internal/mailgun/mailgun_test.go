@@ -230,6 +230,10 @@ func TestSendMessageSuccess(t *testing.T) {
 	}
 }
 
+// TestEncodeMessageGolden pins the exact multipart form. The golden file
+// was recorded after task 34 moved encoding to the spool; it was checked
+// byte for byte against the pre-task-34 encoder (88e49f3) with the same
+// fixed boundary, so it proves the form did not change.
 func TestEncodeMessageGolden(t *testing.T) {
 	msg := &Message{
 		From: "Ops <ops@example.com>", To: []string{"to@example.com"},
