@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,10 @@ func TestTempDirConfigAndCheck(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+	if !info.IsDir() {
+		t.Errorf("created temp_dir = %v, want directory", info.Mode())
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o700 {
 		t.Errorf("created temp_dir = %v, want owner-only directory", info.Mode())
 	}
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -183,7 +184,7 @@ func TestValidateEnvMixedSources(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("exit = %d; stderr:\n%s", code, stderr)
 	}
-	want := `(region "us" from config file, domain "mg.example.com" from config file, api key from MAILFIRE_MAILGUN_API_KEY, temporary directory "` + os.TempDir() + `" from system default)`
+	want := `(region "us" from config file, domain "mg.example.com" from config file, api key from MAILFIRE_MAILGUN_API_KEY, temporary directory ` + strconv.Quote(os.TempDir()) + ` from system default)`
 	if !strings.Contains(stdout, want) {
 		t.Errorf("stdout missing %q:\n%s", want, stdout)
 	}
