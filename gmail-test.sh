@@ -10,13 +10,16 @@
 # valid. While the Google app is in testing, only registered test users can
 # sign in, and authorizations expire after 7 days.
 #
-# Override the addresses with GMAIL_TEST_FROM and GMAIL_TEST_TO.
+# Set the recipient with MAILFIRE_TEST_RECIPIENT; override the sender with
+# GMAIL_TEST_FROM.
 #
 
 set -euo pipefail
 
+: "${MAILFIRE_TEST_RECIPIENT:?export MAILFIRE_TEST_RECIPIENT first}"
+
 FROM=${GMAIL_TEST_FROM:-"Gmail Test <p949566@googlemail.com>"}
-TO=${GMAIL_TEST_TO:-"tk@system42.io"}
+TO=${MAILFIRE_TEST_RECIPIENT}
 
 TEMP_DIR=$(mktemp -d)
 trap 'rm -rf "${TEMP_DIR}"' EXIT
