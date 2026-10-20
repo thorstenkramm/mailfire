@@ -90,7 +90,7 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 	if err != nil {
 		return nil, permanent("send message", 0, err.Error())
 	}
-	defer f.Close()
+	defer spool.CloseRead(f)
 	return c.SendReader(ctx, mailmime.ContentType, f, s.Size())
 }
 
@@ -264,22 +264,16 @@ func classify(op string, status int, body string) error {
 // see it. Failures, including attachment read errors, happen here — before
 // the OAuth refresh or any HTTP request — and are permanent Gmail errors.
 func EncodeMessageToSpool(msg *message.Message) (*spool.File, string, error) {
-	s, err := spool.Create()
+	var id string
+	s, err := spool.Compose(func(w io.Writer) (err error) {
+		id, err = mailmime.BuildWithBccTo(w, msg, time.Now())
+		return err
+	})
 	if err != nil {
-		return nil, "", permanent("encode message", 0, err.Error())
-	}
-	id, err := mailmime.BuildWithBccTo(s, msg, time.Now())
-	if err != nil {
-		_ = s.Abort()
-		return nil, "", permanent("encode message", 0, err.Error())
-	}
-	if err := s.Finish(); err != nil {
-		_ = s.Abort()
 		return nil, "", permanent("encode message", 0, err.Error())
 	}
 	if s.Size() > maxMessageSize {
-		_ = s.Abort()
-		return nil, "", permanent("encode message", 0, errTooLarge)
+		return nil, "", errors.Join(permanent("encode message", 0, errTooLarge), s.Abort())
 	}
 	return s, id, nil
 }

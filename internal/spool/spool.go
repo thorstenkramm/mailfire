@@ -12,6 +12,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,6 +53,32 @@ func Create() (*File, error) {
 	}
 	register(f.Name())
 	return &File{path: f.Name(), f: f}, nil
+}
+
+// Compose creates a spool, lets write fill it, and finishes it. When write
+// or Finish fails, the spool is removed and the error returned (joined
+// with a removal failure, if any): nothing is left behind.
+func Compose(write func(w io.Writer) error) (*File, error) {
+	s, err := Create()
+	if err != nil {
+		return nil, err
+	}
+	if err := write(s); err != nil {
+		return nil, errors.Join(err, s.Abort())
+	}
+	if err := s.Finish(); err != nil {
+		return nil, errors.Join(err, s.Abort())
+	}
+	return s, nil
+}
+
+// CloseRead closes a file that was only read. Its data is consumed, so a
+// close error cannot change any outcome; it is logged, as the providers log
+// a failure to close a response body.
+func CloseRead(f io.Closer) {
+	if err := f.Close(); err != nil {
+		log.Printf("mailfire: %v", err)
+	}
 }
 
 // Write appends to an unfinished spool.
@@ -140,8 +168,7 @@ func HTTPBody(r io.Reader, size int64) (io.ReadCloser, func() (io.ReadCloser, er
 	open := func() (io.ReadCloser, error) {
 		return io.NopCloser(io.NewSectionReader(ra, 0, size)), nil
 	}
-	body, _ := open()
-	return body, open
+	return io.NopCloser(io.NewSectionReader(ra, 0, size)), open
 }
 
 var (
@@ -166,14 +193,17 @@ func removeLive() {
 	liveMu.Lock()
 	defer liveMu.Unlock()
 	for path := range live {
-		_ = os.Remove(path)
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			log.Printf("mailfire: removing message spool: %v", err)
+		}
 		delete(live, path)
 	}
 }
 
 // removeStale removes spools in dir older than staleAge: left behind by a
 // process killed without a chance to clean up (SIGKILL, crash, power loss).
-// Errors are ignored; another user's files cannot be removed anyway.
+// It is best effort: in a shared temporary directory, other users' spools
+// cannot be removed (permission denied), which is expected and not logged.
 func removeStale(dir string, now time.Time) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -184,8 +214,13 @@ func removeStale(dir string, now time.Time) {
 		if !e.Type().IsRegular() || !strings.HasPrefix(name, namePrefix) || !strings.HasSuffix(name, nameSuffix) {
 			continue
 		}
-		if info, err := e.Info(); err == nil && now.Sub(info.ModTime()) > staleAge {
-			_ = os.Remove(filepath.Join(dir, name))
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) <= staleAge {
+			continue
+		}
+		err = os.Remove(filepath.Join(dir, name))
+		if err != nil && !errors.Is(err, fs.ErrNotExist) && !errors.Is(err, fs.ErrPermission) {
+			log.Printf("mailfire: removing stale message spool: %v", err)
 		}
 	}
 }

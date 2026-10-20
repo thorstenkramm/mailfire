@@ -538,7 +538,7 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 		rec.Error = newJSONError(errQueue, err)
 		return ExitSendFail, false
 	}
-	defer body.Close()
+	defer closeReported(body, stderr)
 	info, err := body.Stat()
 	if err != nil || !info.Mode().IsRegular() {
 		if err == nil {
@@ -571,9 +571,11 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 	if logger != nil {
 		from := meta.EnvelopeFrom
 		if from == "" {
-			if copy, openErr := os.Open(bodyPath); openErr == nil {
-				from = storedFrom(meta.ContentType, copy)
-				_ = copy.Close()
+			// The body was consumed by the send; read the from field
+			// through a fresh handle. Unreadable: the log omits it.
+			if f, openErr := os.Open(bodyPath); openErr == nil {
+				from = storedFrom(meta.ContentType, f)
+				closeReported(f, stderr)
 			}
 		}
 		logOutcome(logger, logging.Attempt{

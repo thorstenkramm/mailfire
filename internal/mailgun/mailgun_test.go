@@ -561,7 +561,7 @@ func TestSendReaderFromFileIsRewindable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer testutil.Check(t, f.Close)
 	c, err := New(testAPIKey, testDomain, "us")
 	if err != nil {
 		t.Fatal(err)
@@ -571,8 +571,8 @@ func TestSendReaderFromFileIsRewindable(t *testing.T) {
 			t.Error("request has no GetBody")
 		} else if b, err := r.GetBody(); err != nil {
 			t.Errorf("GetBody: %v", err)
-		} else if got, _ := io.ReadAll(b); string(got) != payload {
-			t.Errorf("rewound body = %q", got)
+		} else if got, err := io.ReadAll(b); err != nil || string(got) != payload {
+			t.Errorf("rewound body = %q, %v", got, err)
 		}
 		return &http.Response{StatusCode: 200, Header: http.Header{},
 			Body: io.NopCloser(strings.NewReader(`{"id":"<m1>","message":"Queued"}`))}, nil
@@ -588,8 +588,12 @@ func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
 
 func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_, _ = io.WriteString(w, `{"id":"queued","message":"Queued"}`)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("reading the request: %v", err)
+		}
+		if _, err := io.WriteString(w, `{"id":"queued","message":"Queued"}`); err != nil {
+			t.Errorf("writing the reply: %v", err)
+		}
 	}))
 	defer srv.Close()
 	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(srv.URL))
@@ -605,7 +609,7 @@ func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.ReadMemStats(&after)
-	defer msg.Spool.Abort()
+	defer testutil.Check(t, msg.Spool.Abort)
 	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
 		t.Fatalf("TotalAlloc grew by %d bytes for a 20 MiB attachment", delta)
 	}

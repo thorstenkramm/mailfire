@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/message"
+	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
 
 func TestEncodeMessageUsesSharedMIMEAndIncludesBccForGmail(t *testing.T) {
@@ -27,7 +28,7 @@ func TestEncodeMessageUsesSharedMIMEAndIncludesBccForGmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sp.Abort()
+	defer testutil.Check(t, sp.Abort)
 	var raw bytes.Buffer
 	if err := sp.CopyTo(&raw); err != nil {
 		t.Fatal(err)
@@ -475,15 +476,15 @@ func TestSendReaderFromFileIsRewindable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer testutil.Check(t, f.Close)
 	c := mustClient(t, "tok")
 	c.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if r.GetBody == nil {
 			t.Error("request has no GetBody")
 		} else if b, err := r.GetBody(); err != nil {
 			t.Errorf("GetBody: %v", err)
-		} else if got, _ := io.ReadAll(b); string(got) != "From: a@example.com\r\n\r\nx" {
-			t.Errorf("rewound body = %q", got)
+		} else if got, err := io.ReadAll(b); err != nil || string(got) != "From: a@example.com\r\n\r\nx" {
+			t.Errorf("rewound body = %q, %v", got, err)
 		}
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"id":"m1"}`)), Header: http.Header{}}, nil
 	})
@@ -524,7 +525,9 @@ func TestAttachmentReadErrorIsPermanentAndNothingSent(t *testing.T) {
 
 func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("reading the request: %v", err)
+		}
 		respond(t, w, `{"id":"m1"}`)
 	}))
 	defer s.Close()
@@ -538,7 +541,7 @@ func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.ReadMemStats(&after)
-	defer msg.Spool.Abort()
+	defer testutil.Check(t, msg.Spool.Abort)
 	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
 		t.Fatalf("TotalAlloc grew by %d bytes for a 20 MiB attachment", delta)
 	}

@@ -42,17 +42,12 @@ type SendResponse = message.SendResponse
 // SendMessage posts the message to /v3/{domain}/messages as
 // multipart/form-data and returns Mailgun's message ID on success.
 func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, error) {
-	s, err := spool.Create()
+	var contentType string
+	s, err := spool.Compose(func(w io.Writer) (err error) {
+		contentType, err = encodeMessageTo(w, msg)
+		return err
+	})
 	if err != nil {
-		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
-	}
-	contentType, err := encodeMessageTo(s, msg)
-	if err != nil {
-		_ = s.Abort()
-		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
-	}
-	if err := s.Finish(); err != nil {
-		_ = s.Abort()
 		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
 	msg.Size, msg.Spool, msg.EncodedType = int(s.Size()), s, contentType
@@ -60,7 +55,7 @@ func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, 
 	if err != nil {
 		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
-	defer f.Close()
+	defer spool.CloseRead(f)
 	return c.postMessages(ctx, "send message", contentType, f, s.Size())
 }
 

@@ -2,6 +2,7 @@ package jobrun
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -481,7 +482,10 @@ func TestContentReaderToleratesReadErrors(t *testing.T) {
 	if c.Err() == nil {
 		t.Error("the read error was not recorded")
 	}
-	_ = c.Close() // the file is already closed
+	// The file is already closed; anything but that is a real failure.
+	if err := c.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		t.Errorf("Close: %v", err)
+	}
 }
 
 func TestCaptureTailInMemory(t *testing.T) {

@@ -6,6 +6,15 @@ import (
 	"testing"
 )
 
+// Check calls fn — a Close, an Abort — and reports its error to t. It is for
+// defer and t.Cleanup: defer testutil.Check(t, f.Close).
+func Check(t testing.TB, fn func() error) {
+	t.Helper()
+	if err := fn(); err != nil {
+		t.Error(err)
+	}
+}
+
 // RunWithPrivateTempDir runs the tests of m with the temporary directory
 // (TMPDIR; TMP and TEMP on Windows) pointing at a fresh directory that is
 // removed afterwards. Provider tests call SendMessage, which leaves the

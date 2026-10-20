@@ -164,36 +164,28 @@ func writeSpool(t *testing.T, body string) string {
 }
 
 // When rename fails (spool and defer_dir on different file systems), the
-// spool is copied; a failure to remove the source afterwards must not
-// discard the safely stored copy.
+// spool is copied and the message stored; the source is left for its
+// owner to remove, so a failing cleanup can never discard the copy.
 func TestSaveMessageFileCopiesAcrossFileSystems(t *testing.T) {
 	const body = "copied request body"
-	for _, removeFails := range []bool{false, true} {
-		t.Run(fmt.Sprintf("remove fails %t", removeFails), func(t *testing.T) {
-			renameFile = func(string, string) error { return &os.LinkError{Op: "rename", Err: fmt.Errorf("cross-device link")} }
-			if removeFails {
-				removeFile = func(string) error { return fmt.Errorf("remove failed") }
-			}
-			t.Cleanup(func() { renameFile, removeFile = os.Rename, os.Remove })
+	renameFile = func(string, string) error { return &os.LinkError{Op: "rename", Err: fmt.Errorf("cross-device link")} }
+	t.Cleanup(func() { renameFile = os.Rename })
 
-			s := newStore(t)
-			source := writeSpool(t, body)
-			meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, source, int64(len(body)))
-			if err != nil {
-				t.Fatalf("SaveMessageFile: %v", err)
-			}
-			got, err := os.ReadFile(filepath.Join(s.Dir, meta.ID, BodyFile))
-			if err != nil || string(got) != body {
-				t.Fatalf("body.bin = %q, %v", got, err)
-			}
-			if msgs, err := s.List(); err != nil || len(msgs) != 1 {
-				t.Fatalf("List = %v, %v; want the stored message", msgs, err)
-			}
-			_, statErr := os.Stat(source)
-			if removed := os.IsNotExist(statErr); removed == removeFails {
-				t.Errorf("source removed = %t with remove failing = %t", removed, removeFails)
-			}
-		})
+	s := newStore(t)
+	source := writeSpool(t, body)
+	meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, source, int64(len(body)))
+	if err != nil {
+		t.Fatalf("SaveMessageFile: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(s.Dir, meta.ID, BodyFile))
+	if err != nil || string(got) != body {
+		t.Fatalf("body.bin = %q, %v", got, err)
+	}
+	if msgs, err := s.List(); err != nil || len(msgs) != 1 {
+		t.Fatalf("List = %v, %v; want the stored message", msgs, err)
+	}
+	if _, err := os.Stat(source); err != nil {
+		t.Errorf("source removed by the store: %v", err)
 	}
 }
 

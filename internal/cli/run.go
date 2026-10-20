@@ -366,7 +366,7 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 // already in seen and returns the errors now known.
 func reportCaptureErrors(job *jobrun.Result, seen [2]error, stderr io.Writer) [2]error {
 	for i, s := range []*jobrun.Stream{job.Stdout(), job.Stderr()} {
-		if err := s.CaptureErr(); err != nil && err != seen[i] {
+		if err := s.CaptureErr(); err != nil && !errors.Is(err, seen[i]) {
 			printfOutput(stderr, "mailfire: run: output capture incomplete: %v\n", err)
 			seen[i] = err
 		}

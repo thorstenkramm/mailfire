@@ -205,7 +205,7 @@ func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime.ReadMemStats(&after)
-	defer msg.Spool.Abort()
+	defer testutil.Check(t, msg.Spool.Abort)
 	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
 		t.Fatalf("TotalAlloc grew by %d bytes for a 20 MiB attachment", delta)
 	}

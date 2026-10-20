@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
 
 func TestFileLifecycle(t *testing.T) {
@@ -16,7 +18,7 @@ func TestFileLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := s.Path()
-	t.Cleanup(func() { _ = s.Abort() })
+	t.Cleanup(func() { testutil.Check(t, s.Abort) })
 	if _, err := s.Write([]byte("payload")); err != nil {
 		t.Fatal(err)
 	}

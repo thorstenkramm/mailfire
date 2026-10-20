@@ -360,7 +360,7 @@ func queueShow(store *deferral.Store, msgs []deferral.Metadata, cooldown time.Du
 			printfOutput(stderr, "mailfire: queue show: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
 			return ExitSendFail
 		}
-		defer body.Close()
+		defer closeReported(body, stderr)
 		printfOutput(stdout, "Content-Type: %s\r\n\r\n", meta.ContentType)
 		if _, err := io.Copy(stdout, body); err != nil {
 			return ExitSendFail

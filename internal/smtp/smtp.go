@@ -117,17 +117,12 @@ func (c *Client) String() string {
 // SendMessage builds MIME once into an owner-only spool, records it on msg
 // for potential deferral, and streams it using the message envelope.
 func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*message.SendResponse, error) {
-	s, err := spool.Create()
+	var id string
+	s, err := spool.Compose(func(w io.Writer) (err error) {
+		id, err = mailmime.BuildTo(w, msg, time.Now())
+		return err
+	})
 	if err != nil {
-		return nil, &Error{Op: "encode message", Message: err.Error(), Kind: message.KindPermanent}
-	}
-	id, err := mailmime.BuildTo(s, msg, time.Now())
-	if err != nil {
-		_ = s.Abort()
-		return nil, &Error{Op: "encode message", Message: err.Error(), Kind: message.KindPermanent}
-	}
-	if err := s.Finish(); err != nil {
-		_ = s.Abort()
 		return nil, &Error{Op: "encode message", Message: err.Error(), Kind: message.KindPermanent}
 	}
 	msg.Spool, msg.EncodedType, msg.Size, msg.MessageID = s, mailmime.ContentType, int(s.Size()), id
@@ -139,7 +134,7 @@ func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*messag
 	if err != nil {
 		return nil, &Error{Op: "send message", Message: err.Error(), Kind: message.KindPermanent}
 	}
-	defer f.Close()
+	defer spool.CloseRead(f)
 	return c.SendReader(ctx, env, f, s.Size(), id)
 }
 

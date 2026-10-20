@@ -86,8 +86,12 @@ func TestResendLargeStoredRequestBoundedAllocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = io.Copy(io.Discard, r.Body)
-		_, _ = io.WriteString(w, `{"id":"resent","message":"Queued"}`)
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			t.Errorf("reading the request: %v", err)
+		}
+		if _, err := io.WriteString(w, `{"id":"resent","message":"Queued"}`); err != nil {
+			t.Errorf("writing the reply: %v", err)
+		}
 	}))
 	defer srv.Close()
 	cfg := &config.Config{Provider: config.ProviderMailgun, APIKey: "test-key", Domain: "mg.example.com", Region: "us"}

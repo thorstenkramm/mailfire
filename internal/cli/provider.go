@@ -14,6 +14,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/message"
 	"github.com/thorstenkramm/mailfire/internal/mime"
 	"github.com/thorstenkramm/mailfire/internal/smtp"
+	"github.com/thorstenkramm/mailfire/internal/spool"
 )
 
 // provider.go wires the sending providers (Mailgun, SMTP, Gmail; tasks 30
@@ -183,7 +184,7 @@ func deliverGmail(store *gmail.Store, oauth gmail.OAuthClient, timeout time.Dura
 	if err != nil {
 		return nil, &message.APIError{Provider: "gmail", Op: "send message", Kind: message.KindPermanent, Message: err.Error()}, nil
 	}
-	defer f.Close()
+	defer spool.CloseRead(f)
 	resp, err = client.SendReader(ctx, msg.EncodedType, f, s.Size())
 	return resp, err, nil
 }

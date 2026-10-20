@@ -209,7 +209,9 @@ func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) 
 // spool is synced first (it is not synced while sending: only a deferred
 // message must survive a power loss), then renamed into place; when the
 // temp and defer directories are on different file systems, it falls back
-// to an owner-only streamed copy. The on-disk format and the
+// to an owner-only streamed copy and leaves source in place: removing it
+// is its owner's job (spool Abort), and a failure to do so must never
+// discard a safely stored message. The on-disk format and the
 // meta.json-last commit protocol are unchanged, so older entries remain
 // replayable.
 func (s *Store) SaveMessageFile(m Metadata, source string, size int64) (meta Metadata, err error) {
@@ -223,23 +225,12 @@ func (s *Store) SaveMessageFile(m Metadata, source string, size int64) (meta Met
 		if err := renameFile(source, dest); err == nil {
 			return nil
 		}
-		if err := copyFileSync(source, dest); err != nil {
-			return err
-		}
-		// The copy is complete and synced: the message is stored. A
-		// leftover source is only clutter its owner removes (spool Abort),
-		// so failing here would discard a safely stored message.
-		_ = removeFile(source)
-		return nil
+		return copyFileSync(source, dest)
 	})
 }
 
-// renameFile and removeFile are variables so tests can force the
-// cross-file-system copy and a failing cleanup.
-var (
-	renameFile = os.Rename
-	removeFile = os.Remove
-)
+// renameFile is a variable so tests can force the cross-file-system copy.
+var renameFile = os.Rename
 
 // syncFile flushes path to stable storage. It opens the file for writing:
 // Windows cannot flush a read-only handle.
@@ -258,13 +249,12 @@ func copyFileSync(source, dest string) error {
 	if err != nil {
 		return err
 	}
-	defer src.Close()
 	dst, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
 	if err != nil {
-		return err
+		return errors.Join(err, src.Close())
 	}
 	_, copyErr := io.Copy(dst, src)
-	if err := errors.Join(copyErr, dst.Sync(), dst.Close()); err != nil {
+	if err := errors.Join(copyErr, dst.Sync(), dst.Close(), src.Close()); err != nil {
 		return errors.Join(err, os.Remove(dest))
 	}
 	return nil
