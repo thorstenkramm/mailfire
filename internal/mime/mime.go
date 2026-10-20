@@ -1,7 +1,10 @@
 // Package mime builds standards-compliant RFC 5322/MIME messages from the
-// provider-neutral message.Message (task 31). The SMTP provider submits
-// these bytes over DATA; deferral stores them verbatim so a resend replays
-// the identical message, Message-ID included.
+// provider-neutral message.Message (task 31). BuildTo streams the message
+// to a writer — the send paths spool it to a temporary file, so memory
+// use is independent of attachment size (task 34); Build returns the
+// same bytes in memory. The SMTP provider submits the message over DATA;
+// deferral stores it verbatim so a resend replays the identical message,
+// Message-ID included.
 //
 // The builder supplies the headers a submission server expects from the
 // client — Date and Message-ID (SMTP servers do not consistently return an
@@ -18,6 +21,7 @@
 package mime
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
@@ -44,16 +48,33 @@ const ContentType = "message/rfc822"
 // the generated Message-ID (angle brackets included). The file readers in
 // Attachments and Inline are consumed. now supplies the Date header and
 // the Message-ID's timestamp part.
+//
+// Build holds the whole message in memory; the send paths use BuildTo
+// with a spool file instead (task 34).
 func Build(msg *message.Message, now time.Time) (raw []byte, messageID string, err error) {
 	return build(msg, now, false)
 }
 
-// BuildWithBcc is for APIs, such as Gmail's raw-message endpoint, that infer
-// envelope recipients from RFC 5322 headers. Gmail consumes the Bcc list when
-// accepting the raw message and strips it before delivery. SMTP must use Build
-// because it supplies Bcc solely in its envelope.
+// BuildWithBcc is for APIs, such as Gmail's message-send endpoint, that
+// infer envelope recipients from RFC 5322 headers. Gmail consumes the Bcc
+// list when accepting the message and strips it before delivery. SMTP
+// must use Build because it supplies Bcc solely in its envelope.
 func BuildWithBcc(msg *message.Message, now time.Time) (raw []byte, messageID string, err error) {
 	return build(msg, now, true)
+}
+
+// BuildTo is Build streaming to w: attachments and inline files are read,
+// base64-encoded, and written in small pieces, so memory use does not
+// depend on their size. A write or read error aborts the build; the
+// partial output is worthless and the caller discards it (the spool file
+// is removed, nothing is sent or deferred).
+func BuildTo(w io.Writer, msg *message.Message, now time.Time) (messageID string, err error) {
+	return buildTo(w, msg, now, false, nil)
+}
+
+// BuildWithBccTo is BuildWithBcc streaming to w; see BuildTo.
+func BuildWithBccTo(w io.Writer, msg *message.Message, now time.Time) (messageID string, err error) {
+	return buildTo(w, msg, now, true, nil)
 }
 
 func build(msg *message.Message, now time.Time, includeBcc bool) (raw []byte, messageID string, err error) {
@@ -62,55 +83,84 @@ func build(msg *message.Message, now time.Time, includeBcc bool) (raw []byte, me
 
 // buildB is build with a test hook for fixed multipart boundaries.
 func buildB(msg *message.Message, now time.Time, includeBcc bool, bnd *boundaryCursor) (raw []byte, messageID string, err error) {
+	var buf bytes.Buffer
+	id, err := buildTo(&buf, msg, now, includeBcc, bnd)
+	if err != nil {
+		return nil, "", err
+	}
+	return buf.Bytes(), id, nil
+}
+
+func buildTo(w io.Writer, msg *message.Message, now time.Time, includeBcc bool, bnd *boundaryCursor) (messageID string, err error) {
 	if msg == nil {
-		return nil, "", fmt.Errorf("mime: no message")
+		return "", fmt.Errorf("mime: no message")
 	}
 	from, err := formatAddress(msg.From)
 	if err != nil {
-		return nil, "", fmt.Errorf("mime: sender: %w", err)
+		return "", fmt.Errorf("mime: sender: %w", err)
 	}
 	to, err := formatAddressList(msg.To)
 	if err != nil {
-		return nil, "", fmt.Errorf("mime: to: %w", err)
+		return "", fmt.Errorf("mime: to: %w", err)
 	}
 	cc, err := formatAddressList(msg.Cc)
 	if err != nil {
-		return nil, "", fmt.Errorf("mime: cc: %w", err)
+		return "", fmt.Errorf("mime: cc: %w", err)
+	}
+	var bcc string
+	if includeBcc {
+		bcc, err = formatAddressList(msg.Bcc)
+		if err != nil {
+			return "", fmt.Errorf("mime: bcc: %w", err)
+		}
 	}
 	id, err := NewMessageID(msg.From, now)
 	if err != nil {
-		return nil, "", err
+		return "", err
 	}
-	body, err := buildBody(msg, bnd)
-	if err != nil {
-		return nil, "", err
+	// A nil file reader must fail the build before anything is written.
+	for _, files := range [][]message.File{msg.Attachments, msg.Inline} {
+		for _, f := range files {
+			if f.Reader == nil {
+				return "", fmt.Errorf("mime: file %q: no content reader", f.Name)
+			}
+		}
 	}
+	plan := planBody(msg, bnd)
 
-	var buf bytes.Buffer
-	hdr := func(name, value string) {
+	bw := bufio.NewWriter(w)
+	hdr := func(name, value string) error {
 		if value == "" {
-			return
+			return nil
 		}
-		buf.WriteString(foldHeader(name, value))
+		_, err := io.WriteString(bw, foldHeader(name, value))
+		return err
 	}
-	hdr("From", from)
-	hdr("To", to)
-	hdr("Cc", cc)
-	if includeBcc {
-		bcc, err := formatAddressList(msg.Bcc)
-		if err != nil {
-			return nil, "", fmt.Errorf("mime: bcc: %w", err)
+	for _, h := range [][2]string{
+		{"From", from},
+		{"To", to},
+		{"Cc", cc},
+		{"Bcc", bcc},
+		{"Subject", stdmime.QEncoding.Encode("utf-8", msg.Subject)},
+		{"Date", now.Format(time.RFC1123Z)},
+		{"Message-ID", id},
+		{"MIME-Version", "1.0"},
+		{"Content-Type", plan.contentType(msg)},
+	} {
+		if err := hdr(h[0], h[1]); err != nil {
+			return "", fmt.Errorf("mime: writing headers: %w", err)
 		}
-		hdr("Bcc", bcc)
 	}
-	hdr("Subject", stdmime.QEncoding.Encode("utf-8", msg.Subject))
-	hdr("Date", now.Format(time.RFC1123Z))
-	hdr("Message-ID", id)
-	hdr("MIME-Version", "1.0")
-	hdr("Content-Type", body.contentType)
-	buf.WriteString("\r\n")
-	buf.Write(body.data)
-	return buf.Bytes(), id, nil
+	if _, err := io.WriteString(bw, "\r\n"); err != nil {
+		return "", fmt.Errorf("mime: writing headers: %w", err)
+	}
+	if err := plan.write(bw, msg); err != nil {
+		return "", err
+	}
+	if err := bw.Flush(); err != nil {
+		return "", fmt.Errorf("mime: writing message: %w", err)
+	}
+	return id, nil
 }
 
 // NewMessageID generates a Message-ID for a message sent from the address
@@ -154,137 +204,255 @@ func formatAddressList(addrs []string) (string, error) {
 	return strings.Join(out, ", "), nil
 }
 
-// rendered is a MIME body part: a leaf (encoded content with extra
-// headers) or a nested multipart (data holds the whole body, including
-// the closing boundary).
-type rendered struct {
-	contentType string
-	data        []byte
-	header      textproto.MIMEHeader
-}
-
 // boundaryCursor hands out fixed multipart boundaries, innermost first
-// (alternative, related, mixed — the order buildBody creates them); nil
-// or exhausted means the random default. It exists so golden tests can
-// pin the exact bytes (task 34).
+// (alternative, related, mixed — the order the golden tests supply them);
+// nil or exhausted means the random default in the form
+// multipart.NewWriter generates. It exists so golden tests can pin the
+// exact bytes (task 34).
 type boundaryCursor struct{ list []string }
 
 func (c *boundaryCursor) next() string {
-	if c == nil || len(c.list) == 0 {
-		return ""
+	if c != nil && len(c.list) > 0 {
+		b := c.list[0]
+		c.list = c.list[1:]
+		return b
 	}
-	b := c.list[0]
-	c.list = c.list[1:]
-	return b
+	return multipart.NewWriter(io.Discard).Boundary()
 }
 
-// buildBody renders the message body: the innermost content (a single
-// part or multipart/alternative), wrapped in multipart/related for inline
-// files and in multipart/mixed for attachments.
-func buildBody(msg *message.Message, bnd *boundaryCursor) (rendered, error) {
-	leaves, err := contentLeaves(msg)
-	if err != nil {
-		return rendered{}, err
-	}
-	content := leaves[0]
-	if len(leaves) > 1 {
-		if content, err = renderMultipart("alternative", leaves, bnd); err != nil {
-			return rendered{}, err
-		}
-	}
-
-	if len(msg.Inline) > 0 {
-		leaves := []rendered{content}
-		for _, f := range msg.Inline {
-			leaf, err := fileLeaf(f, true)
-			if err != nil {
-				return rendered{}, err
-			}
-			leaves = append(leaves, leaf)
-		}
-		if content, err = renderMultipart("related", leaves, bnd); err != nil {
-			return rendered{}, err
-		}
-	}
-	if len(msg.Attachments) > 0 {
-		leaves := []rendered{content}
-		for _, f := range msg.Attachments {
-			leaf, err := fileLeaf(f, false)
-			if err != nil {
-				return rendered{}, err
-			}
-			leaves = append(leaves, leaf)
-		}
-		if content, err = renderMultipart("mixed", leaves, bnd); err != nil {
-			return rendered{}, err
-		}
-	}
-	return content, nil
+// bodyPlan is the MIME nesting of a message: the content parts (text,
+// html), joined by multipart/alternative when both exist, wrapped in
+// multipart/related for inline files and in multipart/mixed for
+// attachments. The boundaries are decided up front, so the Content-Type
+// headers of the enclosing parts are known before any content streams.
+type bodyPlan struct {
+	alternative, related, mixed bool
+	altB, relB, mixB            string
 }
 
-// contentLeaves returns the text (and, when present, HTML) parts. An
-// attachment-only message gets an empty text part.
-func contentLeaves(msg *message.Message) ([]rendered, error) {
-	var leaves []rendered
+func planBody(msg *message.Message, bnd *boundaryCursor) bodyPlan {
+	p := bodyPlan{
+		alternative: msg.Text != "" && msg.HTML != "",
+		related:     len(msg.Inline) > 0,
+		mixed:       len(msg.Attachments) > 0,
+	}
+	if p.alternative {
+		p.altB = bnd.next()
+	}
+	if p.related {
+		p.relB = bnd.next()
+	}
+	if p.mixed {
+		p.mixB = bnd.next()
+	}
+	return p
+}
+
+// multipartCT renders the Content-Type of a multipart part.
+func multipartCT(subtype, boundary string) string {
+	return fmt.Sprintf("multipart/%s; boundary=%q", subtype, boundary)
+}
+
+// leafContentType is the Content-Type of a non-multipart body.
+func leafContentType(msg *message.Message) string {
 	if msg.Text != "" || msg.HTML == "" {
-		leaf, err := textLeaf("text/plain", msg.Text)
-		if err != nil {
-			return nil, err
-		}
-		leaves = append(leaves, leaf)
+		return `text/plain; charset="utf-8"`
 	}
-	if msg.HTML != "" {
-		leaf, err := textLeaf("text/html", msg.HTML)
-		if err != nil {
-			return nil, err
-		}
-		leaves = append(leaves, leaf)
-	}
-	return leaves, nil
+	return `text/html; charset="utf-8"`
 }
 
-// textLeaf renders a UTF-8 text part with quoted-printable transfer
-// encoding. Line endings are normalized to CRLF first: bodies arrive
-// LF-normalized (except --html-raw, which may carry CRLF), and SMTP DATA
-// requires CRLF.
-func textLeaf(contentType, s string) (rendered, error) {
-	var buf bytes.Buffer
-	w := quotedprintable.NewWriter(&buf)
-	if _, err := w.Write([]byte(toCRLF(s))); err != nil {
-		return rendered{}, fmt.Errorf("mime: encoding %s: %w", contentType, err)
+// contentType is the Content-Type of the message's root body part.
+func (p bodyPlan) contentType(msg *message.Message) string {
+	switch {
+	case p.mixed:
+		return multipartCT("mixed", p.mixB)
+	case p.related:
+		return multipartCT("related", p.relB)
+	case p.alternative:
+		return multipartCT("alternative", p.altB)
 	}
+	return leafContentType(msg)
+}
+
+// write streams the body to w: headers first (by the caller), then the
+// content parts and files, nesting writers outermost-first. Only the
+// 512-byte sniff head of each file is ever held in memory.
+func (p bodyPlan) write(w io.Writer, msg *message.Message) error {
+	out := w
+	var mw, rw, aw *multipart.Writer
+	newMultipart := func(subtype, boundary string) (*multipart.Writer, error) {
+		v := multipart.NewWriter(out)
+		if err := v.SetBoundary(boundary); err != nil {
+			return nil, fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
+		}
+		return v, nil
+	}
+	// nest opens a part of the multipart v for a nested multipart and
+	// directs the output into it. A multipart whose content is the text
+	// leaf does not nest: the leaf becomes a direct part of it.
+	nest := func(v *multipart.Writer, subtype, childCT string) error {
+		pw, err := v.CreatePart(textproto.MIMEHeader{"Content-Type": {childCT}})
+		if err != nil {
+			return fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
+		}
+		out = pw
+		return nil
+	}
+	var err error
+	if p.mixed {
+		if mw, err = newMultipart("mixed", p.mixB); err != nil {
+			return err
+		}
+		switch {
+		case p.related:
+			if err := nest(mw, "mixed", multipartCT("related", p.relB)); err != nil {
+				return err
+			}
+		case p.alternative:
+			if err := nest(mw, "mixed", multipartCT("alternative", p.altB)); err != nil {
+				return err
+			}
+		}
+	}
+	if p.related {
+		if rw, err = newMultipart("related", p.relB); err != nil {
+			return err
+		}
+		if p.alternative {
+			if err := nest(rw, "related", multipartCT("alternative", p.altB)); err != nil {
+				return err
+			}
+		}
+	}
+	if p.alternative {
+		if aw, err = newMultipart("alternative", p.altB); err != nil {
+			return err
+		}
+	}
+
+	// The innermost multipart (or the bare message body) holds the text
+	// parts; a single-leaf body without any multipart writes the
+	// quoted-printable content without a Content-Transfer-Encoding
+	// header, exactly as the buffered builder did. Each multipart closes
+	// as soon as its last part is done: Close finishes the enclosing
+	// part, so a level can no longer be written once a later part of its
+	// parent begins.
+	switch {
+	case aw != nil:
+		if err := writeTextPart(aw, "text/plain", msg.Text); err != nil {
+			return err
+		}
+		if err := writeTextPart(aw, "text/html", msg.HTML); err != nil {
+			return err
+		}
+		if err := closeMultipart("alternative", aw); err != nil {
+			return err
+		}
+	case rw != nil:
+		if err := writeTextPart(rw, leafType(msg), leafBody(msg)); err != nil {
+			return err
+		}
+	case mw != nil:
+		if err := writeTextPart(mw, leafType(msg), leafBody(msg)); err != nil {
+			return err
+		}
+	default:
+		if err := writeTextContent(out, leafType(msg), leafBody(msg)); err != nil {
+			return err
+		}
+	}
+	if rw != nil {
+		for _, f := range msg.Inline {
+			if err := writeFilePart(rw, f, true); err != nil {
+				return err
+			}
+		}
+		if err := closeMultipart("related", rw); err != nil {
+			return err
+		}
+	}
+	if mw != nil {
+		for _, f := range msg.Attachments {
+			if err := writeFilePart(mw, f, false); err != nil {
+				return err
+			}
+		}
+		if err := closeMultipart("mixed", mw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func closeMultipart(subtype string, w *multipart.Writer) error {
 	if err := w.Close(); err != nil {
-		return rendered{}, fmt.Errorf("mime: encoding %s: %w", contentType, err)
+		return fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
 	}
+	return nil
+} // leafType and leafBody pick the single content part of a non-alternative
+// body (an attachment-only message gets an empty text part).
+func leafType(msg *message.Message) string {
+	if msg.Text != "" || msg.HTML == "" {
+		return "text/plain"
+	}
+	return "text/html"
+}
+
+func leafBody(msg *message.Message) string {
+	if msg.Text != "" || msg.HTML == "" {
+		return msg.Text
+	}
+	return msg.HTML
+}
+
+// writeTextPart renders a UTF-8 text part with quoted-printable transfer
+// encoding as one part of a multipart.
+func writeTextPart(w *multipart.Writer, contentType, s string) error {
 	h := textproto.MIMEHeader{}
 	h.Set("Content-Transfer-Encoding", "quoted-printable")
-	return rendered{
-		contentType: contentType + `; charset="utf-8"`,
-		data:        buf.Bytes(),
-		header:      h,
-	}, nil
+	h.Set("Content-Type", contentType+`; charset="utf-8"`)
+	pw, err := w.CreatePart(h)
+	if err != nil {
+		return fmt.Errorf("mime: encoding %s: %w", contentType, err)
+	}
+	return writeTextContent(pw, contentType, s)
 }
 
-// fileLeaf renders an attachment or inline file part: base64 content
+// writeTextContent streams the quoted-printable encoding of s to w. Line
+// endings are normalized to CRLF first: bodies arrive LF-normalized
+// (except --html-raw, which may carry CRLF), and SMTP DATA requires CRLF.
+func writeTextContent(w io.Writer, contentType, s string) error {
+	qw := quotedprintable.NewWriter(w)
+	if _, err := io.WriteString(qw, toCRLF(s)); err != nil {
+		return fmt.Errorf("mime: encoding %s: %w", contentType, err)
+	}
+	if err := qw.Close(); err != nil {
+		return fmt.Errorf("mime: encoding %s: %w", contentType, err)
+	}
+	return nil
+}
+
+// writeFilePart renders an attachment or inline file part: base64 content
 // wrapped at 76 columns, a sniffed Content-Type when the file does not
 // name one, and a Content-Disposition carrying the (RFC 2231-encoded when
 // non-ASCII) filename. Inline parts additionally carry a Content-ID
 // matching the cid: URL the HTML references: the filename is the cid
-// (Decision Q4, internal/cli/images.go).
-func fileLeaf(f message.File, inline bool) (rendered, error) {
-	if f.Reader == nil {
-		return rendered{}, fmt.Errorf("mime: file %q: no content reader", f.Name)
-	}
-	data, err := io.ReadAll(f.Reader)
-	if err != nil {
-		return rendered{}, fmt.Errorf("mime: reading file %q: %w", f.Name, err)
-	}
+// (Decision Q4, internal/cli/images.go). Only the 512-byte sniff head is
+// buffered; the content streams through the encoder.
+func writeFilePart(w *multipart.Writer, f message.File, inline bool) error {
+	src := f.Reader
+	var head []byte
 	ct := f.ContentType
 	if ct == "" {
-		head := data
-		if len(head) > 512 {
-			head = head[:512]
+		sniff := make([]byte, 512)
+		n, err := io.ReadFull(src, sniff)
+		// EOF means empty content and ErrUnexpectedEOF with n > 0 a short
+		// file; anything else (including a reader failing on its first
+		// read) is a real error.
+		if err != nil && err != io.EOF && (err != io.ErrUnexpectedEOF || n == 0) {
+			return fmt.Errorf("mime: reading file %q: %w", f.Name, err)
 		}
+		head = sniff[:n]
 		ct = http.DetectContentType(head)
 	}
 
@@ -298,52 +466,76 @@ func fileLeaf(f message.File, inline bool) (rendered, error) {
 		h.Set("Content-ID", "<"+sanitizeHeaderValue(f.Name)+">")
 	}
 	h.Set("Content-Disposition", disp+"; "+filenameParam(f.Name))
-	return rendered{contentType: ct, data: encodeBase64(data), header: h}, nil
+	h.Set("Content-Type", ct)
+	pw, err := w.CreatePart(h)
+	if err != nil {
+		return fmt.Errorf("mime: file %q: %w", f.Name, err)
+	}
+	lw := &lineWrapper{w: pw}
+	enc := base64.NewEncoder(base64.StdEncoding, lw)
+	if _, err := io.Copy(enc, io.MultiReader(bytes.NewReader(head), src)); err != nil {
+		return fmt.Errorf("mime: reading file %q: %w", f.Name, err)
+	}
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("mime: encoding file %q: %w", f.Name, err)
+	}
+	if err := lw.Close(); err != nil {
+		return fmt.Errorf("mime: encoding file %q: %w", f.Name, err)
+	}
+	return nil
 }
 
-// renderMultipart assembles children into one multipart body.
-func renderMultipart(subtype string, children []rendered, bnd *boundaryCursor) (rendered, error) {
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	if b := bnd.next(); b != "" {
-		if err := w.SetBoundary(b); err != nil {
-			return rendered{}, fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
-		}
-	}
-	for _, c := range children {
-		h := c.header
-		if h == nil {
-			h = textproto.MIMEHeader{}
-		}
-		h.Set("Content-Type", c.contentType)
-		pw, err := w.CreatePart(h)
-		if err != nil {
-			return rendered{}, fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
-		}
-		if _, err := pw.Write(c.data); err != nil {
-			return rendered{}, fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
-		}
-	}
-	if err := w.Close(); err != nil {
-		return rendered{}, fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
-	}
-	return rendered{
-		contentType: fmt.Sprintf("multipart/%s; boundary=%q", subtype, w.Boundary()),
-		data:        buf.Bytes(),
-	}, nil
+// lineWrapper wraps base64 output in the MIME base64 transfer encoding:
+// lines of at most 76 characters, each CRLF-terminated (including the
+// last). No input produces no output.
+type lineWrapper struct {
+	w     io.Writer
+	col   int
+	wrote bool
+	err   error // sticky: base64.Encoder keeps calling after a failure
 }
 
-// encodeBase64 renders data in the MIME base64 transfer encoding: lines
-// of at most 76 characters, CRLF-terminated.
-func encodeBase64(data []byte) []byte {
-	var buf bytes.Buffer
-	for len(data) > 0 {
-		n := min(57, len(data)) // 57 bytes encode to exactly 76 characters
-		buf.WriteString(base64.StdEncoding.EncodeToString(data[:n]))
-		buf.WriteString("\r\n")
-		data = data[n:]
+// crlf is shared so per-line termination never allocates.
+var crlf = []byte("\r\n")
+
+func (l *lineWrapper) Write(p []byte) (int, error) {
+	if l.err != nil {
+		return 0, l.err
 	}
-	return buf.Bytes()
+	written := 0
+	for len(p) > 0 {
+		n := min(76-l.col, len(p))
+		if _, err := l.w.Write(p[:n]); err != nil {
+			l.err = err
+			return written, err
+		}
+		p = p[n:]
+		l.col += n
+		written += n
+		l.wrote = true
+		if l.col == 76 {
+			if _, err := l.w.Write(crlf); err != nil {
+				l.err = err
+				return written, err
+			}
+			l.col = 0
+		}
+	}
+	return written, nil
+}
+
+// Close terminates a partial last line with CRLF. A line that filled
+// exactly was already terminated; empty input produced no output.
+func (l *lineWrapper) Close() error {
+	if l.err != nil {
+		return l.err
+	}
+	if l.wrote && l.col > 0 {
+		if _, err := l.w.Write(crlf); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // toCRLF normalizes all line endings to CRLF.

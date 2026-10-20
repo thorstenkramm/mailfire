@@ -3,6 +3,7 @@ package mime
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	stdmime "mime"
@@ -10,6 +11,7 @@ import (
 	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +189,65 @@ func TestBuildAttachmentOnly(t *testing.T) {
 	}
 	if _, parts := parse(t, raw); len(parts) != 2 || parts[0].mediaType != "text/plain" {
 		t.Fatalf("parts = %+v", parts)
+	}
+}
+
+// zeros is an infinite zero reader: a large attachment without the
+// allocation.
+type zeros struct{}
+
+func (zeros) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+type failAfter struct {
+	left int
+}
+
+func (r *failAfter) Read(p []byte) (int, error) {
+	if r.left == 0 {
+		return 0, errors.New("injected read failure")
+	}
+	n := min(len(p), r.left)
+	clear(p[:n])
+	r.left -= n
+	return n, nil
+}
+
+// TestBuildToStreamsAttachments guards the memory contract of task 34:
+// encoding a large attachment must not scale with its size. TotalAlloc is
+// exact (not GC-timing dependent), so this cannot regress silently.
+func TestBuildToStreamsAttachments(t *testing.T) {
+	const size = 20 << 20
+	msg := &message.Message{
+		From: "ops@example.com", To: []string{"to@example.com"}, Subject: "s",
+		Text: "text",
+		Attachments: []message.File{{Name: "big.bin", ContentType: "application/octet-stream",
+			Reader: io.LimitReader(zeros{}, size)}},
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := BuildTo(io.Discard, msg, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+		t.Errorf("TotalAlloc grew by %d bytes encoding a %d-byte attachment", delta, size)
+	}
+}
+
+func TestBuildToReportsAttachmentReadError(t *testing.T) {
+	src := &failAfter{left: 1024}
+	msg := &message.Message{
+		From: "ops@example.com", To: []string{"to@example.com"}, Text: "text",
+		Attachments: []message.File{{Name: "broken.bin", ContentType: "application/octet-stream",
+			Reader: src}},
+	}
+	var dst bytes.Buffer
+	if _, err := BuildTo(&dst, msg, time.Now()); err == nil || !strings.Contains(err.Error(), `reading file "broken.bin": injected read failure`) {
+		t.Fatalf("BuildTo error = %v", err)
+	}
+	if src.left != 0 {
+		t.Fatalf("reader has %d bytes left; test did not reach the injected failure", src.left)
 	}
 }
 
