@@ -214,38 +214,39 @@ func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) 
 // discard a safely stored message. The on-disk format and the
 // meta.json-last commit protocol are unchanged, so older entries remain
 // replayable.
-func (s *Store) SaveMessageFile(m Metadata, source string, size int64) (meta Metadata, err error) {
-	if source == "" || size <= 0 {
+func (s *Store) SaveMessageFile(m Metadata, src Spool) (meta Metadata, err error) {
+	if src == nil || src.Path() == "" || src.Size() <= 0 {
 		return Metadata{}, errors.New("deferral: no encoded request to store")
 	}
-	return s.saveMessage(m, size, func(dest string) error {
-		if err := syncFile(source); err != nil {
+	return s.saveMessage(m, src.Size(), func(dest string) error {
+		if err := src.Sync(); err != nil {
 			return err
 		}
-		if err := renameFile(source, dest); err == nil {
+		if err := renameFile(src.Path(), dest); err == nil {
 			return nil
 		}
-		return copyFileSync(source, dest)
+		return copyFileSync(src, dest)
 	})
+}
+
+// Spool is a completed message file SaveMessageFile adopts (internal/spool
+// implements it). Its Sync and Open go through the spool's own handles, so
+// an interrupt that removes the spool meanwhile can close them first —
+// Windows cannot delete an open file.
+type Spool interface {
+	Path() string
+	Size() int64
+	Sync() error
+	Open() (*os.File, error)
 }
 
 // renameFile is a variable so tests can force the cross-file-system copy.
 var renameFile = os.Rename
 
-// syncFile flushes path to stable storage. It opens the file for writing:
-// Windows cannot flush a read-only handle.
-func syncFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if err != nil {
-		return err
-	}
-	return errors.Join(f.Sync(), f.Close())
-}
-
-// copyFileSync copies source to the new owner-only file dest and syncs it;
-// a failed copy removes the partial dest.
-func copyFileSync(source, dest string) error {
-	src, err := os.Open(source)
+// copyFileSync copies the spool to the new owner-only file dest and syncs
+// it; a failed copy removes the partial dest.
+func copyFileSync(source Spool, dest string) error {
+	src, err := source.Open()
 	if err != nil {
 		return err
 	}

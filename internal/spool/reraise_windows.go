@@ -10,6 +10,10 @@ import (
 // and shutdown to SIGTERM.
 var handledSignals = []os.Signal{os.Interrupt, syscall.SIGTERM}
 
+// holdSIGPIPE has nothing to hold on Windows: a write to a closed pipe
+// returns an error there and never ends the process.
+func holdSIGPIPE() (restore func()) { return func() {} }
+
 // exitControlC is STATUS_CONTROL_C_EXIT, the status Windows gives a console
 // process ended by Ctrl+C (or a console close) when it does not handle it.
 const exitControlC uint32 = 0xC000013A

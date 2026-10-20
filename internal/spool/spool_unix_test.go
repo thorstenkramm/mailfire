@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/signals"
 )
 
 // Real signal delivery: SIGTERM (kill) and SIGHUP (closed terminal,
@@ -21,6 +23,12 @@ func TestCleanupOnSignalRemovesLiveSpools(t *testing.T) {
 	t.Cleanup(func() { afterCleanup = reraise })
 
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP} {
+		if signals.IgnoredAtStart(sig) {
+			// Under nohup (or a runner ignoring SIGHUP) the cleanup rightly
+			// leaves the signal ignored; sending it would test nothing.
+			t.Logf("%v inherited as ignored; skipped", sig)
+			continue
+		}
 		s, err := Create()
 		if err != nil {
 			t.Fatal(err)
@@ -51,7 +59,9 @@ const ignoredChildEnv = "MAILFIRE_SPOOL_IGNORED_CHILD"
 
 // A signal the process inherits as ignored ("mailfire send … &" in a
 // script, nohup) must stay ignored: the send goes on, the spool is kept.
-// The child runs with SIGINT ignored by the shell, as for a background job.
+// The child runs with SIGINT ignored by the shell, as for a background job,
+// and first notifies and stops SIGINT as "mailfire run" does for its job —
+// which makes signal.Ignored forget the inherited ignore.
 func TestInheritedIgnoredSignalStaysIgnored(t *testing.T) {
 	if os.Getenv(ignoredChildEnv) == "1" {
 		ignoredChild()
@@ -76,6 +86,9 @@ func ignoredChild() {
 	if !signal.Ignored(syscall.SIGINT) {
 		fail("SIGINT is not ignored in the child; the test setup is broken")
 	}
+	jobSignals := make(chan os.Signal, 1) // as "mailfire run" forwards to its job
+	signal.Notify(jobSignals, syscall.SIGINT)
+	signal.Stop(jobSignals)
 	s, err := Create()
 	if err != nil {
 		fail("Create: %v", err)

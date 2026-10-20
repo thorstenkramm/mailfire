@@ -2,6 +2,7 @@ package deferral
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -137,7 +138,7 @@ func TestSaveMessageFileAdoptsSpool(t *testing.T) {
 		t.Fatal(err)
 	}
 	source := tmp.Name()
-	meta, err := s.SaveMessageFile(Metadata{To: []string{"a@example.com"}, ContentType: testContentType}, source, int64(len(body)))
+	meta, err := s.SaveMessageFile(Metadata{To: []string{"a@example.com"}, ContentType: testContentType}, fileSpool{source, int64(len(body))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,6 +152,23 @@ func TestSaveMessageFileAdoptsSpool(t *testing.T) {
 	if string(got) != body || meta.Size != int64(len(body)) {
 		t.Fatalf("body = %q, size = %d", got, meta.Size)
 	}
+}
+
+// fileSpool is a plain file standing in for a send spool (spool.File).
+type fileSpool struct {
+	path string
+	size int64
+}
+
+func (f fileSpool) Path() string            { return f.path }
+func (f fileSpool) Size() int64             { return f.size }
+func (f fileSpool) Open() (*os.File, error) { return os.Open(f.path) }
+func (f fileSpool) Sync() error {
+	h, err := os.OpenFile(f.path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	return errors.Join(h.Sync(), h.Close())
 }
 
 // writeSpool writes body to a fresh file standing in for a send spool.
@@ -173,7 +191,7 @@ func TestSaveMessageFileCopiesAcrossFileSystems(t *testing.T) {
 
 	s := newStore(t)
 	source := writeSpool(t, body)
-	meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, source, int64(len(body)))
+	meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, fileSpool{source, int64(len(body))})
 	if err != nil {
 		t.Fatalf("SaveMessageFile: %v", err)
 	}
@@ -217,7 +235,7 @@ func TestSaveMessageFileLargeBodyBoundedAllocation(t *testing.T) {
 			var before, after runtime.MemStats
 			runtime.GC()
 			runtime.ReadMemStats(&before)
-			meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, tmp.Name(), size)
+			meta, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, fileSpool{tmp.Name(), size})
 			if err != nil {
 				t.Fatal(err)
 			}

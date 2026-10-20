@@ -682,7 +682,7 @@ func deferMessage(cfg *config.Config, msg *mailgun.Message, sendErr error, logge
 		logDrop(logger, meta, false, time.Now(), stderr)
 	}
 	store.OnExpire = expireReporter("defer", logger, time.Now, stderr)
-	meta, err := store.SaveMessageFile(deferMetadata(cfg, msg, sendErr, n), msg.Spool.Path(), msg.Spool.Size())
+	meta, err := store.SaveMessageFile(deferMetadata(cfg, msg, sendErr, n), msg.Spool)
 	if err != nil {
 		if meta.ID == "" {
 			printfOutput(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)

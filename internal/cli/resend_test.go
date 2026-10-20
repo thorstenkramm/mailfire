@@ -18,6 +18,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
+	"github.com/thorstenkramm/mailfire/internal/spool"
 	"github.com/thorstenkramm/mailfire/internal/testutil"
 )
 
@@ -67,21 +68,20 @@ func (resendZeroStream) Read(p []byte) (int, error) { clear(p); return len(p), n
 
 func TestResendLargeStoredRequestBoundedAllocation(t *testing.T) {
 	const size = 20 << 20
-	tmp, err := os.CreateTemp(t.TempDir(), "request-*.spool")
+	isolateTemp(t)
+	sp, err := spool.Compose(func(w io.Writer) error {
+		_, err := io.CopyN(w, resendZeroStream{}, size)
+		return err
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := io.CopyN(tmp, resendZeroStream{}, size); err != nil {
-		t.Fatal(err)
-	}
-	if err := tmp.Close(); err != nil {
-		t.Fatal(err)
-	}
+	defer testutil.Check(t, sp.Abort)
 	store := &deferral.Store{Dir: t.TempDir()}
 	meta, err := store.SaveMessageFile(deferral.Metadata{
 		To: []string{"to@example.com"}, Subject: "large", ContentType: "multipart/form-data; boundary=x",
 		Provider: config.ProviderMailgun,
-	}, tmp.Name(), size)
+	}, sp)
 	if err != nil {
 		t.Fatal(err)
 	}

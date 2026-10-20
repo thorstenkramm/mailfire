@@ -14,15 +14,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 )
 
 // Payload is a completed transport payload held on disk (internal/spool
 // implements it). Providers set it on the Message; the caller removes it
 // after the attempt (Abort) or adopts the file into the deferral store
-// (Path, Size).
+// (Path, Size, Sync, Open — see deferral.Spool).
 type Payload interface {
 	Path() string
 	Size() int64
+	Sync() error
+	Open() (*os.File, error)
 	CopyTo(w io.Writer) error
 	Abort() error
 }

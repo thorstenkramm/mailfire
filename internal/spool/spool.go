@@ -20,6 +20,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/thorstenkramm/mailfire/internal/signals"
 )
 
 const (
@@ -142,12 +144,30 @@ func (s *File) Abort() error {
 // Open opens a completed spool at its beginning. The handle is registered,
 // so Abort and the signal cleanup can close it before removing the file.
 func (s *File) Open() (*os.File, error) {
+	return s.open(os.O_RDONLY)
+}
+
+// Sync flushes a completed spool to stable storage, through a registered
+// handle like Open (Windows can flush only a handle open for writing).
+// Sending does not sync; the deferral store does before adopting a spool.
+func (s *File) Sync() error {
+	f, err := s.open(os.O_RDWR)
+	if err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return errors.Join(fmt.Errorf("spool: sync: %w", err), f.Close())
+	}
+	return f.Close()
+}
+
+func (s *File) open(flag int) (*os.File, error) {
 	if s == nil || s.f != nil {
 		return nil, errors.New("spool: file is not complete")
 	}
 	liveMu.Lock()
 	defer liveMu.Unlock()
-	f, err := os.Open(s.path)
+	f, err := os.OpenFile(s.path, flag, 0)
 	if err != nil {
 		return nil, fmt.Errorf("spool: open: %w", err)
 	}
@@ -271,23 +291,30 @@ var afterCleanup = reraise
 // process, so without it an interrupted send would leave a copy of the
 // message in the temporary directory.
 //
-// A signal the process ignores (inherited, as for "mailfire &" in a script
-// or under nohup) stays ignored: installing a handler would make it end
-// the send. The returned stop restores the default handling; call it once
-// no spool exists any more.
+// A signal the process inherited as ignored ("mailfire send … &" in a
+// script, nohup) stays ignored: installing a handler would make it end the
+// send. That is judged by internal/signals, which recorded it at start:
+// signal.Ignored forgets it once "mailfire run" notified the signal for
+// its job.
+//
+// Until stop, a write to a closed stdout or stderr pipe also returns an
+// error instead of ending the process (holdSIGPIPE), so a send that is
+// still printing removes or adopts its spool first. The returned stop
+// restores the default handling of all of them; call it once no spool
+// exists any more.
 func CleanupOnSignal() (stop func()) {
-	var sigs []os.Signal
-	for _, sig := range handledSignals {
-		if !signal.Ignored(sig) {
-			sigs = append(sigs, sig)
-		}
-	}
+	restorePipe := holdSIGPIPE()
+	sigs := signals.NotIgnored(handledSignals...)
 	if len(sigs) == 0 {
-		return func() {}
+		return restorePipe
 	}
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, sigs...)
-	return watch(ch, func() { signal.Stop(ch) })
+	stopWatch := watch(ch, func() { signal.Stop(ch) })
+	return func() {
+		stopWatch()
+		restorePipe()
+	}
 }
 
 // watch is CleanupOnSignal's handler, separate from the OS signal source so

@@ -16,6 +16,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/jobrun"
 	"github.com/thorstenkramm/mailfire/internal/locale"
 	"github.com/thorstenkramm/mailfire/internal/render"
+	"github.com/thorstenkramm/mailfire/internal/signals"
 )
 
 // run.go implements "mailfire run" (task 33): run a command, capture its
@@ -477,14 +478,20 @@ func runJobProcess(opts *RunOptions, rc *runContext, stdout, stderr io.Writer) *
 }
 
 // signalSource returns the interrupt channel for the job: the injected
-// test channel, or SIGINT/SIGTERM notified on a fresh channel. The
+// test channel, or SIGINT/SIGTERM notified on a fresh channel. Signals
+// mailfire inherited as ignored (a background job in a script) are not
+// notified: they stay ignored and are not forwarded to the job. The
 // returned stop function releases the notification.
 func (rc *runContext) signalSource() (<-chan os.Signal, func()) {
 	if rc.signals != nil {
 		return rc.signals, func() {}
 	}
 	ch := make(chan os.Signal, 2)
-	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	sigs := signals.NotIgnored(os.Interrupt, syscall.SIGTERM)
+	if len(sigs) == 0 {
+		return ch, func() {} // Notify without signals would relay every signal
+	}
+	signal.Notify(ch, sigs...)
 	return ch, func() { signal.Stop(ch) }
 }
 

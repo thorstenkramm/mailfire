@@ -12,7 +12,8 @@ import (
 // extended while being read (a log being rotated, a backup still being
 // written) would otherwise be sent incomplete or inconsistent without any
 // error. The error surfaces while the message is composed, so it is
-// permanent: nothing is sent or deferred (task 34).
+// permanent: nothing is sent or deferred (task 34). Only the size is
+// compared: a file rewritten in place at the same length goes unnoticed.
 //
 // sizedFile deliberately has no WriteTo or ReadFrom: io.Copy must go
 // through Read, or it would bypass the check (*os.File has a WriteTo).
