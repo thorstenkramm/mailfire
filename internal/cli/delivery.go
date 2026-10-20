@@ -19,6 +19,12 @@ type preparedDelivery struct {
 }
 
 func prepareDelivery(cfg *config.Config, opts *SendOptions, rc *runContext) (*preparedDelivery, error) {
+	// A configured sending.temp_dir must work before anything else is
+	// prepared: an unusable one is a configuration error, not a failed
+	// send midway.
+	if err := cfg.CheckTempDir(); err != nil {
+		return nil, err
+	}
 	p := &preparedDelivery{cfg: *cfg, opts: *opts}
 	var err error
 	p.provider, err = prepareProvider(&p.cfg, &p.opts, rc)

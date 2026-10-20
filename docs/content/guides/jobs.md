@@ -98,6 +98,8 @@ well below provider limits. `--no-attach-logs` disables the attachments.
 Output is captured safely however much the job prints: at most 10 KiB per stream is held in memory, the rest goes to an
 owner-only temporary file that never grows beyond the cap and is removed when Mailfire exits (on Linux and macOS it
 has no directory entry at all, so not even a crash leaves it behind).
+The `[sending] temp_dir` setting controls where these files are created; see
+[Temporary files](../reference/configuration.md#temporary-files).
 
 `--tee` also copies the job's output live to Mailfire's stdout and stderr, for example to keep it in the systemd
 journal. With `--json`, both streams go to stderr, so stdout carries only the [JSON document](../reference/json-output.md#run).

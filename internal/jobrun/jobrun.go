@@ -58,6 +58,9 @@ type Spec struct {
 	// KillGrace is the wait between SIGTERM and SIGKILL; zero:
 	// DefaultKillGrace.
 	KillGrace time.Duration
+	// TempDir is the directory for spilled capture files; empty: the
+	// system temporary directory.
+	TempDir string
 }
 
 // Stream is one captured output stream of the job.
@@ -184,7 +187,7 @@ func Run(spec *Spec) (*Result, error) {
 		grace = DefaultKillGrace
 	}
 
-	out, errCap := newCapture("stdout", cap), newCapture("stderr", cap)
+	out, errCap := newCapture("stdout", cap, spec.TempDir), newCapture("stderr", cap, spec.TempDir)
 	res := &Result{Start: time.Now(), stdout: out, stderr: errCap}
 	fail := func(err error) (*Result, error) {
 		res.End, res.StartErr, res.ExitCode = time.Now(), err, 126

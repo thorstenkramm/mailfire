@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -217,7 +218,7 @@ func TestRunDrainsOutputAfterExit(t *testing.T) {
 }
 
 func TestCaptureHugeTailLineIsBounded(t *testing.T) {
-	c := newCapture("stdout", DefaultLogCap)
+	c := newCapture("stdout", DefaultLogCap, "")
 	defer closeTest(t, c)
 	if _, err := c.Write(bytes.Repeat([]byte("x"), DefaultLogCap)); err != nil {
 		t.Fatal(err)
@@ -393,6 +394,20 @@ func TestRunSpillCleansUp(t *testing.T) {
 	}
 }
 
+func TestRunSpillUsesConfiguredDirectory(t *testing.T) {
+	dir := t.TempDir()
+	res := runHelper(t, &Spec{TempDir: dir}, "big", "1000") // > 10 KiB
+	if !res.Stdout().cap.Spilled() {
+		t.Fatal("output must spill")
+	}
+	if got := filepath.Dir(res.Stdout().cap.file.Name()); got != dir {
+		t.Errorf("capture directory = %q, want %q", got, dir)
+	}
+	if err := res.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func tempNames(t *testing.T, dir string) map[string]bool {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
@@ -422,7 +437,7 @@ func TestCaptureRingExactBoundaries(t *testing.T) {
 		{"huge single write", 100, 1000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			c := newCapture("stdout", tc.cap)
+			c := newCapture("stdout", tc.cap, "")
 			c.mem = 8 // force spilling below the 10 KiB default
 			data := bytes.Repeat([]byte("x"), tc.write)
 			if _, err := c.Write(data); err != nil {
@@ -466,7 +481,7 @@ func TestCaptureRingExactBoundaries(t *testing.T) {
 // An unreadable capture file must shorten the content, not fail the reader:
 // the report (and its other parts) is still sent, and the error is recorded.
 func TestContentReaderToleratesReadErrors(t *testing.T) {
-	c := newCapture("stdout", 100)
+	c := newCapture("stdout", 100, "")
 	c.mem = 8 // force spilling
 	if _, err := c.Write(bytes.Repeat([]byte("x"), 300)); err != nil {
 		t.Fatal(err)
@@ -493,7 +508,7 @@ func TestContentReaderToleratesReadErrors(t *testing.T) {
 // A capture file truncated underneath (disk full, another process) ends
 // the content early and is recorded, not passed off as complete.
 func TestContentReaderRecordsTruncation(t *testing.T) {
-	c := newCapture("stdout", 100)
+	c := newCapture("stdout", 100, "")
 	c.mem = 8 // force spilling
 	if _, err := c.Write(bytes.Repeat([]byte("x"), 300)); err != nil {
 		t.Fatal(err)
@@ -534,7 +549,7 @@ func (f truncatedCaptureFile) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func TestCaptureTailInMemory(t *testing.T) {
-	c := newCapture("stdout", DefaultLogCap)
+	c := newCapture("stdout", DefaultLogCap, "")
 	if _, err := c.Write([]byte("one\ntwo\nthree\n")); err != nil {
 		t.Fatal(err)
 	}
@@ -555,7 +570,7 @@ func TestCaptureTailInMemory(t *testing.T) {
 		}
 	}
 	// No trailing newline: the last chunk is a line.
-	c2 := newCapture("stdout", DefaultLogCap)
+	c2 := newCapture("stdout", DefaultLogCap, "")
 	if _, err := c2.Write([]byte("one\ntwo")); err != nil {
 		t.Fatal(err)
 	}
@@ -565,7 +580,7 @@ func TestCaptureTailInMemory(t *testing.T) {
 }
 
 func TestCaptureTailSpilled(t *testing.T) {
-	c := newCapture("stdout", 64*1024)
+	c := newCapture("stdout", 64*1024, "")
 	defer closeTest(t, c)
 	var lines []string
 	for i := 0; i < 2000; i++ {

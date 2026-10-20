@@ -1,6 +1,8 @@
 // Package spool owns temporary, owner-only files used to compose transport
 // payloads before a provider is contacted. A completed File can be opened
 // repeatedly for sending and deferral without retaining its contents in memory.
+// Spools live in the system temporary directory unless SetDir points
+// elsewhere (sending.temp_dir).
 //
 // Spools must not outlive the send attempt: the caller removes them (Abort)
 // or adopts them into the deferral store. CleanupOnSignal covers the
@@ -43,14 +45,41 @@ type File struct {
 
 // sweepOnce limits the stale-spool sweep to the first spool of a process:
 // a sweep reads the whole (possibly large, shared) temporary directory.
-var sweepOnce sync.Once
+var (
+	dirMu     sync.Mutex
+	dirSet    string // SetDir's override; "": os.TempDir()
+	sweepOnce sync.Once
+)
 
-// Create creates an owner-only spool in the system temporary directory.
+// SetDir sets the directory Create uses; "" restores the system temporary
+// directory. The send pipeline sets it from sending.temp_dir. It is
+// process-wide and not synchronized with an ongoing Create: set it before
+// sending.
+func SetDir(dir string) {
+	dirMu.Lock()
+	defer dirMu.Unlock()
+	dirSet = dir
+}
+
+// spoolDir returns the directory for new spools and sweeps the first one
+// used by this process of stale spools.
+func spoolDir() string {
+	dirMu.Lock()
+	defer dirMu.Unlock()
+	dir := dirSet
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	sweepOnce.Do(func() { removeStale(dir, time.Now()) })
+	return dir
+}
+
+// Create creates an owner-only spool in the directory set with SetDir
+// (default: the system temporary directory).
 // The file is created and registered under the registry lock, so a signal
 // handler cleaning up concurrently either sees it or runs before it exists.
 func Create() (*File, error) {
-	dir := os.TempDir()
-	sweepOnce.Do(func() { removeStale(dir, time.Now()) })
+	dir := spoolDir()
 	liveMu.Lock()
 	defer liveMu.Unlock()
 	f, err := os.CreateTemp(dir, namePrefix+"*"+nameSuffix)

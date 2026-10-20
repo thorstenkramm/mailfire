@@ -637,6 +637,18 @@ Mutually exclusive with a nonempty
 .BR template .
 Either template flag overrides this setting.
 A leading ~ is expanded; relative paths use the current working directory.
+.TP
+.B temp_dir
+String, optional. Directory for temporary message files and spilled
+.B mailfire run
+job logs. Default: the system temporary directory ($TMPDIR or /tmp on Unix;
+%TMP% or %TEMP% on Windows). A leading ~ is expanded; relative paths use the
+current working directory. A missing directory is created owner-only only when
+its parent exists; Mailfire never creates a missing directory tree. When
+sending large attachments frequently, use a disk-backed directory rather than
+a RAM disk or tmpfs. See
+.UR https://mailfire.system42.io/reference/configuration/#temporary-files
+.UE .
 .SS [smtp]
 Used only when
 .B [sending].provider
@@ -1170,6 +1182,8 @@ normal use.
 .B MAILFIRE_SENDING_TEMPLATE
 .TQ
 .B MAILFIRE_SENDING_TEMPLATE_FILE
+.TQ
+.B MAILFIRE_SENDING_TEMP_DIR
 The
 .B [sending]
 settings.

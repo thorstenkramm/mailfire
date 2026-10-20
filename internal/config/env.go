@@ -45,6 +45,7 @@ var envBindings = []envBinding{
 	{"MAILFIRE_SMTP_PASSWORD", "smtp.password", func(r *rawConfig, v string) { r.SMTP.Password = v }},
 	{"MAILFIRE_SMTP_TIMEOUT", "smtp.timeout", func(r *rawConfig, v string) { r.SMTP.Timeout = &v }},
 	{"MAILFIRE_SENDING_FROM", "sending.from", func(r *rawConfig, v string) { r.Sending.From = v }},
+	{"MAILFIRE_SENDING_TEMP_DIR", "sending.temp_dir", func(r *rawConfig, v string) { r.Sending.TempDir = v }},
 	{"MAILFIRE_LOGGING_LOGFILE", "logging.logfile", func(r *rawConfig, v string) { r.Logging.Logfile = v }},
 	{"MAILFIRE_LOGGING_LOGLEVEL", "logging.loglevel", func(r *rawConfig, v string) { r.Logging.Level = v }},
 	{"MAILFIRE_LOGGING_MAX_SIZE", "logging.max_size", func(r *rawConfig, v string) { r.Logging.MaxSize = v }},

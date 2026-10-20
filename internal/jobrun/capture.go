@@ -37,6 +37,7 @@ type capture struct {
 	label      string // "stdout" or "stderr", for the temporary file name
 	cap        int64  // log cap: head cap/2 + ring cap/2
 	mem        int64  // in-memory limit, memLimit; tests lower it
+	dir        string // temporary-file directory; "": os.TempDir()
 	buf        []byte // in-memory content while len ≤ mem
 	high       int64  // buffer high-water mark, for tests
 	file       captureFile
@@ -59,8 +60,8 @@ type captureFile interface {
 	Stat() (os.FileInfo, error)
 }
 
-func newCapture(label string, cap int64) *capture {
-	return &capture{label: label, cap: cap, mem: min(int64(memLimit), cap),
+func newCapture(label string, cap int64, dir string) *capture {
+	return &capture{label: label, cap: cap, mem: min(int64(memLimit), cap), dir: dir,
 		createTemp: func(dir, pattern string) (captureFile, error) { return os.CreateTemp(dir, pattern) }}
 }
 
@@ -127,9 +128,10 @@ func (c *capture) setErr(err error) {
 
 // spill moves the in-memory buffer into a fresh temporary file and
 // switches to file capture. The file is owner-only and, on Unix, unlinked
-// immediately.
+// immediately. It is created in the capture's directory (Spec.TempDir;
+// default: the system temporary directory).
 func (c *capture) spill() error {
-	f, err := c.createTemp("", "mailfire-run-*."+c.label+".log")
+	f, err := c.createTemp(c.dir, "mailfire-run-*."+c.label+".log")
 	if err != nil {
 		return fmt.Errorf("creating temporary file for %s: %w", c.label, err)
 	}

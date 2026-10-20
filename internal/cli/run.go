@@ -301,6 +301,15 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		printfOutput(stderr, "mailfire: %v\n", err)
 		return jsonFail(stdout, opts.JSON, "run", errConfig, err, ExitConfig)
 	}
+	if opts.Preview != "" {
+		// A preview still runs the job, whose captured output can spill.
+		// Unlike a real report it does not prepare delivery, so validate
+		// the configured directory here before the job starts.
+		if err := cfg.CheckTempDir(); err != nil {
+			printfOutput(stderr, "mailfire: %v\n", err)
+			return jsonFail(stdout, opts.JSON, "run", errConfig, err, ExitConfig)
+		}
+	}
 	res := &runResult{sendResult: sendResult{envelope: envelope{Command: "run"}, TestMode: opts.Test}}
 	res.Provider = cfg.Provider
 	if err := preflightRun(cfg, &opts); err != nil {
@@ -331,7 +340,7 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		return jsonFail(stdout, opts.JSON, "run", errConfig, err, ExitConfig)
 	}
 
-	job := runJobProcess(&opts, rc, stdout, stderr)
+	job := runJobProcess(cfg.TempDir, &opts, rc, stdout, stderr)
 	defer closeReported(job, stderr)
 	captureErrs := reportCaptureErrors(job, [2]error{}, stderr)
 
@@ -446,8 +455,9 @@ func runLocale(opts *RunOptions, cfg *config.Config) string {
 }
 
 // runJobProcess starts and waits for the job, wiring the signal source
-// and the --tee copies.
-func runJobProcess(opts *RunOptions, rc *runContext, stdout, stderr io.Writer) *jobrun.Result {
+// and the --tee copies. tempDir (sending.temp_dir) holds spilled capture
+// files; empty: the system temporary directory.
+func runJobProcess(tempDir string, opts *RunOptions, rc *runContext, stdout, stderr io.Writer) *jobrun.Result {
 	signals, stop := rc.signalSource()
 	defer stop()
 
@@ -468,6 +478,7 @@ func runJobProcess(opts *RunOptions, rc *runContext, stdout, stderr io.Writer) *
 		Signals:    signals,
 		TeeOut:     teeOut,
 		TeeErr:     teeErr,
+		TempDir:    tempDir,
 	})
 	if err != nil {
 		// An internal failure; the result reports it as a job that

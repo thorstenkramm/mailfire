@@ -47,6 +47,7 @@ func TestEnvOverlayPrecedence(t *testing.T) {
 	t.Setenv("MAILFIRE_MAILGUN_TIMEOUT", "42s")
 	t.Setenv("MAILFIRE_SENDING_DOMAIN", "env.example.com")
 	t.Setenv("MAILFIRE_SENDING_FROM", "Env Bot <env@example.com>")
+	t.Setenv("MAILFIRE_SENDING_TEMP_DIR", "env-temp")
 	t.Setenv("MAILFIRE_LOGGING_LOGFILE", "env.log")
 	t.Setenv("MAILFIRE_LOGGING_LOGLEVEL", "ERROR")
 	t.Setenv("MAILFIRE_LOGGING_MAX_SIZE", "7M")
@@ -74,6 +75,9 @@ func TestEnvOverlayPrecedence(t *testing.T) {
 	if cfg.From != "Env Bot <env@example.com>" {
 		t.Errorf("From = %q", cfg.From)
 	}
+	if cfg.TempDir != "env-temp" {
+		t.Errorf("TempDir = %q, want env-temp", cfg.TempDir)
+	}
 	if cfg.Logfile != "env.log" {
 		t.Errorf("Logfile = %q, want env.log", cfg.Logfile)
 	}
@@ -89,8 +93,8 @@ func TestEnvOverlayPrecedence(t *testing.T) {
 	if cfg.DeferDir != "env-deferred" {
 		t.Errorf("DeferDir = %q, want env-deferred", cfg.DeferDir)
 	}
-	if cfg.DeferMaxSize != 2<<30 {
-		t.Errorf("DeferMaxSize = %d, want %d", cfg.DeferMaxSize, 2<<30)
+	if cfg.DeferMaxSize != int64(2)<<30 {
+		t.Errorf("DeferMaxSize = %d, want %d", cfg.DeferMaxSize, int64(2)<<30)
 	}
 	if cfg.ResendCooldown != time.Hour {
 		t.Errorf("ResendCooldown = %v, want 1h", cfg.ResendCooldown)
@@ -107,6 +111,7 @@ func TestEnvOverlayPrecedence(t *testing.T) {
 		"mailgun.timeout":       "MAILFIRE_MAILGUN_TIMEOUT",
 		"sending.domain":        "MAILFIRE_SENDING_DOMAIN",
 		"sending.from":          "MAILFIRE_SENDING_FROM",
+		"sending.temp_dir":      "MAILFIRE_SENDING_TEMP_DIR",
 		"logging.logfile":       "MAILFIRE_LOGGING_LOGFILE",
 		"logging.loglevel":      "MAILFIRE_LOGGING_LOGLEVEL",
 		"logging.max_size":      "MAILFIRE_LOGGING_MAX_SIZE",
@@ -122,8 +127,8 @@ func TestEnvOverlayPrecedence(t *testing.T) {
 			t.Errorf("EnvSource[%q] = %q, want %q", key, cfg.EnvSource[key], env)
 		}
 	}
-	if len(cfg.EnvSource) != 15 {
-		t.Errorf("EnvSource has %d entries, want 15: %v", len(cfg.EnvSource), cfg.EnvSource)
+	if len(cfg.EnvSource) != 16 {
+		t.Errorf("EnvSource has %d entries, want 16: %v", len(cfg.EnvSource), cfg.EnvSource)
 	}
 }
 

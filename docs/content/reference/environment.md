@@ -41,6 +41,7 @@ TOML quoting.
 | `MAILFIRE_SENDING_FROM` | `[sending] from` | Default sender, such as `My Name <user@example.com>`. |
 | `MAILFIRE_SENDING_TEMPLATE` | `[sending] template` | `card`, `card-serif`, `plain`, or `plain-serif`. Default: `card`. |
 | `MAILFIRE_SENDING_TEMPLATE_FILE` | `[sending] template_file` | Path to a custom template. |
+| `MAILFIRE_SENDING_TEMP_DIR` | `[sending] temp_dir` | Directory for temporary message files and spilled `mailfire run` logs. Default: the system temporary directory. See [Temporary files](configuration.md#temporary-files). |
 | `MAILFIRE_SMTP_HOST` | `[smtp] host` | SMTP server hostname. Required when provider is `smtp`. |
 | `MAILFIRE_SMTP_PORT` | `[smtp] port` | SMTP submission port, a number from 1 to 65535. Required when provider is `smtp`. |
 | `MAILFIRE_SMTP_SECURITY` | `[smtp] security` | `tls` (implicit TLS), `starttls` (required STARTTLS), or `none` (explicit local plaintext relay). |

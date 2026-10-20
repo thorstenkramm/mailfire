@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
@@ -74,6 +75,7 @@ type Config struct {
 	From         string // optional; valid mailbox ("user@example.com" or "Name <user@example.com>")
 	Template     string // email template for --md and --html; default render.DefaultTemplate
 	TemplateFile string // custom template path; mutually exclusive with Template in TOML
+	TempDir      string // optional; empty: the system temporary directory (checked with CheckTempDir)
 
 	// [logging]
 	Logfile    string // optional; logging disabled when empty
@@ -124,6 +126,7 @@ type rawConfig struct {
 		From         string `toml:"from"`
 		Template     string `toml:"template"`
 		TemplateFile string `toml:"template_file"`
+		TempDir      string `toml:"temp_dir"`
 	} `toml:"sending"`
 	Logging struct {
 		Logfile string `toml:"logfile"`
@@ -485,6 +488,11 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		return nil, err
 	}
 
+	// Validated by CheckTempDir, and only by the commands that write
+	// temporary files: existence and writability are filesystem facts
+	// that list, resend, or a preview should not depend on.
+	cfg.TempDir = expandPath(strings.TrimSpace(raw.Sending.TempDir), getenv)
+
 	cfg.Logfile = expandPath(strings.TrimSpace(raw.Logging.Logfile), getenv)
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(raw.Logging.Level))
 	if cfg.LogLevel == "" {
@@ -750,12 +758,14 @@ func findOptional(flagPath, goos string, getenv func(string) string) (string, er
 // variables; other variables are ignored. Unlike Load, a missing config file is not an
 // error unless flagPath names one, and the Mailgun credentials, domain,
 // sender, and the other sections are neither required nor validated. Only
-// Path, EnvSource, Template, and TemplateFile are set.
+// Path, EnvSource, Template, TemplateFile, and TempDir are set (TempDir
+// is not validated: previews write no temporary files).
 func LoadRender(flagPath string, stderr io.Writer, ov Overrides) (*Config, error) {
 	return loadRender(flagPath, stderr, runtime.GOOS, os.Getenv, ov)
 }
 
 // LoadRunRender also loads the report locale, without requiring delivery settings.
+// TempDir is set as well: the job runs and its logs spill in preview mode too.
 func LoadRunRender(flagPath string, stderr io.Writer, ov Overrides) (*Config, error) {
 	return loadRenderWithLocale(flagPath, stderr, runtime.GOOS, os.Getenv, ov, true)
 }
@@ -775,6 +785,12 @@ func loadRenderWithLocale(flagPath string, stderr io.Writer, goos string, getenv
 	if err := applyTemplateEnv(raw, getenv, sources); err != nil {
 		return nil, err
 	}
+	// temp_dir is parsed too: "run --preview" runs the job and spills its
+	// logs. It is never validated here — nothing else is written.
+	if v := strings.TrimSpace(getenv("MAILFIRE_SENDING_TEMP_DIR")); v != "" {
+		raw.Sending.TempDir = v
+		sources["sending.temp_dir"] = "MAILFIRE_SENDING_TEMP_DIR"
+	}
 	if run {
 		if v := strings.TrimSpace(getenv("MAILFIRE_RUN_LOCALE")); v != "" {
 			raw.Run.Locale = v
@@ -783,6 +799,7 @@ func loadRenderWithLocale(flagPath string, stderr io.Writer, goos string, getenv
 	}
 	ov.discard(raw, sources)
 	cfg := &Config{Path: path, EnvSource: sources}
+	cfg.TempDir = expandPath(strings.TrimSpace(raw.Sending.TempDir), getenv)
 	if run {
 		cfg.RunLocale = strings.TrimSpace(raw.Run.Locale)
 		if cfg.RunLocale != "" && !locale.Supported(cfg.RunLocale) {
@@ -815,6 +832,41 @@ func (c *Config) CheckDedupDir() error {
 	}
 	return fmt.Errorf("config: dedup.state_dir %s is inside defer.defer_dir %s: use %s or a directory outside defer_dir",
 		c.DedupDir, c.DeferDir, filepath.Join(c.DeferDir, deferral.ReservedDir))
+}
+
+// CheckTempDir reports a sending.temp_dir that cannot hold mailfire's
+// temporary files: not a directory, missing with a missing parent, or not
+// writable. A missing directory is created owner-only, but only when its
+// parent exists — never a whole path, so a typo cannot scatter
+// directories. It is checked only by the commands that write temporary
+// files (send, run), so configurations without it are unaffected.
+func (c *Config) CheckTempDir() error {
+	if c.TempDir == "" {
+		return nil
+	}
+	fi, err := os.Stat(c.TempDir)
+	switch {
+	case err == nil && !fi.IsDir():
+		return fmt.Errorf("config: sending.temp_dir %s: not a directory", c.TempDir)
+	case errors.Is(err, fs.ErrNotExist):
+		parent, perr := os.Stat(filepath.Dir(c.TempDir))
+		if perr != nil || !parent.IsDir() {
+			return fmt.Errorf("config: sending.temp_dir %s: does not exist and its parent directory does not exist either; create the parent first", c.TempDir)
+		}
+		if err := os.Mkdir(c.TempDir, 0o700); err != nil && !errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("config: sending.temp_dir %s: %w", c.TempDir, err)
+		}
+	case err != nil:
+		return fmt.Errorf("config: sending.temp_dir %s: %w", c.TempDir, err)
+	}
+	// Probe writability like the send will use it: an existing directory
+	// mailfire cannot write to must fail here, as a configuration error,
+	// not midway through a send.
+	f, err := os.CreateTemp(c.TempDir, ".mailfire-probe-*")
+	if err != nil {
+		return fmt.Errorf("config: sending.temp_dir %s: not writable: %w", c.TempDir, err)
+	}
+	return errors.Join(f.Close(), os.Remove(f.Name()))
 }
 
 // relInside reports whether child lies strictly inside parent, and its

@@ -36,7 +36,7 @@ func TestValidateAllPass(t *testing.T) {
 		}
 		for _, want := range []string{
 			"ok   config file found and parses as valid TOML: " + cfg,
-			`ok   mandatory keys present and well-formed (region "us" from config file, domain "mg.example.com" from config file, from "Ops Bot <ops@example.com>" from config file, api key from config file)`,
+			`ok   mandatory keys present and well-formed (region "us" from config file, domain "mg.example.com" from config file, from "Ops Bot <ops@example.com>" from config file, api key from config file, temporary directory "` + os.TempDir() + `" from system default)`,
 			`ok   API key and domain verified with Mailgun: domain "mg.example.com" is active`,
 		} {
 			if !strings.Contains(stdout, want) {

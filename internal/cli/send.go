@@ -69,6 +69,11 @@ func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mai
 
 func (p *preparedDelivery) sendMessage(rc *runContext, msg *mailgun.Message, res *sendResult, stdout, stderr io.Writer) int {
 	cfg, opts, logger := &p.cfg, &p.opts, p.logger
+	// A configured sending.temp_dir holds the message spool; the
+	// override ends with the send.
+	spool.SetDir(cfg.TempDir)
+	defer spool.SetDir("")
+
 	// The provider spools the message to a temporary file; SIGINT/SIGTERM
 	// end the process without running deferred calls, so they remove it
 	// first. Deferred first, the handler stays until the spool is gone.

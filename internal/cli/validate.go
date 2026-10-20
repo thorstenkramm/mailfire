@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -179,6 +180,11 @@ func validate(opts validateOptions, rc *runContext, res *validateResult, stdout,
 	} else if cfg.SMTPUsername != "" {
 		keys += fmt.Sprintf(", SMTP credentials from %s / %s", src("smtp.username"), src("smtp.password"))
 	}
+	tempDir, tempSource := cfg.TempDir, src("sending.temp_dir")
+	if tempDir == "" {
+		tempDir, tempSource = os.TempDir(), "system default"
+	}
+	keys += fmt.Sprintf(", temporary directory %q from %s", tempDir, tempSource)
 	validatePass(stdout, res, "mandatory keys", "mandatory keys present and well-formed ("+keys+")")
 	if cfg.Provider == "gmail" {
 		// Refreshes the access token when it is (nearly) expired; never

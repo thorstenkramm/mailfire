@@ -44,6 +44,20 @@ func TestFileLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateUsesConfiguredDirectory(t *testing.T) {
+	dir := t.TempDir()
+	SetDir(dir)
+	t.Cleanup(func() { SetDir("") })
+	s, err := Compose(func(w io.Writer) error { _, err := io.WriteString(w, "payload"); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer testutil.Check(t, s.Abort)
+	if got := filepath.Dir(s.Path()); got != dir {
+		t.Errorf("spool directory = %q, want %q", got, dir)
+	}
+}
+
 // The signal handler itself, fed through a channel so it runs on every OS
 // (Windows cannot signal its own process; spool_unix_test.go covers the
 // real SIGTERM path).

@@ -60,6 +60,26 @@ configure access through NTFS permissions; the Unix permission check does not ap
 
 Prefer environment variables, or your secret manager, for credentials on shared systems.
 
+## Temporary files
+
+While sending, Mailfire writes the encoded message to a temporary file and streams it to the provider. This keeps the
+Mailfire process's memory use small even for large attachments. `mailfire run` also spills captured stdout and stderr
+to temporary files after 10 KiB per stream; each stream is capped at 5 MiB.
+
+By default these files use the system temporary directory: `$TMPDIR`, or `/tmp` when it is unset, on Unix; `%TMP%`
+or `%TEMP%` on Windows. Set `[sending] temp_dir` (or `MAILFIRE_SENDING_TEMP_DIR`) to use another directory. A leading
+`~` is expanded. Mailfire creates a missing directory with owner-only permissions only when its parent already exists;
+it never creates a missing directory tree. Existing directory permissions are left unchanged.
+
+On some Linux systems `/tmp` is a RAM-backed `tmpfs`. That means a message file — up to Gmail's 35 MB message limit —
+occupies RAM for the send, and a job's captured logs can occupy up to 10 MiB for its lifetime. Check the effective
+location with `findmnt -T "${TMPDIR:-/tmp}"` (look for `tmpfs`) or, on Linux, `stat -f -c %T "${TMPDIR:-/tmp}"`.
+`/var/tmp/mailfire` or `~/.cache/mailfire` are common disk-backed alternatives. If it is on the same filesystem as
+`[defer] defer_dir`, a failed send can move its message into the queue instead of copying it.
+
+Temporary message files are removed after a send; stale files from a killed process are swept after 24 hours. On Unix,
+spilled job logs are unlinked immediately and disappear even after a crash; Windows removes them when the job ends.
+
 ## Annotated example
 
 This is [`mailfire.example.conf`](https://github.com/thorstenkramm/mailfire/blob/main/mailfire.example.conf) from the

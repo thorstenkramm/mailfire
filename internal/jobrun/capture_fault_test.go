@@ -44,7 +44,7 @@ func assertCaptureModel(t *testing.T, c *capture, source []byte) {
 func TestCaptureRandomizedBoundaries(t *testing.T) {
 	rng := rand.New(rand.NewPCG(33, 34))
 	for trial := 0; trial < 100; trial++ {
-		c := newCapture("stdout", int64(1+rng.IntN(2048)))
+		c := newCapture("stdout", int64(1+rng.IntN(2048)), "")
 		c.mem = min(c.mem, int64(1+rng.IntN(1024)))
 		var source []byte
 		for write := 0; write < 20; write++ {
@@ -72,7 +72,7 @@ func FuzzCaptureRing(f *testing.F) {
 		if len(data) > 64*1024 {
 			t.Skip()
 		}
-		c := newCapture("stdout", max(int64(capValue), 1))
+		c := newCapture("stdout", max(int64(capValue), 1), "")
 		defer closeTest(t, c)
 		step := max(int(chunkValue), 1)
 		for pos := 0; pos < len(data); {
@@ -126,7 +126,7 @@ func TestCaptureDiskFailures(t *testing.T) {
 	for _, op := range []string{"create", "chmod", "write", "read", "close"} {
 		t.Run(op, func(t *testing.T) {
 			injected := errors.New("injected " + op + " failure")
-			c := newCapture("stdout", 128)
+			c := newCapture("stdout", 128, "")
 			c.mem = 8
 			var name string
 			c.createTemp = func(_, pattern string) (captureFile, error) {

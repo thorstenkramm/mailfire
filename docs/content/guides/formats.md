@@ -50,6 +50,10 @@ Repeat `--attach` to include more files. An empty body is allowed only when an a
 attachment-only email from a terminal, omit `--message`. Piped input is still read when supplied. Attachments must be
 regular files; a leading `~` is expanded. The content type is detected from the file's content.
 
+Mailfire streams an encoded message through a temporary file rather than holding the attachment in its heap. When large
+attachments are sent frequently, choose a disk-backed `[sending] temp_dir` if the system temporary directory is a
+RAM-backed `tmpfs`; see [Temporary files](../reference/configuration.md#temporary-files).
+
 ## Recipients and sender
 
 Use repeatable `--to`, `--cc`, and `--bcc` flags:
