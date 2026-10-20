@@ -1,0 +1,23 @@
+From: <ops@example.com>
+To: <to@example.com>
+Subject: s
+Date: Sun, 18 Oct 2026 12:00:00 +0000
+Message-ID: <normalized@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="golden-mix"
+
+--golden-mix
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/plain; charset="utf-8"
+
+text part
+--golden-mix
+Content-Disposition: attachment; filename="report.bin"
+Content-Transfer-Encoding: base64
+Content-Type: application/octet-stream
+
+AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoA
+AQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gAB
+AvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+gABAvoAAQL6AAEC+g==
+
+--golden-mix--

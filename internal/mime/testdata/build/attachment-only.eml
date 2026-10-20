@@ -1,0 +1,21 @@
+From: <ops@example.com>
+To: <to@example.com>
+Subject: s
+Date: Sun, 18 Oct 2026 12:00:00 +0000
+Message-ID: <normalized@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="golden-mix"
+
+--golden-mix
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/plain; charset="utf-8"
+
+
+--golden-mix
+Content-Disposition: attachment; filename="a.txt"
+Content-Transfer-Encoding: base64
+Content-Type: application/octet-stream
+
+eA==
+
+--golden-mix--

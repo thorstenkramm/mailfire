@@ -1,0 +1,37 @@
+From: <ops@example.com>
+To: <to@example.com>
+Subject: s
+Date: Sun, 18 Oct 2026 12:00:00 +0000
+Message-ID: <normalized@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="golden-rel"
+
+--golden-rel
+Content-Type: multipart/alternative; boundary="golden-alt"
+
+--golden-alt
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/plain; charset="utf-8"
+
+text part
+--golden-alt
+Content-Transfer-Encoding: quoted-printable
+Content-Type: text/html; charset="utf-8"
+
+<p><img src=3D"cid:img-1234.png"></p>
+--golden-alt--
+
+--golden-rel
+Content-Disposition: inline; filename="img-1234.png"
+Content-Id: <img-1234.png>
+Content-Transfer-Encoding: base64
+Content-Type: image/png
+
+iVBORw0KGgppbWFnZS1ieXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2ltYWdl
+LWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1i
+eXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0
+ZXNpbWFnZS1ieXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2ltYWdlLWJ5dGVz
+aW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2lt
+YWdlLWJ5dGVzaW1hZ2UtYnl0ZXNpbWFnZS1ieXRlc2ltYWdlLWJ5dGVzaW1hZ2UtYnl0ZXM=
+
+--golden-rel--

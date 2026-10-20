@@ -57,6 +57,11 @@ func BuildWithBcc(msg *message.Message, now time.Time) (raw []byte, messageID st
 }
 
 func build(msg *message.Message, now time.Time, includeBcc bool) (raw []byte, messageID string, err error) {
+	return buildB(msg, now, includeBcc, nil)
+}
+
+// buildB is build with a test hook for fixed multipart boundaries.
+func buildB(msg *message.Message, now time.Time, includeBcc bool, bnd *boundaryCursor) (raw []byte, messageID string, err error) {
 	if msg == nil {
 		return nil, "", fmt.Errorf("mime: no message")
 	}
@@ -76,7 +81,7 @@ func build(msg *message.Message, now time.Time, includeBcc bool) (raw []byte, me
 	if err != nil {
 		return nil, "", err
 	}
-	body, err := buildBody(msg)
+	body, err := buildBody(msg, bnd)
 	if err != nil {
 		return nil, "", err
 	}
@@ -158,17 +163,32 @@ type rendered struct {
 	header      textproto.MIMEHeader
 }
 
+// boundaryCursor hands out fixed multipart boundaries, innermost first
+// (alternative, related, mixed — the order buildBody creates them); nil
+// or exhausted means the random default. It exists so golden tests can
+// pin the exact bytes (task 34).
+type boundaryCursor struct{ list []string }
+
+func (c *boundaryCursor) next() string {
+	if c == nil || len(c.list) == 0 {
+		return ""
+	}
+	b := c.list[0]
+	c.list = c.list[1:]
+	return b
+}
+
 // buildBody renders the message body: the innermost content (a single
 // part or multipart/alternative), wrapped in multipart/related for inline
 // files and in multipart/mixed for attachments.
-func buildBody(msg *message.Message) (rendered, error) {
+func buildBody(msg *message.Message, bnd *boundaryCursor) (rendered, error) {
 	leaves, err := contentLeaves(msg)
 	if err != nil {
 		return rendered{}, err
 	}
 	content := leaves[0]
 	if len(leaves) > 1 {
-		if content, err = renderMultipart("alternative", leaves); err != nil {
+		if content, err = renderMultipart("alternative", leaves, bnd); err != nil {
 			return rendered{}, err
 		}
 	}
@@ -182,7 +202,7 @@ func buildBody(msg *message.Message) (rendered, error) {
 			}
 			leaves = append(leaves, leaf)
 		}
-		if content, err = renderMultipart("related", leaves); err != nil {
+		if content, err = renderMultipart("related", leaves, bnd); err != nil {
 			return rendered{}, err
 		}
 	}
@@ -195,7 +215,7 @@ func buildBody(msg *message.Message) (rendered, error) {
 			}
 			leaves = append(leaves, leaf)
 		}
-		if content, err = renderMultipart("mixed", leaves); err != nil {
+		if content, err = renderMultipart("mixed", leaves, bnd); err != nil {
 			return rendered{}, err
 		}
 	}
@@ -282,9 +302,14 @@ func fileLeaf(f message.File, inline bool) (rendered, error) {
 }
 
 // renderMultipart assembles children into one multipart body.
-func renderMultipart(subtype string, children []rendered) (rendered, error) {
+func renderMultipart(subtype string, children []rendered, bnd *boundaryCursor) (rendered, error) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)
+	if b := bnd.next(); b != "" {
+		if err := w.SetBoundary(b); err != nil {
+			return rendered{}, fmt.Errorf("mime: building multipart/%s: %w", subtype, err)
+		}
+	}
 	for _, c := range children {
 		h := c.header
 		if h == nil {
