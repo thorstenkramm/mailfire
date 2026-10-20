@@ -54,6 +54,7 @@ var envBindings = []envBinding{
 	{"MAILFIRE_DEFER_MAX_AGE", "defer.max_age", func(r *rawConfig, v string) { r.Defer.MaxAge = v }},
 	{"MAILFIRE_DEDUP_STATE_DIR", "dedup.state_dir", func(r *rawConfig, v string) { r.Dedup.StateDir = v }},
 	{"MAILFIRE_DEDUP_COOLDOWN", "dedup.cooldown", func(r *rawConfig, v string) { r.Dedup.Cooldown = v }},
+	{"MAILFIRE_RUN_LOCALE", "run.locale", func(r *rawConfig, v string) { r.Run.Locale = v }},
 }
 
 // Variables handled outside envBindings.

@@ -70,7 +70,9 @@ passwords entirely.
 mailfire validate
 ```
 
-`validate` connects, negotiates TLS, and authenticates — without sending a message or probing any recipient. SMTP has
+`validate` connects, negotiates TLS, and authenticates — without sending a message or probing any recipient. Without
+`username` and `password` it cannot check authentication and says so: a server that requires it accepts the
+validation but rejects the send (`530 Authentication required`). SMTP has
 no validation-only send mode, so `--test` is refused; use [`--preview`](preview.md) to check the rendering.
 
 ## Delivery and failures

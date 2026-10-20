@@ -18,7 +18,7 @@ the configuration loader.
 ## Structure and style
 
 - Use the existing top-level tables: `[mailgun]`, `[smtp]`, `[gmail]`, `[sending]`,
-  `[logging]`, `[defer]`, and `[dedup]`. Add tables or keys only alongside implementation and documentation.
+  `[logging]`, `[defer]`, `[dedup]`, and `[run]`. Add tables or keys only alongside implementation and documentation.
 - Match `mailfire.example.conf`: table headers, settings, and comments are
   left-aligned; separate tables and related settings with blank lines.
 - Use `# ` comments and `# key = value` for commented-out settings.

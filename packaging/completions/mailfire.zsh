@@ -36,6 +36,41 @@ _mailfire_send() {
         '(-h --help)'{-h,--help}'[show help]'
 }
 
+_mailfire_run() {
+    # Mailfire's flags come first; from the command on, complete the job
+    # like a command line of its own.
+    _arguments -S -A '-*' \
+        '*--to=[recipient, repeatable]:address:' \
+        '*--cc=[cc recipient, repeatable]:address:' \
+        '*--bcc=[bcc recipient, repeatable]:address:' \
+        '--from=[sender, overrides config]:address:' \
+        '--subject=[subject template with {emoji} {job} {status} ...]:subject:' \
+        '--name=[job name]:name:' \
+        '--on=[when to send a report]:when:(always failure)' \
+        '--max-runtime=[stop the job when exceeded]:duration:' \
+        '--success-codes=[exit codes meaning success]:codes:' \
+        '--tail=[last lines of stdout and stderr in the body]:lines:' \
+        '--tee[copy the job output live]' \
+        '--no-attach-logs[do not attach the logs]' \
+        '--locale=[report date locale]:locale:' \
+        '--report-template=[custom report content template]:file:_files' \
+        '(--template-file)--template=[HTML layout template]:template:(card card-serif plain plain-serif)' \
+        '(--template)--template-file=[custom HTML layout template]:file:_files' \
+        '--preheader=[inbox preview text]:text:' \
+        '--footer=[HTML fragment appended as footer]:file:_files' \
+        '(--preview)--test[Mailgun test mode; the job still runs]' \
+        '(--preview)--no-defer[fail immediately instead of deferring on error]' \
+        '(--preview)--timeout=[per-request timeout, overrides provider timeout]:duration:' \
+        '(--preview)--dedup-key=[skip repeats of this notification within the cooldown]:key:' \
+        '(--preview)--cooldown=[suppression window for --dedup-key]:duration:' \
+        '(--test --no-defer --timeout --dedup-key --cooldown --json)--preview=[run the job and write the rendered report]:file:_files' \
+        '(--preview)--json[print the result as one JSON document]' \
+        '(-c --config)'{-c,--config=}'[use this config file]:file:_files' \
+        '(-h --help)'{-h,--help}'[show help]' \
+        '(-)1:command:_command_names -e' \
+        '*::arguments:_normal'
+}
+
 _mailfire_validate() {
     _arguments -S \
         '--json[print the result as one JSON document]' \
@@ -143,6 +178,7 @@ _mailfire() {
     local -a subcommands
     subcommands=(
         'send:compose and send an email (default)'
+        'run:run a command and email its result'
         'validate:check configuration and provider credentials'
         'auth:manage Gmail authorization'
         'resend:retry deferred messages'
@@ -159,7 +195,7 @@ _mailfire() {
     local sub=send
     if (( CURRENT > 2 )); then
         case $words[2] in
-            send|validate|auth|resend|queue|version|export-templates) sub=$words[2] ;;
+            send|run|validate|auth|resend|queue|version|export-templates) sub=$words[2] ;;
         esac
     fi
 

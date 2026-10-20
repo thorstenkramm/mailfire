@@ -18,6 +18,8 @@ mailfire — send email from the command line via Mailgun, Gmail, or SMTP
 
 Usage:
   mailfire [send] [flags]     compose and send an email (default)
+  mailfire run [flags] [--] <command> [args...]
+                              run a command and email its result
   mailfire validate           check configuration and provider credentials
   mailfire auth login|status|refresh|logout --provider gmail
                               manage Gmail OAuth authorization
@@ -105,9 +107,61 @@ Flags (send):
 More help: https://mailfire.system42.io
 ```
 
+## run
+
+Runs a command — typically a cron, systemd, or Task Scheduler job — and emails a report: status, start and end time,
+duration, exit code, the last lines of stdout and stderr, and the logs as attachments. Mailfire exits with the job's
+exit code. See [Monitor scheduled jobs](../guides/jobs.md).
+
+```text
+$ mailfire run --help
+Usage:
+  mailfire run [flags] [--] <command> [args...]
+
+Run a command and email a report: status, times, duration, exit code, the
+last lines of stdout and stderr, and the full logs as attachments.
+Mailfire's flags come first; everything from the command on belongs to
+the command, unparsed. The job always runs for real; --test and --preview
+only affect the email. mailfire exits with the job's exit code; when the
+job succeeded but the report could not be sent, mailfire's own code
+(2-5) applies.
+
+Flags (run):
+  --to <addr>        recipient, repeatable (required to send)
+  --cc <addr>        cc recipient, repeatable
+  --bcc <addr>       bcc recipient, repeatable
+  --from <addr>      sender, overrides config ("Name <user@example.com>")
+  --subject <text>   subject template (default "{emoji} {job} {status} on {host}")
+  --name <name>      job name (default: the command's file name)
+  --on <when>        send a report "always" (default) or on "failure" only
+  --max-runtime <dur>  stop the job when exceeded
+  --success-codes <list>  comma-separated exit codes meaning success (default 0)
+  --tail <n>         last lines of stdout and stderr in the body (default 10)
+  --tee              copy the job's stdout and stderr live to mailfire's own
+  --no-attach-logs   do not attach the full logs
+  --locale <locale>  report date locale (e.g. en_US, de_DE); overrides [run].locale
+  --report-template <path>  custom report content template (Markdown)
+  --template <name>  HTML layout template: card, card-serif, plain, plain-serif
+  --template-file <path>  custom HTML layout template (conflicts with --template)
+  --preheader <txt>  inbox preview text
+  --footer <path>    HTML fragment appended as footer
+  --test             Mailgun test mode: validate the report, deliver nothing
+  --no-defer         fail immediately instead of deferring on error
+  --timeout <dur>    per-request timeout (e.g. 15s, 1m); overrides provider timeout
+  --dedup-key <key>  skip repeats of this notification within the cooldown
+  --cooldown <dur>   suppression window for --dedup-key (default 1h)
+  --preview <path>   run the job and write the rendered report to <path>
+                     (- for stdout); send nothing (conflicts with --tee -)
+  --json             print the result as one JSON document
+  -c, --config <p>   use this config file
+  -h, --help         show help
+
+More help: https://mailfire.system42.io
+```
+
 ## validate
 
-Checks the configuration file, required settings, and the selected provider without sending mail: Mailgun's API key and domain; the SMTP connection, TLS negotiation, and authentication (no recipient is probed); or the Gmail authorization. It reports which settings came from environment variables without showing credentials.
+Checks the configuration file, required settings, and the selected provider without sending mail: Mailgun's API key and domain; the SMTP connection, TLS negotiation, and authentication (only with configured credentials; no recipient is probed); or the Gmail authorization. It reports which settings came from environment variables without showing credentials.
 
 ```text
 $ mailfire validate --help
@@ -216,14 +270,15 @@ More help: https://mailfire.system42.io
 
 ## export-templates
 
-Exports all four built-in templates as editable files. It creates the folder if needed and refuses to overwrite existing template files. No configuration or credentials are required. See [Templates](../guides/templates.md#custom-templates).
+Exports all four built-in layout templates and the `mailfire run` report template `job-report.md` as editable files. It creates the folder if needed and refuses to overwrite existing template files. No configuration or credentials are required. See [Templates](../guides/templates.md#custom-templates).
 
 ```text
 $ mailfire export-templates --help
 Usage:
   mailfire export-templates [--json] <folder>
 
-Export all built-in templates as editable HTML template files.
+Export all built-in templates as editable files: the HTML layout templates
+and job-report.md, the report content template of mailfire run.
 Creates the folder if needed; refuses to overwrite existing templates.
 
 Flags (export-templates):

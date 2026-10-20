@@ -11,6 +11,8 @@ const usageText = `mailfire — send email from the command line via Mailgun, Gm
 
 Usage:
   mailfire [send] [flags]     compose and send an email (default)
+  mailfire run [flags] [--] <command> [args...]
+                              run a command and email its result
   mailfire validate           check configuration and provider credentials
   mailfire auth login|status|refresh|logout --provider gmail
                               manage Gmail OAuth authorization

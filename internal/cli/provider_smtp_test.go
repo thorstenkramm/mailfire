@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/thorstenkramm/mailfire/internal/config"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
 	"github.com/thorstenkramm/mailfire/internal/smtp"
 	"github.com/thorstenkramm/mailfire/internal/testutil"
@@ -191,6 +192,50 @@ func TestSMTPPreviewIsLocal(t *testing.T) {
 	}
 	if len(e.m.Commands()) != 0 {
 		t.Error("preview contacted the SMTP server")
+	}
+}
+
+// Without credentials, validate must not claim authentication was
+// verified: the server below requires it, so a send fails afterwards.
+func TestSMTPValidateWithoutCredentials(t *testing.T) {
+	e := newSMTPEnv(t)
+	path := e.config(t, "smtp", "")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	noCreds := strings.NewReplacer(fmt.Sprintf("username = %q\n", smtpTestUser), "",
+		fmt.Sprintf("password = %q\n", smtpTestPass), "").Replace(string(data))
+	if err := os.WriteFile(path, []byte(noCreds), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, stdout, stderr := e.run(t, "", "validate", "-c", path)
+	if code != ExitOK {
+		t.Fatalf("validate: exit %d\n%s%s", code, stdout, stderr)
+	}
+	if strings.Contains(stdout, "authentication verified") ||
+		!strings.Contains(stdout, "SMTP connection and TLS negotiation verified") ||
+		!strings.Contains(stdout, "authentication not checked: no SMTP credentials configured") {
+		t.Errorf("validate output:\n%s", stdout)
+	}
+	if code, _, stderr := e.run(t, "body", "-c", path, "--no-defer", "--to", "a@example.com", "--subject", "s"); code != ExitAuth ||
+		!strings.Contains(stderr, "530") {
+		t.Errorf("send without credentials: exit %d, want %d (530); stderr:\n%s", code, ExitAuth, stderr)
+	}
+}
+
+func TestSMTPValidatedMessage(t *testing.T) {
+	for _, tc := range []struct {
+		security, user, want string
+	}{
+		{"starttls", "u", "SMTP connection, TLS negotiation, and authentication verified with mx:587"},
+		{"tls", "", "SMTP connection and TLS negotiation verified with mx:587; authentication not checked"},
+		{"none", "", "SMTP connection verified with mx:587 (plaintext); authentication not checked"},
+	} {
+		cfg := &config.Config{SMTPHost: "mx", SMTPPort: 587, SMTPSecurity: tc.security, SMTPUsername: tc.user}
+		if got := smtpValidated(cfg); !strings.HasPrefix(got, tc.want) {
+			t.Errorf("smtpValidated(%s, user %q) = %q, want prefix %q", tc.security, tc.user, got, tc.want)
+		}
 	}
 }
 

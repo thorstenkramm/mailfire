@@ -12,7 +12,8 @@ import (
 const exportTemplatesUsage = `Usage:
   mailfire export-templates [--json] <folder>
 
-Export all built-in templates as editable HTML template files.
+Export all built-in templates as editable files: the HTML layout templates
+and job-report.md, the report content template of mailfire run.
 Creates the folder if needed; refuses to overwrite existing templates.
 
 Flags (export-templates):

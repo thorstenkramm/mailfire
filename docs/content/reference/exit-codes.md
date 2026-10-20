@@ -28,6 +28,17 @@ always equals the process exit code; see [JSON output](json-output.md).
 - `--preview` exits with `1` when rendering or writing the output fails, and with `2` for an invalid configuration
   file or template setting.
 
+## run
+
+`mailfire run` exits with the job's exit code, so schedulers still see the job's result: `0` when it succeeded, `3`
+when it exited with 3, `127` when the command was not found, `126` when it is not executable, and `128+n` when signal
+`n` killed it (for example `137` after `--max-runtime` ended it with SIGKILL). `--success-codes` changes only the
+report's status, not the exit code.
+
+If the job succeeded but its report could not be sent or was deferred, Mailfire's own codes (`2`–`5`) apply.
+A failed job keeps its exit code even when reporting also fails. Usage and configuration errors found before the job starts exit with `1` or `2`, and the
+job does not run. With `--on failure`, a successful job sends nothing and exits with its own code.
+
 ## validate
 
 `4` when the provider cannot be reached reliably (retry later), `3` when credentials are rejected, and `2` when

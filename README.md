@@ -18,6 +18,7 @@ Send plain-text, Markdown, and HTML email from the command line through Mailgun,
 - Local HTML preview without credentials or network access
 - Logging and deferred delivery with retry support
 - Opt-in deduplication of repeated notifications
+- `mailfire run`: wrap cron, systemd, or Task Scheduler jobs and email a report of their result
 - JSON output for scripts and monitoring
 
 [![The four built-in email templates: card, card-serif, plain, and plain-serif](docs/static/images/templates/overview.webp)](https://mailfire.system42.io/guides/templates/#screenshots)

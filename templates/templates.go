@@ -8,9 +8,10 @@ package templates
 import "embed"
 
 // FS contains the email templates: the layouts card.html and plain.html
-// and their shared parts in head.html. Render them with text/template,
-// never html/template — html/template strips the <!--[if mso]> comments
-// Outlook needs.
+// and their shared parts in head.html, plus the job report content
+// template job-report.md of "mailfire run". Render them with
+// text/template, never html/template — html/template strips the
+// <!--[if mso]> comments Outlook needs.
 //
-//go:embed card.html plain.html head.html
+//go:embed card.html plain.html head.html job-report.md
 var FS embed.FS

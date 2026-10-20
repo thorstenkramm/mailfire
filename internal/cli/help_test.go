@@ -72,7 +72,7 @@ func TestHelpMatchesDocs(t *testing.T) {
 				strings.Join(b.args, " "), cliDocPath, b.want, stdout)
 		}
 	}
-	for _, cmd := range []string{"--help", "send --help", "validate --help", "auth --help", "resend --help",
+	for _, cmd := range []string{"--help", "send --help", "run --help", "validate --help", "auth --help", "resend --help",
 		"queue --help", "export-templates --help", "version --help"} {
 		if !documented[cmd] {
 			t.Errorf("%s does not document \"mailfire %s\"", cliDocPath, cmd)
@@ -99,7 +99,7 @@ func TestHelpTextsAreClean(t *testing.T) {
 	for name, text := range map[string]string{
 		"usageText": usageText, "sendUsage": sendUsage, "resendUsage": resendUsage,
 		"validateUsage": validateUsage, "versionUsage": versionUsage, "queueUsage": queueUsage,
-		"exportTemplatesUsage": exportTemplatesUsage, "authUsage": authUsage,
+		"exportTemplatesUsage": exportTemplatesUsage, "authUsage": authUsage, "runUsage": runUsage,
 	} {
 		if text != trimTrailingSpace(text) {
 			t.Errorf("%s has trailing whitespace", name)
@@ -170,7 +170,17 @@ func TestSendHelpListsAllFlags(t *testing.T) {
 			t.Errorf("%s help does not document --json", name)
 		}
 	}
-	for _, sub := range []string{"validate", "resend", "queue", "version"} {
+	for _, f := range []string{
+		"--to", "--cc", "--bcc", "--from", "--subject", "--name", "--on", "--max-runtime", "--success-codes",
+		"--tail", "--tee", "--no-attach-logs", "--locale", "--report-template", "--template", "--template-file",
+		"--preheader", "--footer", "--test", "--no-defer", "--timeout", "--dedup-key", "--cooldown",
+		"--preview", "--json", "--config", "--help",
+	} {
+		if !strings.Contains(runUsage, f+" ") && !strings.Contains(runUsage, f+"\n") {
+			t.Errorf("run help does not document %s", f)
+		}
+	}
+	for _, sub := range []string{"run", "validate", "resend", "queue", "version"} {
 		if !strings.Contains(usageText, "mailfire "+sub) {
 			t.Errorf("top-level help does not mention %q", sub)
 		}

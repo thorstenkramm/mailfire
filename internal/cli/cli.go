@@ -16,9 +16,7 @@ import (
 	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/render"
 	"github.com/thorstenkramm/mailfire/internal/smtp"
-)
-
-// BuildInfo carries version details injected at build time via -ldflags -X.
+) // BuildInfo carries version details injected at build time via -ldflags -X.
 // It is consumed by the version subcommand.
 type BuildInfo struct {
 	Version   string
@@ -45,6 +43,7 @@ type runContext struct {
 	stdin      io.Reader
 	clientOpts []mailgun.Option
 	clock      func() time.Time // nil: time.Now
+	signals    <-chan os.Signal // nil: run installs its own SIGINT/SIGTERM notify
 
 	// Test seams of the SMTP and Gmail providers (provider.go).
 	smtpOpts      []smtp.Option
@@ -81,6 +80,12 @@ func WithStdin(r io.Reader) Option {
 	return func(rc *runContext) { rc.stdin = r }
 }
 
+// WithSignals sets the channel run receives forwarded interrupts from
+// (default: SIGINT and SIGTERM via signal.Notify). Intended for tests.
+func WithSignals(ch <-chan os.Signal) Option {
+	return func(rc *runContext) { rc.signals = ch }
+}
+
 // WithBaseURL points the Mailgun client at baseURL instead of the
 // region-derived production URL. Intended for tests.
 func WithBaseURL(baseURL string) Option {
@@ -104,6 +109,8 @@ func Run(args []string, stdout, stderr io.Writer, info BuildInfo, options ...Opt
 			return ExitOK
 		case "send":
 			return runSend(args[1:], rc, stdout, stderr)
+		case "run":
+			return runJob(args[1:], rc, stdout, stderr)
 		case "export-templates":
 			return runExportTemplates(args[1:], stdout, stderr)
 		case "resend":

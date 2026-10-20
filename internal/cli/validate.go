@@ -212,7 +212,7 @@ func validate(opts validateOptions, rc *runContext, res *validateResult, stdout,
 				return validateFail(stdout, stderr, res, "SMTP connection", err, ExitConfig)
 			}
 		}
-		validatePass(stdout, res, "SMTP connection", fmt.Sprintf("SMTP connection, TLS negotiation, and authentication verified with %s:%d", cfg.SMTPHost, cfg.SMTPPort))
+		validatePass(stdout, res, "SMTP connection", smtpValidated(cfg))
 		return ExitOK
 	}
 
@@ -265,3 +265,24 @@ func validateFail(stdout, stderr io.Writer, res *validateResult, step string, er
 	res.setError(exitErrorCode(code), err)
 	return code
 }
+
+// smtpValidated describes what a successful SMTP validation checked. TLS
+// is negotiated only with security "tls" or "starttls", and credentials
+// are tested only when they are configured: without them, the server may
+// still require authentication when sending.
+func smtpValidated(cfg *config.Config) string {
+	server := fmt.Sprintf("%s:%d", cfg.SMTPHost, cfg.SMTPPort)
+	switch {
+	case cfg.SMTPUsername != "":
+		// Credentials are never combined with security "none" (config).
+		return "SMTP connection, TLS negotiation, and authentication verified with " + server
+	case cfg.SMTPSecurity == "none":
+		return "SMTP connection verified with " + server + " (plaintext); " + smtpNoAuth
+	default:
+		return "SMTP connection and TLS negotiation verified with " + server + "; " + smtpNoAuth
+	}
+}
+
+// smtpNoAuth explains that validation could not check authentication.
+const smtpNoAuth = "authentication not checked: no SMTP credentials configured (set smtp.username and " +
+	"smtp.password, or MAILFIRE_SMTP_USERNAME and MAILFIRE_SMTP_PASSWORD, if the server requires them)"

@@ -12,7 +12,7 @@ containers, and scheduled jobs where writing a configuration file is inconvenien
 
 From highest to lowest:
 
-1. Command-line options, such as `--from`, `--template`, `--template-file`, `--timeout`, and `--cooldown`
+1. Command-line options, such as `--from`, `--template`, `--template-file`, `--timeout`, `--cooldown`, and `--locale`
 2. `MAILFIRE_*` environment variables
 3. The configuration file
 4. Built-in defaults
@@ -57,6 +57,7 @@ TOML quoting.
 | `MAILFIRE_DEFER_MAX_AGE` | `[defer] max_age` | Positive duration, such as `168h`. Default: none (messages do not expire). |
 | `MAILFIRE_DEDUP_STATE_DIR` | `[dedup] state_dir` | Directory for notification deduplication state. Default: platform-specific. |
 | `MAILFIRE_DEDUP_COOLDOWN` | `[dedup] cooldown` | Positive duration. Default: `1h`. `--cooldown` overrides it. |
+| `MAILFIRE_RUN_LOCALE` | `[run] locale` | Date locale of `mailfire run` reports, such as `de_DE` or `en_GB`. Default: `LC_ALL`, `LC_TIME`, or `LANG` (Windows: the user's locale), else `en_US`. `--locale` overrides it. |
 
 Two developer variables are not configuration settings and have no file equivalent:
 `MAILFIRE_GMAIL_CLIENT_ID` and `MAILFIRE_GMAIL_CLIENT_SECRET` replace Mailfire's built-in Google OAuth client, for

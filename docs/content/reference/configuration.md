@@ -28,7 +28,7 @@ Use `-c <path>` or `--config <path>` to select a different file. A file selected
 
 From highest to lowest:
 
-1. Command-line options, such as `--from`, `--template`, `--timeout`, and `--cooldown`
+1. Command-line options, such as `--from`, `--template`, `--timeout`, `--cooldown`, and `--locale`
 2. `MAILFIRE_*` environment variables — see [Environment variables](environment.md)
 3. The configuration file
 4. Built-in defaults
@@ -47,6 +47,7 @@ then come from `MAILFIRE_*` variables.
 | `[logging]` | Optional JSON send log — see [Send log](../guides/scripting.md#send-log) |
 | `[defer]` | Deferred delivery and retries — see [Deferred delivery](../guides/deferred-delivery.md) |
 | `[dedup]` | Notification deduplication — see [Notification deduplication](../guides/deduplication.md) |
+| `[run]` | Date locale of `mailfire run` reports — see [Monitor scheduled jobs](../guides/jobs.md) |
 
 Only the selected provider's section must be complete. Keep the sections of providers you used earlier while
 deferred messages for them are queued: they are resent through their original provider.

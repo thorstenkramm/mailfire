@@ -25,6 +25,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 	"github.com/thorstenkramm/mailfire/internal/dedup"
 	"github.com/thorstenkramm/mailfire/internal/deferral"
+	"github.com/thorstenkramm/mailfire/internal/locale"
 	"github.com/thorstenkramm/mailfire/internal/mailbox"
 	"github.com/thorstenkramm/mailfire/internal/render"
 )
@@ -89,6 +90,9 @@ type Config struct {
 	// [dedup]
 	DedupDir      string        // notification-deduplication state; default per-platform data dir + "dedup"
 	DedupCooldown time.Duration // default 1h; suppression window after a delivered notification
+
+	// [run]
+	RunLocale string // report date locale of "mailfire run"; default from the environment or en_US
 }
 
 // rawConfig mirrors the TOML schema. Everything is optional at parse time;
@@ -137,6 +141,9 @@ type rawConfig struct {
 		StateDir string `toml:"state_dir"`
 		Cooldown string `toml:"cooldown"`
 	} `toml:"dedup"`
+	Run struct {
+		Locale string `toml:"locale"`
+	} `toml:"run"`
 }
 
 // Load finds, parses, and validates the configuration. When flagPath is
@@ -161,6 +168,7 @@ type Overrides struct {
 	Template bool // --template or --template-file: the template selection
 	Timeout  bool // --timeout: mailgun.timeout
 	Cooldown bool // --cooldown: dedup.cooldown
+	Locale   bool // --locale: run.locale
 }
 
 // LoadWith is Load for a command whose options override the settings
@@ -192,6 +200,10 @@ func (ov Overrides) discard(raw *rawConfig, sources map[string]string) {
 	if ov.Cooldown {
 		raw.Dedup.Cooldown = ""
 		delete(sources, "dedup.cooldown")
+	}
+	if ov.Locale {
+		raw.Run.Locale = ""
+		delete(sources, "run.locale")
 	}
 }
 
@@ -532,6 +544,11 @@ func build(path string, data []byte, raw *rawConfig, goos string, getenv func(st
 		}
 		cfg.DedupCooldown = d
 	}
+
+	cfg.RunLocale = strings.TrimSpace(raw.Run.Locale)
+	if cfg.RunLocale != "" && !locale.Supported(cfg.RunLocale) {
+		return nil, keyErr("run.locale", fmt.Sprintf("invalid locale %q: use e.g. \"en_US\", \"de_DE\", \"fr_FR\"", cfg.RunLocale))
+	}
 	return cfg, nil
 }
 
@@ -738,7 +755,16 @@ func LoadRender(flagPath string, stderr io.Writer, ov Overrides) (*Config, error
 	return loadRender(flagPath, stderr, runtime.GOOS, os.Getenv, ov)
 }
 
+// LoadRunRender also loads the report locale, without requiring delivery settings.
+func LoadRunRender(flagPath string, stderr io.Writer, ov Overrides) (*Config, error) {
+	return loadRenderWithLocale(flagPath, stderr, runtime.GOOS, os.Getenv, ov, true)
+}
+
 func loadRender(flagPath string, stderr io.Writer, goos string, getenv func(string) string, ov Overrides) (*Config, error) {
+	return loadRenderWithLocale(flagPath, stderr, goos, getenv, ov, false)
+}
+
+func loadRenderWithLocale(flagPath string, stderr io.Writer, goos string, getenv func(string) string, ov Overrides, run bool) (*Config, error) {
 	path, data, raw, err := readOptional(flagPath, stderr, goos, getenv)
 	if err != nil {
 		return nil, err
@@ -749,8 +775,20 @@ func loadRender(flagPath string, stderr io.Writer, goos string, getenv func(stri
 	if err := applyTemplateEnv(raw, getenv, sources); err != nil {
 		return nil, err
 	}
+	if run {
+		if v := strings.TrimSpace(getenv("MAILFIRE_RUN_LOCALE")); v != "" {
+			raw.Run.Locale = v
+			sources["run.locale"] = "MAILFIRE_RUN_LOCALE"
+		}
+	}
 	ov.discard(raw, sources)
 	cfg := &Config{Path: path, EnvSource: sources}
+	if run {
+		cfg.RunLocale = strings.TrimSpace(raw.Run.Locale)
+		if cfg.RunLocale != "" && !locale.Supported(cfg.RunLocale) {
+			return nil, keyErrorFunc(path, data, sources)("run.locale", fmt.Sprintf("invalid locale %q: use e.g. \"en_US\", \"de_DE\", \"fr_FR\"", cfg.RunLocale))
+		}
+	}
 	if err := cfg.setTemplate(raw, getenv, keyErrorFunc(path, data, sources)); err != nil {
 		return nil, err
 	}

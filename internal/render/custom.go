@@ -9,6 +9,8 @@ import (
 	"strings"
 	"text/template"
 	"text/template/parse"
+
+	"github.com/thorstenkramm/mailfire/templates"
 )
 
 // File renders a user-supplied, self-contained Go text/template.
@@ -38,14 +40,30 @@ func File(path string, d Data) (string, error) {
 	return buf.String(), nil
 }
 
+// ReportTemplate is the built-in report content template of
+// "mailfire run" (task 33): Markdown, rendered with ReportData, then
+// wrapped in a layout template. Export writes it as job-report.md
+// alongside the layout templates.
+const ReportTemplate = "job-report.md"
+
+// exportFiles lists every file Export writes: the four layout templates
+// and the run report template.
+func exportFiles() []string {
+	files := make([]string, 0, len(Names)+1)
+	for _, name := range Names {
+		files = append(files, name+".html")
+	}
+	return append(files, ReportTemplate)
+}
+
 // Export writes each built-in as a self-contained editable template.
 // Exclusive creation protects previously customized files.
 func Export(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	for _, name := range Names {
-		path := filepath.Join(dir, name+".html")
+	for _, file := range exportFiles() {
+		path := filepath.Join(dir, file)
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			if err != nil {
 				return err
@@ -59,20 +77,30 @@ func Export(dir string) error {
 		if err != nil {
 			return err
 		}
-		f, err := os.OpenFile(filepath.Join(dir, name+".html"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
-		if err != nil {
+		if err := writeExport(filepath.Join(dir, name+".html"), source); err != nil {
 			return err
-		}
-		_, err = f.WriteString(source)
-		closeErr := f.Close()
-		if err != nil {
-			return err
-		}
-		if closeErr != nil {
-			return closeErr
 		}
 	}
-	return nil
+	report, err := templates.FS.ReadFile(ReportTemplate)
+	if err != nil {
+		return err
+	}
+	return writeExport(filepath.Join(dir, ReportTemplate), string(report))
+}
+
+// writeExport writes one exported template, refusing to replace an
+// existing file.
+func writeExport(path, source string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(source)
+	closeErr := f.Close()
+	if err != nil {
+		return err
+	}
+	return closeErr
 }
 
 // Resolve layout/style nodes, preserving message fields and optional blocks.

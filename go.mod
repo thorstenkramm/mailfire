@@ -4,11 +4,13 @@ go 1.27.2
 
 require (
 	github.com/PuerkitoBio/goquery v1.13.0
+	github.com/goodsign/monday v1.0.2
 	github.com/mattn/go-isatty v0.0.20
 	github.com/pelletier/go-toml/v2 v2.4.3
 	github.com/vanng822/go-premailer v1.37.0
 	github.com/yuin/goldmark v1.8.6
 	golang.org/x/net v0.60.0
+	golang.org/x/sys v0.48.0
 )
 
 require (
@@ -25,6 +27,5 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/ssor/bom v0.0.0-20170718123548-6386211fdfcf // indirect
 	github.com/vanng822/css v1.0.1 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )

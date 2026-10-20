@@ -32,7 +32,8 @@ All templates support dark mode and small screens, and they render in Outlook.
 
 ## Custom templates
 
-Export editable, self-contained copies of all four built-ins:
+Export editable, self-contained copies of all four built-ins (plus `job-report.md`, the
+[job report template](#job-report-template) of `mailfire run`):
 
 ```shell
 mailfire export-templates ./my-templates
@@ -66,6 +67,43 @@ template_file = "./my-templates/card.html"
 and `--template` on the command line. Either flag overrides the configured default.
 Paths support `~`; relative paths are resolved from the current working directory.
 The flag requires `--md` or `--html`; configured defaults apply only to those formats.
+
+## Job report template
+
+`mailfire run` (see [Monitor scheduled jobs](jobs.md)) generates its body from a second kind of template: a
+Markdown content template, rendered with Go `text/template` and then wrapped in the layout template like any
+`--md` body. `export-templates` writes the built-in one as `job-report.md`. Folders exported by earlier versions lack
+it; export into a new folder to get it, since the export never overwrites existing templates.
+
+```shell
+mailfire export-templates ./my-templates
+mailfire run --report-template ./my-templates/job-report.md --to ops@example.com -- /usr/local/bin/backup.sh
+mailfire run --report-template ./my-templates/job-report.md --preview report.html -- /usr/local/bin/backup.sh
+```
+
+The template is checked before the job runs: a syntax error or an unknown field is a usage error. The fields are a
+stable contract; new fields may be added, existing ones are not renamed or removed:
+
+| Field | Value |
+|---|---|
+| `.Emoji` | ✅ success, 🔴 failure, ⏱️ timeout, ⚠️ interrupted |
+| `.Job` | Job name: `--name`, or the command's file name |
+| `.JobFull` | Full command line, shell-quoted |
+| `.Status` | `success`, `failure`, `timeout`, or `interrupted` |
+| `.StatusWord` | `succeeded`, `failed`, `timed out`, or `interrupted` |
+| `.Host`, `.WorkDir` | Host name and working directory |
+| `.Start`, `.End` | Start and end time, localized |
+| `.Duration` | Runtime, such as `3m 12s` |
+| `.ExitCode` | The job's exit code (number) |
+| `.ExitDetail` | `killed by signal 9 (KILL)`, `could not start: <reason>`, or empty |
+| `.Tail` | The `--tail` line count (number) |
+| `.StdoutTail`, `.StderrTail` | The last lines of each stream, cleaned for display; empty for an empty stream or `--tail 0` |
+| `.StdoutBytes`, `.StderrBytes` | Bytes the job wrote to each stream (number) |
+| `.StdoutOmitted`, `.StderrOmitted` | Bytes the 5 MiB log cap dropped from each attachment (number) |
+| `.Logs` | Attached log file names, comma separated; empty when nothing is attached |
+
+The values are inserted as they are. They become Markdown, so a job name with Markdown characters can change the
+formatting; the built-in template puts the command and the output in code spans and fenced blocks.
 
 ## Fonts
 

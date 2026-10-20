@@ -33,8 +33,15 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, res *sendResult
 		res.setError(errUsage, err)
 		return ExitUsage
 	}
-	// Attachment and inline-image files stay open until the message is
-	// encoded.
+	return sendMessage(cfg, opts, rc, msg, res, stdout, stderr)
+}
+
+// sendMessage sends an already composed message: the send subcommand's
+// pipeline after composition, shared with run (task 33), which composes
+// its report itself. Attachment and inline-image files stay open until
+// the message is encoded.
+func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mailgun.Message,
+	res *sendResult, stdout, stderr io.Writer) int {
 	defer closeFiles(msg.Attachments)
 	defer closeFiles(msg.Inline)
 

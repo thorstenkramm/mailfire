@@ -5,7 +5,7 @@ weight: 40
 icon: code
 ---
 
-Add `--json` to `send`, `resend` (including `--list`), `queue list|show|delete|stats`, `validate`,
+Add `--json` to `send`, `run`, `resend` (including `--list`), `queue list|show|delete|stats`, `validate`,
 `auth status|refresh|logout`, `version`, or `export-templates` to get a machine-readable result. The documents are
 the same for every sending provider (Mailgun, SMTP, Gmail); provider-specific details are noted below. This page documents schema version 1.
 
@@ -19,8 +19,8 @@ the same for every sending provider (Mailgun, SMTP, Gmail); provider-specific de
 - Failures are reported as JSON too, including usage and configuration errors, whenever the command line contains a
   `--json` (or `--json=true`) flag, even if it cannot be parsed otherwise. `--json` counts only where Mailfire reads it
   as a flag: not as the value of another flag (`--message --json`), not after a `--` terminator (a `--` that is the
-  value of a flag, as in `--config --`, is no terminator), and for `send`, `validate`, and `version` not after the
-  first positional argument. An unknown flag is assumed to take no value. For an unknown subcommand, whose flags are
+  value of a flag, as in `--config --`, is no terminator), and for `send`, `run`, `validate`, and `version` not after
+  the first positional argument (for `run`, a `--json` after the command belongs to the job). An unknown flag is assumed to take no value. For an unknown subcommand, whose flags are
   unknown, any `--json` before `--` counts.
 - Help is always text: `--help` with `--json` prints the usual help and exits with 0.
 - `--json` cannot be combined with `send --preview`, which writes HTML instead of a result (usage error, exit 1).
@@ -39,10 +39,10 @@ Every document has these fields:
 | Field | Type | Description |
 |---|---|---|
 | `schema_version` | number | `1` |
-| `command` | string | `send`, `resend`, `queue list`, `queue show`, `queue delete`, `queue stats`, `validate`, `auth status`, `auth refresh`, `auth logout`, `auth` (usage errors), `version`, `export-templates`; `queue` when the queue subcommand is missing or unknown; `mailfire` for an unknown subcommand |
+| `command` | string | `send`, `run`, `resend`, `queue list`, `queue show`, `queue delete`, `queue stats`, `validate`, `auth status`, `auth refresh`, `auth logout`, `auth` (usage errors), `version`, `export-templates`; `queue` when the queue subcommand is missing or unknown; `mailfire` for an unknown subcommand |
 | `outcome` | string | Result of the command; values per command below. `failed` whenever the command could not do its job |
 | `exit_code` | number | The process exit code |
-| `error` | object | Present if and only if `exit_code` is not 0 |
+| `error` | object | Present if and only if `exit_code` is not 0 — except for `run`, whose exit code is the job's: there `error` is present only when Mailfire itself failed |
 
 The `error` object:
 
@@ -97,6 +97,34 @@ no validation-only mode.
 {"schema_version":1,"command":"send","outcome":"sent","exit_code":0,"test_mode":false,"message_id":"<20261017091500.1@mg.example.com>"}
 {"schema_version":1,"command":"send","outcome":"deferred","exit_code":4,"error":{"code":"temporary_failure","message":"mailgun: send message: status 503: Service Unavailable"},"test_mode":false,"deferred_id":"20261017T091500.123456789-9f3ab2c17e4d88aa"}
 {"schema_version":1,"command":"send","outcome":"skipped","exit_code":0,"test_mode":false,"skip":{"reason":"cooldown","dedup_key":"disk-full-db1","since":"2026-10-17T09:00:00Z","eligible_at":"2026-10-17T10:00:00Z"}}
+```
+
+## run
+
+The `send` fields (`provider`, `test_mode`, `message_id`, `deferred_id`, `skip`) describe the report, plus a `job`
+object. `outcome` is the report's: `sent`, `accepted`, `skipped`, `deferred`, `failed`, or `not_sent` (`--on failure`
+and the job succeeded). `exit_code` equals the process exit code: the job's exit code, unless the report failed or
+was deferred. `error` describes Mailfire failures only; a failed job is reported in `job`, not as an error. A usage or
+configuration error before the job starts yields an envelope-only document without `job`. `--json` cannot be combined
+with `--preview`. With `--tee`, the job's output is copied to stderr, so stdout carries only the document.
+
+`job` fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Job name: `--name` or the command's file name |
+| `command` | string | Full command line, shell-quoted |
+| `host` | string | Host name |
+| `workdir` | string | Working directory |
+| `status` | string | `success`, `failure` (also when the command could not be started), `timeout`, or `interrupted` |
+| `exit_code` | number | The job's exit code: 127 not found, 126 not executable, 128+n killed by signal n |
+| `detail` | string | `killed by signal 9 (KILL)` or `could not start: <reason>`; omitted otherwise |
+| `started_at`, `ended_at` | string | Start and end time |
+| `duration_ms` | number | Runtime in milliseconds |
+| `stdout`, `stderr` | object | `bytes` (written by the job), `captured_bytes` (kept within the 5 MiB log cap), `omitted_bytes` (dropped by the cap), and `attached` (boolean) |
+
+```json
+{"schema_version":1,"command":"run","outcome":"sent","exit_code":3,"provider":"mailgun","test_mode":false,"message_id":"<20261018172210.1@mg.example.com>","job":{"name":"backup.sh","command":"/usr/local/bin/backup.sh","host":"db1","workdir":"/root","status":"failure","exit_code":3,"started_at":"2026-10-18T15:20:00Z","ended_at":"2026-10-18T15:22:10Z","duration_ms":130412,"stdout":{"bytes":1840,"captured_bytes":1840,"omitted_bytes":0,"attached":true},"stderr":{"bytes":97,"captured_bytes":97,"omitted_bytes":0,"attached":true}}}
 ```
 
 ## resend
@@ -189,8 +217,8 @@ retry of a pending message).
 | `domain` | object | Mailgun only, when all checks passed: `name` and `state` as reported by Mailgun |
 
 Check record: `name`, `ok` (boolean), and `message`. Names: `config_file`, `mandatory_keys`, then the provider check:
-`api_key_and_domain` (Mailgun), `smtp_connection` (SMTP: connection, TLS negotiation, and authentication; no message
-is sent and no recipient is probed), or `gmail_authorization` (Gmail: the stored authorization is usable, refreshed if
+`api_key_and_domain` (Mailgun), `smtp_connection` (SMTP: connection, TLS negotiation, and authentication when credentials
+are configured, which the message states; no message is sent and no recipient is probed), or `gmail_authorization` (Gmail: the stored authorization is usable, refreshed if
 nearly expired; nothing is sent).
 
 ```json

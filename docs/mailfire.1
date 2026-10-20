@@ -11,6 +11,12 @@ mailfire \- send email from the command line via Mailgun, Gmail, or SMTP
 .BI \-\-preview " path"
 .RI [ flags ]
 .br
+.B mailfire run
+.RI [ flags ]
+.RB [ \-\- ]
+.I command
+.RI [ args ...]
+.br
 .B mailfire validate
 .RB [ \-\-json ]
 .RB [ \-c
@@ -88,6 +94,11 @@ limiting, the composed message is stored for later retrying with
 Compose and send an email.
 This is the default subcommand.
 .TP
+.B run
+Run a command and email a report of its result; see
+.BR "RUNNING JOBS" .
+mailfire exits with the job's exit code.
+.TP
 .B validate
 Check, step by step, that the configuration file is found and valid TOML
 (or that
@@ -96,7 +107,8 @@ environment variables replace it),
 that all mandatory keys are well-formed, and that the selected provider
 accepts the credentials: Mailgun checks the API key and domain; SMTP connects,
 negotiates TLS, and authenticates without issuing MAIL, RCPT, or DATA (no
-recipient is probed); Gmail checks the stored authorization, refreshing it
+recipient is probed; without configured credentials, authentication is
+reported as not checked); Gmail checks the stored authorization, refreshing it
 when it is about to expire.
 No mail is sent.
 .TP
@@ -129,7 +141,11 @@ never send, change, or remove messages.
 Print the version, commit, and build date.
 .TP
 .BI export\-templates " folder"
-Export all four built-in templates as self-contained, editable HTML template files.
+Export all four built-in layout templates as self-contained, editable HTML
+template files, and the job report template
+.I job\-report.md
+of
+.BR run .
 Creates the folder if needed and refuses to overwrite existing template files.
 No configuration or provider credentials are required.
 .PP
@@ -322,6 +338,83 @@ Use this configuration file instead of searching the default locations.
 .TP
 .BR \-h ", " \-\-help
 Show help.
+.SS Flags of run
+Mailfire's flags come first.
+The first non-flag argument, or the argument after
+.BR \-\- ,
+is the command; everything after it belongs to the command, unparsed.
+.B run
+accepts
+.BR \-\-to ", " \-\-cc ", " \-\-bcc ", " \-\-from ", " \-\-template ,
+.BR \-\-template\-file ", " \-\-preheader ", " \-\-footer ", " \-\-test ,
+.BR \-\-no\-defer ", " \-\-timeout ", " \-\-dedup\-key ", " \-\-cooldown ,
+.BR \-\-preview ", " \-\-json ", and " \-c / \-\-config
+as for
+.BR send ,
+but no body, attachment, or format flags: the body is generated.
+.B \-\-test
+and
+.B \-\-preview
+only affect the email; the job always runs.
+.TP
+.BI \-\-subject " template"
+Subject template, default
+.BR "{emoji} {job} {status} on {host}" .
+Placeholders:
+.BR {emoji} ,
+.BR {job} ,
+.B {jobfull}
+(the shell-quoted command line),
+.B {status}
+(succeeded, failed, timed out, interrupted),
+.BR {duration} ,
+.BR {exitcode} ,
+.BR {host} .
+.B {{
+and
+.B }}
+produce literal braces; an unknown placeholder is a usage error.
+.TP
+.BI \-\-name " name"
+Job name; default: the command's file name.
+.TP
+.BI \-\-on " always|failure"
+Send a report for every run (default), or only when the job did not
+succeed (failure, timeout, interruption, could not start).
+.TP
+.BI \-\-max\-runtime " duration"
+Stop the job when exceeded (SIGTERM to its process group, SIGKILL after
+5 seconds; Windows: the process tree is terminated) and report
+.BR timeout .
+.TP
+.BI \-\-success\-codes " list"
+Comma-separated exit codes that count as success; default
+.BR 0 .
+mailfire's exit code is still the job's.
+.TP
+.BI \-\-tail " n"
+Last lines of stdout and of stderr shown in the body; default 10.
+.TP
+.B \-\-tee
+Copy the job's stdout and stderr live to mailfire's; with
+.BR \-\-json ,
+both go to standard error.
+Cannot be combined with
+.BR "\-\-preview \-" .
+.TP
+.B \-\-no\-attach\-logs
+Do not attach the logs.
+.TP
+.BI \-\-locale " locale"
+Date locale of the report, such as
+.B de_DE
+or
+.BR en_GB ;
+overrides
+.BR [run].locale .
+.TP
+.BI \-\-report\-template " path"
+Custom report content template (Markdown, Go text/template).
 .SS Flags of resend
 .TP
 .B \-\-list
@@ -698,6 +791,25 @@ How long a delivered notification suppresses repeats with the same
 .BR \-\-dedup\-key .
 Can be overridden with
 .BR \-\-cooldown .
+.SS [run]
+.TP
+.B locale
+String, optional.
+Date locale of
+.B mailfire run
+reports, such as
+.BR de_DE ,
+.BR de\-DE ,
+.BR de_DE.UTF\-8 ,
+or a bare language
+.RB ( de ).
+Without it,
+.BR LC_ALL ", " LC_TIME ", or " LANG
+decides (on Windows the user's locale), else
+.BR en_US .
+Only dates are localized; report texts stay English.
+Can be overridden with
+.BR \-\-locale .
 .SS Example
 .nf
 [mailgun]
@@ -847,6 +959,41 @@ only affect sending and are rejected with
 is rejected too: a preview writes HTML, not a command result.
 A failed preview exits with status 1, or with 2 for an invalid
 configuration file or template setting.
+.SH RUNNING JOBS
+.B mailfire run
+runs a command directly (no shell; use
+.B sh \-c
+for shell syntax), with empty standard input and the inherited
+environment and working directory.
+It captures stdout and stderr, then emails a report: status, start and end
+time, duration, exit code, the last lines of each stream, and the logs as
+attachments
+.RI ( job .stdout.log,
+.IR job .stderr.log).
+Each log is capped at 5 MiB, keeping the first and last part with a
+.B [... N bytes omitted ...]
+marker; at most 10 KiB per stream is held in memory, the rest goes to
+owner-only temporary files that are removed when mailfire exits.
+.PP
+Configuration, recipients, sender, the subject and report templates, and
+the locale are checked before the job starts; a problem there is a usage
+or configuration error and the job does not run.
+A command that cannot be started is reported as a failed job with exit
+code 127 (not found) or 126 (not executable).
+A signal to mailfire is forwarded to the job's process group; the report
+is still sent with status
+.BR interrupted .
+.PP
+mailfire exits with the job's exit code, so schedulers still see the
+job's result.
+If the job succeeded but the report could not be sent, or was deferred,
+mailfire's own exit status (2\(en5) applies instead. A failed job keeps its
+exit code even when reporting also fails.
+Job output is emailed and may contain secrets;
+.B \-\-no\-attach\-logs
+and
+.B "\-\-tail 0"
+limit what is sent.
 .SH JSON OUTPUT
 With
 .BR \-\-json ,
@@ -1072,6 +1219,13 @@ The
 settings.
 .B \-\-cooldown
 overrides the environment.
+.TP
+.B MAILFIRE_RUN_LOCALE
+The
+.B [run]
+locale.
+.B \-\-locale
+overrides the environment.
 .PP
 Errors name the variable that supplied an invalid value.
 .B mailfire validate
@@ -1127,6 +1281,13 @@ skips a repeated notification, and with 2 when the deduplication state
 cannot be used.
 .B \-\-preview
 exits with 1 when rendering or writing the output fails.
+.PP
+.B run
+exits with the job's exit code (127 or 126 when the command could not be
+started, 128+n when a signal n killed it), unless the report could not be
+sent or was deferred: then with 2 to 5 as above.
+Usage and configuration errors found before the job starts exit with 1
+and 2; the job does not run.
 .PP
 Errors are written to standard error in plain language, naming the failing step.
 With
@@ -1207,6 +1368,12 @@ mailfire \-\-json \-\-to ops@example.com \-\-subject "Backup" \-\-message ok \e
   | jq \-r .message_id
 mailfire queue list \-\-json \e
   | jq \-r '.messages[] | select(.status == "failed") | .id'
+.fi
+.PP
+Report a nightly backup from cron, only when it fails:
+.PP
+.nf
+0 2 * * * mailfire run \-\-to ops@example.com \-\-on failure \-\- /usr/local/bin/backup.sh
 .fi
 .SH FILES
 .TP
