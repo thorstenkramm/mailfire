@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/hmac"
@@ -51,6 +52,8 @@ type MockSMTP struct {
 	Users       map[string]string // accepted credentials
 	RequireAuth bool              // reply 530 to MAIL before AUTH
 	GreetDelay  time.Duration     // delay before the 220 greeting
+	MaxSize     int64             // advertised SIZE limit; zero omits SIZE
+	DiscardData bool              // consume DATA without retaining it (memory tests)
 
 	mu        sync.Mutex
 	rcptReply map[string]string // address -> reply line, e.g. "550 5.1.1 no such user"
@@ -223,6 +226,9 @@ func (s *smtpSession) handle(verb, arg string) bool {
 	switch verb {
 	case "EHLO", "HELO":
 		ext := []string{"mock.example", "8BITMIME"}
+		if m.MaxSize > 0 {
+			ext = append(ext, fmt.Sprintf("SIZE %d", m.MaxSize))
+		}
 		if m.StartTLS && !s.tls {
 			ext = append(ext, "STARTTLS")
 		}
@@ -296,17 +302,22 @@ func (s *smtpSession) data() bool {
 	msg := SMTPMessage{From: s.from, To: s.rcpts, TLS: s.tls, AuthUser: s.authUser}
 	var buf strings.Builder
 	for {
-		l, err := s.r.ReadString('\n')
+		l, err := s.r.ReadSlice('\n')
 		if err != nil {
 			return false
 		}
-		if l == ".\r\n" {
+		if bytes.Equal(l, []byte(".\r\n")) {
 			break
 		}
-		if !strings.HasSuffix(l, "\r\n") {
+		if !bytes.HasSuffix(l, []byte("\r\n")) {
 			msg.BareLF = true
 		}
-		buf.WriteString(strings.TrimPrefix(l, "."))
+		if !s.m.DiscardData {
+			if len(l) > 0 && l[0] == '.' {
+				l = l[1:]
+			}
+			_, _ = buf.Write(l)
+		}
 	}
 	msg.Data = []byte(buf.String())
 	s.m.mu.Lock()

@@ -13,6 +13,7 @@
 package jobrun
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -75,6 +76,30 @@ func (s *Stream) Omitted() int64  { return s.cap.Omitted() }
 // latest part. Raw bytes: callers sanitize for the report body and
 // attachments.
 func (s *Stream) Content() []byte { return s.cap.Content() }
+
+// ContentReader returns the captured stream in the same logical order as
+// Content, without materializing a spilled capture. The reader remains valid
+// until the owning Result is closed.
+func (s *Stream) ContentReader() io.Reader {
+	c := s.cap
+	if c.file == nil {
+		return bytes.NewReader(c.buf)
+	}
+	var readers []io.Reader
+	add := func(off, n int64) {
+		if n > 0 {
+			readers = append(readers, io.NewSectionReader(c.file, off, n))
+		}
+	}
+	add(0, c.head)
+	if c.Omitted() > 0 {
+		readers = append(readers, bytes.NewReader(c.omittedMarker()))
+	}
+	for _, region := range c.ringRegions() {
+		add(region.off, region.length)
+	}
+	return io.MultiReader(readers...)
+}
 
 // Tail returns the stream's last n lines, raw and without line endings.
 func (s *Stream) Tail(n int) [][]byte { return s.cap.tail(n) }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,8 +24,8 @@ import (
 )
 
 // resend.go implements the resend subcommand (PRD FR-4): it replays
-// deferred messages from the defer_dir. The stored request body is sent
-// verbatim with the stored Content-Type via Client.SendRaw — the message
+// deferred messages from the defer_dir. The stored request body is streamed
+// verbatim with the stored Content-Type via the provider client — the message
 // is never re-composed. A message is removed from the defer_dir only
 // after successful delivery; any failure keeps it in place.
 //
@@ -526,13 +525,25 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 		rec.Error = newJSONError(errQueue, err)
 		return ExitSendFail, false
 	}
-	body, err := os.ReadFile(filepath.Join(dir, deferral.BodyFile))
+	bodyPath := filepath.Join(dir, deferral.BodyFile)
+	body, err := os.Open(bodyPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		printfOutput(stdout, "%s: skipped (no longer in defer_dir; resent or removed by another process)\n", meta.ID)
 		rec.Reason = "gone"
 		return ExitOK, true
 	}
 	if err != nil {
+		printfOutput(stderr, "mailfire: resend: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
+		printfOutput(stdout, "%s: failed (stored request unreadable; message kept)\n", meta.ID)
+		rec.Error = newJSONError(errQueue, err)
+		return ExitSendFail, false
+	}
+	defer body.Close()
+	info, err := body.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		if err == nil {
+			err = fmt.Errorf("not a regular file")
+		}
 		printfOutput(stderr, "mailfire: resend: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
 		printfOutput(stdout, "%s: failed (stored request unreadable; message kept)\n", meta.ID)
 		rec.Error = newJSONError(errQueue, err)
@@ -546,7 +557,7 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 			return ExitSendFail, false
 		}
 	}
-	resp, blocked, sendErr := replay(cfg, timeout, rc, meta, body)
+	resp, blocked, sendErr := replay(cfg, timeout, rc, meta, body, info.Size())
 	if blocked != nil {
 		// Not a delivery failure: nothing was sent. The retry metadata is
 		// left untouched (no attempt, never marked permanently failed), so
@@ -560,13 +571,16 @@ func resendOne(cfg *config.Config, timeout time.Duration, store *deferral.Store,
 	if logger != nil {
 		from := meta.EnvelopeFrom
 		if from == "" {
-			from = storedFrom(meta.ContentType, body)
+			if copy, openErr := os.Open(bodyPath); openErr == nil {
+				from = storedFrom(meta.ContentType, copy)
+				_ = copy.Close()
+			}
 		}
 		logOutcome(logger, logging.Attempt{
 			From:    from,
 			To:      meta.To,
 			Subject: meta.Subject,
-			Size:    int64(len(body)),
+			Size:    info.Size(),
 		}, resp, sendErr, stderr)
 	}
 	return reportResend(store, meta, resp, sendErr, at, cooldown, rec, stdout, stderr), false
@@ -622,12 +636,12 @@ func reportResend(store *deferral.Store, meta deferral.Metadata, resp *mailgun.S
 // request for the debug-level log; meta.json does not record the sender.
 // It returns "" when the body cannot be parsed or has no from field —
 // the log line is still written.
-func storedFrom(contentType string, body []byte) string {
+func storedFrom(contentType string, body io.Reader) string {
 	_, params, err := mime.ParseMediaType(contentType)
 	if err != nil || params["boundary"] == "" {
 		return ""
 	}
-	r := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	r := multipart.NewReader(body, params["boundary"])
 	for {
 		part, err := r.NextPart()
 		if err != nil {

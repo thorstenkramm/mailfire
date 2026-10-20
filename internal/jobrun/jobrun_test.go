@@ -426,6 +426,13 @@ func TestCaptureRingExactBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			content := c.Content()
+			streamed, err := io.ReadAll((&Stream{cap: c}).ContentReader())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(streamed, content) {
+				t.Errorf("ContentReader differs from Content: %d vs %d bytes", len(streamed), len(content))
+			}
 			if int64(len(data)) <= tc.cap {
 				if !bytes.Equal(content, data) {
 					t.Errorf("content = %d bytes, want the full %d", len(content), len(data))

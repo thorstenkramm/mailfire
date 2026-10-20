@@ -116,6 +116,29 @@ func TestRunHelperProcess(t *testing.T) {
 	os.Exit(0)
 }
 
+func TestLogReaderNormalizesIncrementally(t *testing.T) {
+	// A one-byte source makes CRLF and UTF-8 sequences cross read boundaries.
+	src := &oneByteReader{data: []byte("a\r\nb\rc\xff\xfed\n")}
+	got, err := io.ReadAll(newLogReader(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "a\nb\rc\uFFFDd\n"; string(got) != want {
+		t.Fatalf("normalized log = %q, want %q", got, want)
+	}
+}
+
+type oneByteReader struct{ data []byte }
+
+func (r *oneByteReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	p[0] = r.data[0]
+	r.data = r.data[1:]
+	return 1, nil
+}
+
 // helperJob returns the command line running TestRunHelperProcess in
 // mode, and sets RUN_HELPER for the test (the job inherits it).
 func helperJob(t *testing.T, mode string, args ...string) []string {

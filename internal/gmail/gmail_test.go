@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -415,15 +414,17 @@ func TestSendRawClassificationAndContentType(t *testing.T) {
 func TestSendMessageEncodesAndRecords(t *testing.T) {
 	var got []byte
 	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Raw string }
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if r.URL.Path != "/upload/users/me/messages/send" || r.URL.Query().Get("uploadType") != "media" {
+			t.Errorf("request URL = %s", r.URL.String())
+		}
+		if r.Header.Get("Content-Type") != "message/rfc822" {
+			t.Errorf("Content-Type = %q", r.Header.Get("Content-Type"))
+		}
+		var err error
+		got, err = io.ReadAll(r.Body)
+		if err != nil {
 			t.Errorf("request body: %v", err)
 		}
-		raw, err := base64.RawURLEncoding.DecodeString(body.Raw)
-		if err != nil {
-			t.Errorf("raw message: %v", err)
-		}
-		got = raw
 		respond(t, w, `{"id":"m1"}`)
 	}))
 	defer s.Close()
@@ -433,7 +434,11 @@ func TestSendMessageEncodesAndRecords(t *testing.T) {
 	if err != nil || resp.ID != "m1" || resp.StatusCode != 200 {
 		t.Fatalf("resp = %+v, err = %v", resp, err)
 	}
-	if !bytes.Equal(got, msg.Encoded) || msg.EncodedType != "message/rfc822" || msg.Size != len(got) {
+	var encoded bytes.Buffer
+	if err := msg.Spool.CopyTo(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, encoded.Bytes()) || msg.EncodedType != "message/rfc822" || msg.Size != len(got) {
 		t.Error("the sent message is not the recorded encoding")
 	}
 	if _, err := c.SendMessage(context.Background(), &message.Message{TestMode: true}); !message.IsPermanent(err) {
@@ -444,6 +449,58 @@ func TestSendMessageEncodesAndRecords(t *testing.T) {
 	}
 	if _, err := c.SendRaw(context.Background(), "message/rfc822", make([]byte, maxMessageSize+1)); !message.IsPermanent(err) {
 		t.Errorf("oversized: %v, want permanent", err)
+	}
+}
+
+type zeroStream struct{}
+
+func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+type failingAttachment struct{ sent bool }
+
+func (r *failingAttachment) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.ErrUnexpectedEOF
+	}
+	r.sent = true
+	clear(p[:min(len(p), 1024)])
+	return min(len(p), 1024), nil
+}
+
+func TestAttachmentReadErrorIsPermanentAndNothingSent(t *testing.T) {
+	requests := 0
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { requests++ }))
+	defer s.Close()
+	c := mustClient(t, "tok", WithBaseURL(s.URL))
+	msg := &message.Message{From: "me@gmail.com", To: []string{"to@example.com"}, Text: "body",
+		Attachments: []message.File{{Name: "broken.bin", ContentType: "application/octet-stream", Reader: &failingAttachment{}}}}
+	if _, err := c.SendMessage(context.Background(), msg); !message.IsPermanent(err) {
+		t.Fatalf("SendMessage error = %v, want permanent", err)
+	}
+	if requests != 0 || msg.Spool != nil {
+		t.Fatalf("requests = %d, spool = %v; want nothing sent or retained", requests, msg.Spool)
+	}
+}
+
+func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		respond(t, w, `{"id":"m1"}`)
+	}))
+	defer s.Close()
+	c := mustClient(t, "tok", WithBaseURL(s.URL))
+	msg := &message.Message{From: "me@gmail.com", To: []string{"to@example.com"}, Text: "body",
+		Attachments: []message.File{{Name: "large.bin", ContentType: "application/octet-stream", Reader: io.LimitReader(zeroStream{}, 20<<20)}}}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := c.SendMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	defer msg.Spool.Abort()
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+		t.Fatalf("TotalAlloc grew by %d bytes for a 20 MiB attachment", delta)
 	}
 }
 

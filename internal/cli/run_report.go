@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -174,9 +175,8 @@ func newReport(opts *RunOptions, loc string, tmpl *template.Template, location r
 			continue
 		}
 		name := fileSafe(d.Job) + "." + label + ".log"
-		text := strings.ReplaceAll(strings.ToValidUTF8(string(s.Content()), "\uFFFD"), "\r\n", "\n")
 		r.attachments = append(r.attachments, mailgun.File{
-			Name: name, ContentType: "text/plain; charset=utf-8", Reader: strings.NewReader(text)})
+			Name: name, ContentType: "text/plain; charset=utf-8", Reader: newLogReader(s.ContentReader())})
 		r.attached[i] = true
 		logs = append(logs, name)
 	}
@@ -201,6 +201,102 @@ func newReport(opts *RunOptions, loc string, tmpl *template.Template, location r
 	}
 	r.markdown = body.String()
 	return r
+}
+
+// logReader applies the attachment normalization used before task 34 without
+// materializing a spilled job log: invalid UTF-8 bytes become U+FFFD and CRLF
+// becomes LF. A lone CR is preserved.
+type logReader struct {
+	r         *bufio.Reader
+	pending   [utf8.UTFMax]byte
+	start, n  int
+	pendingCR bool
+	invalid   bool
+	eof       bool
+}
+
+func newLogReader(r io.Reader) io.Reader {
+	return &logReader{r: bufio.NewReaderSize(r, 32<<10)}
+}
+
+func (r *logReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	written := 0
+	emit := func(b []byte) {
+		n := copy(p[written:], b)
+		written += n
+		if n < len(b) {
+			copy(r.pending[:], b[n:])
+			r.start, r.n = 0, len(b)-n
+		}
+	}
+	for written < len(p) {
+		if r.start < r.n {
+			n := copy(p[written:], r.pending[r.start:r.n])
+			written += n
+			r.start += n
+			if r.start < r.n {
+				break
+			}
+			r.start, r.n = 0, 0
+			continue
+		}
+		if r.eof {
+			if r.pendingCR {
+				r.pendingCR = false
+				emit([]byte{'\r'})
+				continue
+			}
+			if written == 0 {
+				return 0, io.EOF
+			}
+			break
+		}
+		rn, size, err := r.r.ReadRune()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				r.eof = true
+				continue
+			}
+			if written > 0 {
+				return written, nil
+			}
+			return 0, err
+		}
+		if r.pendingCR {
+			r.pendingCR = false
+			if rn == '\n' {
+				emit([]byte{'\n'})
+				continue
+			}
+			emit([]byte{'\r'})
+			if written == len(p) || r.n > 0 {
+				// The current rune still has to be handled next time.
+				if err := r.r.UnreadRune(); err != nil {
+					return written, err
+				}
+				continue
+			}
+		}
+		if rn == utf8.RuneError && size == 1 {
+			if r.invalid {
+				continue
+			}
+			r.invalid = true
+		} else {
+			r.invalid = false
+		}
+		if rn == '\r' {
+			r.pendingCR = true
+			continue
+		}
+		var encoded [utf8.UTFMax]byte
+		n := utf8.EncodeRune(encoded[:], rn)
+		emit(encoded[:n])
+	}
+	return written, nil
 }
 
 type reportLocation struct{ host, workdir string }

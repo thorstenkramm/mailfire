@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -158,15 +159,15 @@ func messageProvider(send func(context.Context, *message.Message) (*message.Send
 // deliverGmail sends msg through Gmail. setupErr reports a
 // configuration problem found before anything was sent (exit 2, nothing
 // stored); sendErr is the classified outcome of the attempt. For Gmail the
-// message is encoded before the token is refreshed, so a transient refresh
+// message is spooled before the token is refreshed, so a transient refresh
 // failure still leaves an encoded message to defer.
 func deliverGmail(store *gmail.Store, oauth gmail.OAuthClient, timeout time.Duration, apiURL string, msg *message.Message) (resp *message.SendResponse, sendErr, setupErr error) {
 	ctx := context.Background()
-	raw, err := gmail.EncodeMessage(msg)
+	s, id, err := gmail.EncodeMessageToSpool(msg)
 	if err != nil {
 		return nil, err, nil
 	}
-	msg.Encoded, msg.EncodedType, msg.Size = raw, mime.ContentType, len(raw)
+	msg.Spool, msg.EncodedType, msg.Size, msg.MessageID = s, mime.ContentType, int(s.Size()), id
 	creds, err := store.AccessToken(ctx, oauth, false)
 	switch {
 	case err != nil && !classified(err):
@@ -178,7 +179,12 @@ func deliverGmail(store *gmail.Store, oauth gmail.OAuthClient, timeout time.Dura
 	if err != nil {
 		return nil, nil, err
 	}
-	resp, err = client.SendRaw(ctx, msg.EncodedType, msg.Encoded)
+	f, err := s.Open()
+	if err != nil {
+		return nil, &message.APIError{Provider: "gmail", Op: "send message", Kind: message.KindPermanent, Message: err.Error()}, nil
+	}
+	defer f.Close()
+	resp, err = client.SendReader(ctx, msg.EncodedType, f, s.Size())
 	return resp, err, nil
 }
 
@@ -240,7 +246,7 @@ type blockedResend struct {
 // encoded for, using that provider's current credentials — not whichever
 // provider is now the default (tasks 30 and 31).
 func replay(cfg *config.Config, flagTimeout time.Duration, rc *runContext, meta deferral.Metadata,
-	body []byte) (*message.SendResponse, *blockedResend, error) {
+	body io.Reader, size int64) (*message.SendResponse, *blockedResend, error) {
 	ctx := context.Background()
 	provider := storedProvider(meta)
 	unavailable := func(err error) (*message.SendResponse, *blockedResend, error) {
@@ -264,7 +270,7 @@ func replay(cfg *config.Config, flagTimeout time.Duration, rc *runContext, meta 
 			return unavailable(err)
 		}
 		env := message.Envelope{From: meta.EnvelopeFrom, Recipients: meta.EnvelopeRecipients}
-		resp, err := client.SendRaw(ctx, env, body, meta.MessageID)
+		resp, err := client.SendReader(ctx, env, body, size, meta.MessageID)
 		return resp, nil, err
 	case config.ProviderGmail:
 		client, err := gmailClient(ctx, cfg, flagTimeout, rc)
@@ -274,14 +280,14 @@ func replay(cfg *config.Config, flagTimeout time.Duration, rc *runContext, meta 
 		case err != nil:
 			return nil, nil, err
 		}
-		resp, err := client.SendRaw(ctx, meta.ContentType, body)
+		resp, err := client.SendReader(ctx, meta.ContentType, body, size)
 		return resp, nil, err
 	default:
 		client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, flagTimeout)...)
 		if err != nil {
 			return unavailable(err)
 		}
-		resp, err := client.SendRaw(ctx, meta.ContentType, body)
+		resp, err := client.SendReader(ctx, meta.ContentType, body, size)
 		return resp, nil, err
 	}
 }

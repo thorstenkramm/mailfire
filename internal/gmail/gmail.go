@@ -19,14 +19,15 @@ import (
 
 	"github.com/thorstenkramm/mailfire/internal/message"
 	mailmime "github.com/thorstenkramm/mailfire/internal/mime"
+	"github.com/thorstenkramm/mailfire/internal/spool"
 )
 
 // DefaultTimeout applies to Gmail API and OAuth token requests when no
 // timeout is configured.
 const DefaultTimeout = 30 * time.Second
 
-// maxMessageSize is Gmail's documented limit for a raw message.
-const maxMessageSize = 25 << 20
+// maxMessageSize is Gmail's documented media-upload limit for a message.
+const maxMessageSize = 35_000_000
 
 const apiURL = "https://gmail.googleapis.com/gmail/v1"
 
@@ -71,42 +72,49 @@ func New(accessToken string, timeout time.Duration, opts ...Option) (*Client, er
 // String deliberately omits the token.
 func (c *Client) String() string { return "gmail.Client{base: " + c.baseURL + "}" }
 
-// SendMessage encodes the complete MIME message before contacting Gmail.
+// SendMessage encodes the complete MIME message to a spool before contacting
+// Gmail, then streams it through the media upload endpoint.
 func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*message.SendResponse, error) {
 	if msg.TestMode {
 		return nil, permanent("send message", 0, "Gmail has no validation-only test mode; use --preview instead")
 	}
-	raw, err := EncodeMessage(msg)
+	s, id, err := EncodeMessageToSpool(msg)
 	if err != nil {
 		return nil, err
 	}
-	msg.Encoded, msg.EncodedType, msg.Size = raw, mailmime.ContentType, len(raw)
-	return c.SendRaw(ctx, mailmime.ContentType, raw)
+	msg.Spool, msg.EncodedType, msg.Size, msg.MessageID = s, mailmime.ContentType, int(s.Size()), id
+	f, err := s.Open()
+	if err != nil {
+		return nil, permanent("send message", 0, err.Error())
+	}
+	defer f.Close()
+	return c.SendReader(ctx, mailmime.ContentType, f, s.Size())
 }
 
 // SendRaw sends (or replays) a built RFC 5322 message. contentType is
 // checked deliberately: Mailgun multipart queue entries must never reach
 // Gmail.
 func (c *Client) SendRaw(ctx context.Context, contentType string, raw []byte) (*message.SendResponse, error) {
+	return c.SendReader(ctx, contentType, bytes.NewReader(raw), int64(len(raw)))
+}
+
+// SendReader sends (or replays) a built RFC 5322 message through Gmail's
+// media upload endpoint without base64url or JSON expansion.
+func (c *Client) SendReader(ctx context.Context, contentType string, r io.Reader, size int64) (*message.SendResponse, error) {
 	const op = "send message"
-	if contentType != mailmime.ContentType || len(raw) == 0 {
+	if contentType != mailmime.ContentType || size <= 0 || r == nil {
 		return nil, permanent(op, 0, "stored message is not a MIME message")
 	}
-	if len(raw) > maxMessageSize {
-		return nil, permanent(op, 0, "message exceeds Gmail's 25 MiB size limit")
+	if size > maxMessageSize {
+		return nil, permanent(op, 0, "message exceeds Gmail's 35 MiB size limit")
 	}
-	payload, err := json.Marshal(struct {
-		Raw string `json:"raw"`
-	}{base64.RawURLEncoding.EncodeToString(raw)})
-	if err != nil {
-		return nil, permanent(op, 0, err.Error())
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/users/me/messages/send", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, mediaUploadURL(c.baseURL), r)
 	if err != nil {
 		return nil, permanent(op, 0, c.redact(err.Error()))
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", mailmime.ContentType)
+	req.ContentLength = size
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, c.redactErr(transportError(op, err, c.timeout))
@@ -126,6 +134,21 @@ func (c *Client) SendRaw(ctx context.Context, contentType string, raw []byte) (*
 		return nil, temporary(op, resp.StatusCode, "invalid response: expected a message id")
 	}
 	return &message.SendResponse{ID: c.redact(out.ID), StatusCode: resp.StatusCode, RawBody: c.redact(string(body))}, nil
+}
+
+func mediaUploadURL(base string) string {
+	u, err := url.Parse(base)
+	if err != nil {
+		return base + "/users/me/messages/send?uploadType=media"
+	}
+	if strings.HasSuffix(u.Path, "/gmail/v1") {
+		u.Path = strings.TrimSuffix(u.Path, "/gmail/v1") + "/upload/gmail/v1"
+	} else {
+		u.Path = "/upload" + u.Path
+	}
+	u.Path += "/users/me/messages/send"
+	u.RawQuery = "uploadType=media"
+	return u.String()
 }
 
 // closeBody closes a response body after it was read. The response
@@ -233,7 +256,31 @@ func EncodeMessage(msg *message.Message) ([]byte, error) {
 		return nil, permanent("encode message", 0, err.Error())
 	}
 	if len(raw) > maxMessageSize {
-		return nil, permanent("encode message", 0, "message exceeds Gmail's 25 MiB size limit")
+		return nil, permanent("encode message", 0, "message exceeds Gmail's 35 MiB size limit")
 	}
 	return raw, nil
+}
+
+// EncodeMessageToSpool streams Gmail's RFC 5322 message to an owner-only
+// temporary file. Attachment read failures happen here, before OAuth refresh
+// or any HTTP request, and are permanent.
+func EncodeMessageToSpool(msg *message.Message) (*spool.File, string, error) {
+	s, err := spool.Create()
+	if err != nil {
+		return nil, "", permanent("encode message", 0, err.Error())
+	}
+	id, err := mailmime.BuildWithBccTo(s, msg, time.Now())
+	if err != nil {
+		_ = s.Abort()
+		return nil, "", permanent("encode message", 0, err.Error())
+	}
+	if err := s.Finish(); err != nil {
+		_ = s.Abort()
+		return nil, "", permanent("encode message", 0, err.Error())
+	}
+	if s.Size() > maxMessageSize {
+		_ = s.Abort()
+		return nil, "", permanent("encode message", 0, "message exceeds Gmail's 35 MiB size limit")
+	}
+	return s, id, nil
 }

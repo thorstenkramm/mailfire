@@ -1,0 +1,47 @@
+multipart/form-data; boundary=mailfire-golden-boundary
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="from"
+
+Ops <ops@example.com>
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="to"
+
+to@example.com
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="cc"
+
+cc@example.com
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="bcc"
+
+hidden@example.com
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="subject"
+
+streaming form
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="text"
+
+plain
+text
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="html"
+
+<p>html</p>
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="o:testmode"
+
+yes
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="attachment"; filename="report.bin"
+Content-Type: application/octet-stream
+
+лллллллллллллллллллллллллллллллллллллллллллллллллллллллллл
+--mailfire-golden-boundary
+Content-Disposition: form-data; name="inline"; filename="pixel.png"
+Content-Type: image/png
+
+ЙPNG
+
+image
+--mailfire-golden-boundary--

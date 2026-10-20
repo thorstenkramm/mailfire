@@ -14,6 +14,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/thorstenkramm/mailfire/internal/spool"
 )
 
 // File is a file attached to a message, either as a regular attachment or
@@ -60,16 +62,14 @@ type Message struct {
 	// field of debug-level logging (PRD FR-3). Consumers must not set it.
 	Size int
 
-	// Encoded is the exact transport payload sent (multipart/form-data
-	// for Mailgun, RFC 5322 MIME for SMTP) and EncodedType its
-	// Content-Type (boundary included, or "message/rfc822"). Both are
-	// set by SendMessage alongside Size (nil/"" before the first call or
-	// when encoding failed). Deferral (task 14) persists these bytes:
-	// the readers in Attachments/Inline are consumed by encoding, so the
-	// message cannot be re-encoded after a send attempt (review 09).
-	// Consumers must not set them.
-	Encoded     []byte
+	// Spool is the exact transport payload sent (multipart/form-data for
+	// Mailgun, RFC 5322 MIME for SMTP/Gmail), held in an owner-only temporary
+	// file rather than memory. EncodedType includes the multipart boundary
+	// where applicable. MessageID is the generated RFC 5322 ID. Providers set
+	// these fields alongside Size; callers remove or persist Spool.
+	Spool       *spool.File
 	EncodedType string
+	MessageID   string
 }
 
 // SendResponse is a provider's answer to a successful send.

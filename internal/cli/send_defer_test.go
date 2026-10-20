@@ -423,8 +423,7 @@ func TestDeferMessageGuards(t *testing.T) {
 		msg  *mailgun.Message
 		want string
 	}{
-		{"test mode", &mailgun.Message{TestMode: true, Encoded: []byte("o:testmode=yes"),
-			EncodedType: "multipart/form-data; boundary=x"}, "never deferred"},
+		{"test mode", &mailgun.Message{TestMode: true}, "never deferred"},
 		{"not encoded", &mailgun.Message{}, "no encoded request"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

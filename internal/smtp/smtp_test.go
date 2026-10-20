@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	stdsmtp "net/smtp"
 	"net/textproto"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -88,8 +90,12 @@ func TestSendSTARTTLSAuthMIMEFidelityAndBccPrivacy(t *testing.T) {
 	}
 	// Byte-exact after the server undoes dot-stuffing: CRLF everywhere and
 	// lines starting with "." restored.
-	if !bytes.Equal(got.Data, msg.Encoded) {
-		t.Errorf("received DATA differs from the built message:\n%q\nwant\n%q", got.Data, msg.Encoded)
+	var encoded bytes.Buffer
+	if err := msg.Spool.CopyTo(&encoded); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Data, encoded.Bytes()) {
+		t.Errorf("received DATA differs from the built message:\n%q\nwant\n%q", got.Data, encoded.Bytes())
 	}
 	if got.BareLF {
 		t.Error("DATA contains a bare LF")
@@ -108,6 +114,65 @@ func TestSendSTARTTLSAuthMIMEFidelityAndBccPrivacy(t *testing.T) {
 	}
 	if strings.Contains(c.String(), testPass) {
 		t.Error("client String() leaks the password")
+	}
+}
+
+func TestAdvertisedSizeRejectedBeforeMail(t *testing.T) {
+	m, c := newServer(t, SecurityNone, func(m *testutil.MockSMTP) { m.MaxSize = 10 })
+	msg := testMessage()
+	if _, err := c.SendMessage(context.Background(), msg); !message.IsPermanent(err) || !strings.Contains(err.Error(), "SIZE limit 10") {
+		t.Fatalf("SendMessage error = %v, want permanent SIZE rejection", err)
+	}
+	for _, cmd := range m.Commands() {
+		if cmd.Verb == "MAIL" || cmd.Verb == "DATA" {
+			t.Fatalf("server saw %s after SIZE rejection", cmd.Verb)
+		}
+	}
+}
+
+type zeroStream struct{}
+
+func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+type failingAttachment struct{ sent bool }
+
+func (r *failingAttachment) Read(p []byte) (int, error) {
+	if r.sent {
+		return 0, io.ErrUnexpectedEOF
+	}
+	r.sent = true
+	n := min(len(p), 1024)
+	clear(p[:n])
+	return n, nil
+}
+
+func TestAttachmentReadErrorIsPermanentAndNothingSent(t *testing.T) {
+	m, c := newServer(t, SecurityNone, nil)
+	msg := &message.Message{From: "ops@example.com", To: []string{"to@example.com"}, Text: "body",
+		Attachments: []message.File{{Name: "broken.bin", ContentType: "application/octet-stream", Reader: &failingAttachment{}}}}
+	if _, err := c.SendMessage(context.Background(), msg); !message.IsPermanent(err) {
+		t.Fatalf("SendMessage error = %v, want permanent", err)
+	}
+	if commands := m.Commands(); len(commands) != 0 || msg.Spool != nil {
+		t.Fatalf("commands = %v, spool = %v; want no connection or retained spool", commands, msg.Spool)
+	}
+}
+
+func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
+	_, c := newServer(t, SecurityNone, func(m *testutil.MockSMTP) { m.DiscardData = true })
+	c.config.Timeout = 30 * time.Second // race instrumentation can make the 20 MiB transfer slow
+	msg := &message.Message{From: "ops@example.com", To: []string{"to@example.com"}, Text: "body",
+		Attachments: []message.File{{Name: "large.bin", ContentType: "application/octet-stream", Reader: io.LimitReader(zeroStream{}, 20<<20)}}}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := c.SendMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	defer msg.Spool.Abort()
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+		t.Fatalf("TotalAlloc grew by %d bytes for a 20 MiB attachment", delta)
 	}
 }
 

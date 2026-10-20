@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/thorstenkramm/mailfire/internal/message"
+	"github.com/thorstenkramm/mailfire/internal/spool"
 )
 
 // maxResponseBody caps how much of a Mailgun response is read. Real
@@ -41,14 +42,26 @@ type SendResponse = message.SendResponse
 // SendMessage posts the message to /v3/{domain}/messages as
 // multipart/form-data and returns Mailgun's message ID on success.
 func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, error) {
-	body, contentType, err := encodeMessage(msg)
+	s, err := spool.Create()
 	if err != nil {
 		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
-	msg.Size = body.Len()
-	msg.Encoded = body.Bytes()
-	msg.EncodedType = contentType
-	return c.postMessages(ctx, "send message", contentType, body)
+	contentType, err := encodeMessageTo(s, msg)
+	if err != nil {
+		_ = s.Abort()
+		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
+	}
+	if err := s.Finish(); err != nil {
+		_ = s.Abort()
+		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
+	}
+	msg.Size, msg.Spool, msg.EncodedType = int(s.Size()), s, contentType
+	f, err := s.Open()
+	if err != nil {
+		return nil, &Error{Op: "send message", Kind: KindPermanent, Message: c.redact(err.Error())}
+	}
+	defer f.Close()
+	return c.postMessages(ctx, "send message", contentType, f, s.Size())
 }
 
 // SendRaw posts body verbatim to /v3/{domain}/messages with the given
@@ -59,25 +72,31 @@ func (c *Client) SendMessage(ctx context.Context, msg *Message) (*SendResponse, 
 // of SendMessage. An empty body or Content-Type is a permanent error:
 // there is nothing meaningful to replay.
 func (c *Client) SendRaw(ctx context.Context, contentType string, body []byte) (*SendResponse, error) {
+	return c.SendReader(ctx, contentType, bytes.NewReader(body), int64(len(body)))
+}
+
+// SendReader replays a stored request body from r without re-composing it.
+func (c *Client) SendReader(ctx context.Context, contentType string, r io.Reader, size int64) (*SendResponse, error) {
 	const op = "resend message"
-	if len(body) == 0 || contentType == "" {
+	if size <= 0 || r == nil || contentType == "" {
 		return nil, &Error{Op: op, Kind: KindPermanent,
 			Message: "nothing to replay: stored request body or content type is empty"}
 	}
-	return c.postMessages(ctx, op, contentType, bytes.NewReader(body))
+	return c.postMessages(ctx, op, contentType, r, size)
 }
 
 // postMessages posts body to /v3/{domain}/messages with the given
 // Content-Type and classifies the response: the error kinds (and hence
 // the caller's exit codes and deferral decisions) are identical whether
 // the body was just encoded or replayed from the defer_dir.
-func (c *Client) postMessages(ctx context.Context, op, contentType string, body io.Reader) (*SendResponse, error) {
+func (c *Client) postMessages(ctx context.Context, op, contentType string, body io.Reader, size int64) (*SendResponse, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.baseURL+"/v3/"+url.PathEscape(c.domain)+"/messages", body)
 	if err != nil {
 		return nil, &Error{Op: op, Kind: KindPermanent, Message: c.redact(err.Error())}
 	}
 	req.Header.Set("Content-Type", contentType)
+	req.ContentLength = size
 
 	respBody, status, err := c.do(req, op)
 	if err != nil {
@@ -240,16 +259,30 @@ func truncate(s string, max int) string {
 	return string([]rune(s)[:max]) + "…"
 }
 
-// encodeMessage builds the multipart/form-data body. The whole body is
-// buffered in memory (file parts are streamed into the buffer via
-// io.Copy, so each file is held only once); Mailgun caps requests at
-// 25 MB, which bounds the buffer. Streaming the body through an io.Pipe
-// would avoid the buffer but loses Content-Length and turns local read
-// errors into mid-request transport errors (misclassified as deferrable);
-// revisit only if memory becomes a concern.
+// encodeMessage is retained for byte-level tests. Sending uses
+// encodeMessageTo to write the same form to a spool file.
 func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
 	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
+	contentType, err := encodeMessageTo(&buf, msg)
+	return &buf, contentType, err
+}
+
+// encodeMessageTo builds the multipart/form-data body in w. The send path
+// uses an owner-only spool file: this preserves Content-Length and makes
+// attachment read errors permanent local errors before any HTTP request,
+// without buffering the body in memory (task 34).
+func encodeMessageTo(dst io.Writer, msg *Message) (string, error) {
+	return encodeMessageToBoundary(dst, msg, "")
+}
+
+// encodeMessageToBoundary is encodeMessageTo with a fixed-boundary test hook.
+func encodeMessageToBoundary(dst io.Writer, msg *Message, boundary string) (string, error) {
+	w := multipart.NewWriter(dst)
+	if boundary != "" {
+		if err := w.SetBoundary(boundary); err != nil {
+			return "", fmt.Errorf("setting multipart boundary: %w", err)
+		}
+	}
 
 	writeFields := func(name string, values ...string) error {
 		for _, v := range values {
@@ -270,23 +303,23 @@ func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
 		{"subject", []string{msg.Subject}},
 	} {
 		if err := writeFields(f.name, f.values...); err != nil {
-			return nil, "", fmt.Errorf("encoding field %q: %w", f.name, err)
+			return "", fmt.Errorf("encoding field %q: %w", f.name, err)
 		}
 	}
 	// Attachment-only messages still need a body field in the API request.
 	if msg.Text != "" || msg.HTML == "" {
 		if err := writeFields("text", msg.Text); err != nil {
-			return nil, "", fmt.Errorf("encoding field %q: %w", "text", err)
+			return "", fmt.Errorf("encoding field %q: %w", "text", err)
 		}
 	}
 	if msg.HTML != "" {
 		if err := writeFields("html", msg.HTML); err != nil {
-			return nil, "", fmt.Errorf("encoding field %q: %w", "html", err)
+			return "", fmt.Errorf("encoding field %q: %w", "html", err)
 		}
 	}
 	if msg.TestMode {
 		if err := writeFields("o:testmode", "yes"); err != nil {
-			return nil, "", fmt.Errorf("encoding field %q: %w", "o:testmode", err)
+			return "", fmt.Errorf("encoding field %q: %w", "o:testmode", err)
 		}
 	}
 	for _, part := range []struct {
@@ -298,14 +331,14 @@ func encodeMessage(msg *Message) (*bytes.Buffer, string, error) {
 	} {
 		for _, file := range part.files {
 			if err := writeFile(w, part.name, file); err != nil {
-				return nil, "", fmt.Errorf("encoding %s %q: %w", part.name, file.Name, err)
+				return "", fmt.Errorf("encoding %s %q: %w", part.name, file.Name, err)
 			}
 		}
 	}
 	if err := w.Close(); err != nil {
-		return nil, "", fmt.Errorf("finalizing multipart body: %w", err)
+		return "", fmt.Errorf("finalizing multipart body: %w", err)
 	}
-	return &buf, w.FormDataContentType(), nil
+	return w.FormDataContentType(), nil
 }
 
 // writeFile adds one file part with an explicit Content-Type, streaming

@@ -6,6 +6,7 @@
 package smtp
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/thorstenkramm/mailfire/internal/message"
 	mailmime "github.com/thorstenkramm/mailfire/internal/mime"
+	"github.com/thorstenkramm/mailfire/internal/spool"
 )
 
 const DefaultTimeout = 30 * time.Second
@@ -112,19 +114,33 @@ func (c *Client) String() string {
 	return fmt.Sprintf("smtp.Client{host: %s, port: %d, security: %s, username: %t}", c.config.Host, c.config.Port, c.config.Security, c.config.Username != "")
 }
 
-// SendMessage builds MIME once, records it on msg for potential deferral,
-// and submits it using the message envelope.
+// SendMessage builds MIME once into an owner-only spool, records it on msg
+// for potential deferral, and streams it using the message envelope.
 func (c *Client) SendMessage(ctx context.Context, msg *message.Message) (*message.SendResponse, error) {
-	raw, id, err := mailmime.Build(msg, time.Now())
+	s, err := spool.Create()
 	if err != nil {
 		return nil, &Error{Op: "encode message", Message: err.Error(), Kind: message.KindPermanent}
 	}
-	msg.Encoded, msg.EncodedType, msg.Size = raw, mailmime.ContentType, len(raw)
+	id, err := mailmime.BuildTo(s, msg, time.Now())
+	if err != nil {
+		_ = s.Abort()
+		return nil, &Error{Op: "encode message", Message: err.Error(), Kind: message.KindPermanent}
+	}
+	if err := s.Finish(); err != nil {
+		_ = s.Abort()
+		return nil, &Error{Op: "encode message", Message: err.Error(), Kind: message.KindPermanent}
+	}
+	msg.Spool, msg.EncodedType, msg.Size, msg.MessageID = s, mailmime.ContentType, int(s.Size()), id
 	env, err := Envelope(msg)
 	if err != nil {
 		return nil, &Error{Op: "send message", Message: err.Error(), Kind: message.KindPermanent}
 	}
-	return c.SendRaw(ctx, env, raw, id)
+	f, err := s.Open()
+	if err != nil {
+		return nil, &Error{Op: "send message", Message: err.Error(), Kind: message.KindPermanent}
+	}
+	defer f.Close()
+	return c.SendReader(ctx, env, f, s.Size(), id)
 }
 
 // Envelope returns the bare SMTP envelope addresses for msg. It includes Bcc
@@ -167,7 +183,14 @@ func bareAddress(s string) (string, error) {
 // SendRaw submits a previously built RFC 5322 message. The caller supplies
 // the persisted original envelope and Message-ID, so retries keep both.
 func (c *Client) SendRaw(ctx context.Context, env message.Envelope, raw []byte, messageID string) (*message.SendResponse, error) {
-	if len(raw) == 0 {
+	return c.SendReader(ctx, env, bytes.NewReader(raw), int64(len(raw)), messageID)
+}
+
+// SendReader submits a previously built RFC 5322 message from r. size is
+// known from the spool or stored body.bin and is checked against an SMTP
+// server's advertised SIZE limit before MAIL FROM or DATA.
+func (c *Client) SendReader(ctx context.Context, env message.Envelope, r io.Reader, size int64, messageID string) (*message.SendResponse, error) {
+	if size <= 0 || r == nil {
 		return nil, &Error{Op: "resend message", Message: "nothing to replay: stored message is empty", Kind: message.KindPermanent}
 	}
 	if env.From == "" || len(env.Recipients) == 0 {
@@ -180,6 +203,12 @@ func (c *Client) SendRaw(ctx context.Context, env message.Envelope, raw []byte, 
 	// QUIT also after a rejection: nothing was sent, the session ends
 	// cleanly, and the server releases the transaction.
 	defer finish(cl)
+	if ok, param := cl.Extension("SIZE"); ok && param != "" {
+		limitText := strings.Fields(param)[0]
+		if limit, parseErr := strconv.ParseInt(limitText, 10, 64); parseErr == nil && limit > 0 && size > limit {
+			return nil, &Error{Op: "send message", Message: fmt.Sprintf("message size %d exceeds SMTP server SIZE limit %d", size, limit), Kind: message.KindPermanent}
+		}
+	}
 	if err := cl.Mail(env.From); err != nil {
 		return nil, c.replyError("send message", err)
 	}
@@ -194,7 +223,7 @@ func (c *Client) SendRaw(ctx context.Context, env message.Envelope, raw []byte, 
 	if err != nil {
 		return nil, c.replyError("send message", err)
 	}
-	if _, err := w.Write(raw); err != nil {
+	if _, err := io.Copy(w, r); err != nil {
 		return nil, c.transportError("send message", errors.Join(err, w.Close()))
 	}
 	// Close ends DATA and reads the server's verdict. A lost reply here

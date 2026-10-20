@@ -3,7 +3,6 @@ package cli
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -55,14 +54,16 @@ func newFakeGoogle(t *testing.T) *fakeGoogle {
 				tokenReply = fmt.Sprintf(`{"access_token":"fresh-access","refresh_token":"refresh-1","expires_in":3600,"id_token":%q}`, id)
 			}
 			reply(w, tokenReply)
-		case "/gmail/v1/users/me/messages/send":
-			var body struct{ Raw string }
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("fake Google: send request: %v", err)
+		case "/upload/gmail/v1/users/me/messages/send":
+			if r.URL.Query().Get("uploadType") != "media" {
+				t.Errorf("fake Google: uploadType = %q", r.URL.Query().Get("uploadType"))
 			}
-			raw, err := base64.RawURLEncoding.DecodeString(body.Raw)
+			if r.Header.Get("Content-Type") != "message/rfc822" {
+				t.Errorf("fake Google: Content-Type = %q", r.Header.Get("Content-Type"))
+			}
+			raw, err := io.ReadAll(r.Body)
 			if err != nil {
-				t.Errorf("fake Google: raw message: %v", err)
+				t.Errorf("fake Google: send request: %v", err)
 			}
 			f.sends = append(f.sends, raw)
 			f.auth = append(f.auth, r.Header.Get("Authorization"))

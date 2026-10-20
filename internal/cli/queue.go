@@ -343,17 +343,26 @@ func queueShow(store *deferral.Store, msgs []deferral.Metadata, cooldown time.Du
 			printfOutput(stderr, "mailfire: queue show: %v\n", err)
 			return jsonFail(stdout, opts.JSON, command, errQueue, err, ExitSendFail)
 		}
-		body, err := os.ReadFile(filepath.Join(dir, deferral.BodyFile))
-		if err != nil {
-			printfOutput(stderr, "mailfire: queue show: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
-			return jsonFail(stdout, opts.JSON, command, errQueue, fmt.Errorf("%s: reading %s: %w", meta.ID, deferral.BodyFile, err), ExitSendFail)
-		}
+		bodyPath := filepath.Join(dir, deferral.BodyFile)
 		if opts.JSON {
+			// JSON requires one base64 string; unlike sending/resending, this
+			// explicitly requested diagnostic representation is materialized.
+			body, err := os.ReadFile(bodyPath)
+			if err != nil {
+				printfOutput(stderr, "mailfire: queue show: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
+				return jsonFail(stdout, true, command, errQueue, fmt.Errorf("%s: reading %s: %w", meta.ID, deferral.BodyFile, err), ExitSendFail)
+			}
 			res.Raw = &rawRequest{ContentType: meta.ContentType, BodyBase64: base64.StdEncoding.EncodeToString(body)}
 			return emitJSON(stdout, res, ExitOK)
 		}
+		body, err := os.Open(bodyPath)
+		if err != nil {
+			printfOutput(stderr, "mailfire: queue show: %s: reading %s: %v\n", meta.ID, deferral.BodyFile, err)
+			return ExitSendFail
+		}
+		defer body.Close()
 		printfOutput(stdout, "Content-Type: %s\r\n\r\n", meta.ContentType)
-		if _, err := stdout.Write(body); err != nil {
+		if _, err := io.Copy(stdout, body); err != nil {
 			return ExitSendFail
 		}
 		return ExitOK

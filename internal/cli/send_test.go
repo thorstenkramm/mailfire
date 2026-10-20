@@ -80,6 +80,26 @@ func TestSendFromStdin(t *testing.T) {
 	}
 }
 
+func TestSendRemovesMessageSpoolAfterSuccess(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	m := testutil.NewMockMailgun(t)
+	cfg := writeConfig(t, "from = \"ops@example.com\"\n")
+	code, _, stderr := runMock(t, m, "body", "send", "-c", cfg, "--to", "a@example.com", "--subject", "s")
+	if code != ExitOK {
+		t.Fatalf("exit = %d; stderr: %s", code, stderr)
+	}
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "mailfire-message-") {
+			t.Fatalf("message spool remains after success: %s", entry.Name())
+		}
+	}
+}
+
 func TestSendFromFile(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	cfg := writeConfig(t, "from = \"ops@example.com\"\n")

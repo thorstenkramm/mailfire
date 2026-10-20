@@ -3,8 +3,10 @@ package deferral
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -115,6 +117,68 @@ func TestSaveAndListRoundTrip(t *testing.T) {
 	}
 	if list[0].Size != int64(len(body1)) || list[0].Subject != "first subject" {
 		t.Errorf("List[0] = %+v", list[0])
+	}
+}
+
+func TestSaveMessageFileAdoptsSpool(t *testing.T) {
+	s := newStore(t)
+	tmp, err := os.CreateTemp(t.TempDir(), "message-*.spool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const body = "streamed request body"
+	if _, err := tmp.WriteString(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	source := tmp.Name()
+	meta, err := s.SaveMessageFile(Metadata{To: []string{"a@example.com"}, ContentType: testContentType}, source, int64(len(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(source); !os.IsNotExist(err) {
+		t.Fatalf("source still exists after adoption: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(s.Dir, meta.ID, BodyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != body || meta.Size != int64(len(body)) {
+		t.Fatalf("body = %q, size = %d", got, meta.Size)
+	}
+}
+
+type zeroStream struct{}
+
+func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+func TestSaveMessageFileLargeBodyBoundedAllocation(t *testing.T) {
+	const size = 20 << 20
+	tmp, err := os.CreateTemp(t.TempDir(), "message-*.spool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.CopyN(tmp, zeroStream{}, size); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s := newStore(t)
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := s.SaveMessageFile(Metadata{ContentType: testContentType}, tmp.Name(), size); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+		t.Fatalf("TotalAlloc grew by %d bytes adopting a 20 MiB spool", delta)
 	}
 }
 

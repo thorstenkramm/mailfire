@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -225,6 +226,22 @@ func TestSendMessageSuccess(t *testing.T) {
 	if msg.Size != len(captured.Body) {
 		t.Errorf("msg.Size = %d, want encoded request size %d", msg.Size, len(captured.Body))
 	}
+}
+
+func TestEncodeMessageGolden(t *testing.T) {
+	msg := &Message{
+		From: "Ops <ops@example.com>", To: []string{"to@example.com"},
+		Cc: []string{"cc@example.com"}, Bcc: []string{"hidden@example.com"},
+		Subject: "streaming form", Text: "plain\ntext", HTML: "<p>html</p>", TestMode: true,
+		Attachments: []File{{Name: "report.bin", ContentType: "application/octet-stream", Reader: bytes.NewReader(bytes.Repeat([]byte{0xab}, 58))}},
+		Inline:      []File{{Name: "pixel.png", Reader: strings.NewReader("\x89PNG\r\n\x1a\nimage")}},
+	}
+	var body bytes.Buffer
+	contentType, err := encodeMessageToBoundary(&body, msg, "mailfire-golden-boundary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	testutil.Golden(t, "mailgun-form.golden", append([]byte(contentType+"\n"), body.Bytes()...))
 }
 
 func TestSendMessageRawBodyRedacted(t *testing.T) {
@@ -526,6 +543,35 @@ type errReader struct{}
 
 func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
+type zeroStream struct{}
+
+func (zeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+func TestSendMessageLargeAttachmentBoundedAllocation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, `{"id":"queued","message":"Queued"}`)
+	}))
+	defer srv.Close()
+	c, err := New(testAPIKey, testDomain, "us", WithBaseURL(srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg := &Message{From: "ops@example.com", To: []string{"a@example.com"}, Text: "body",
+		Attachments: []File{{Name: "large.bin", ContentType: "application/octet-stream", Reader: io.LimitReader(zeroStream{}, 20<<20)}}}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if _, err := c.SendMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+	defer msg.Spool.Abort()
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+		t.Fatalf("TotalAlloc grew by %d bytes for a 20 MiB attachment", delta)
+	}
+}
+
 func TestSendMessageUnreadableAttachment(t *testing.T) {
 	m := testutil.NewMockMailgun(t)
 	c := newTestClient(t, m)
@@ -541,6 +587,9 @@ func TestSendMessageUnreadableAttachment(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "broken.pdf") {
 		t.Errorf("error = %q, want the offending file named", err)
+	}
+	if msg.Spool != nil || len(m.Requests()) != 0 {
+		t.Errorf("spool = %v, requests = %d; want nothing retained or sent", msg.Spool, len(m.Requests()))
 	}
 }
 

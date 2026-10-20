@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
@@ -215,7 +214,7 @@ func deferMetadata(cfg *config.Config, msg *mailgun.Message, sendErr error, n *n
 		if env, err := smtp.Envelope(msg); err == nil {
 			m.EnvelopeFrom, m.EnvelopeRecipients = env.From, env.Recipients
 		}
-		m.MessageID = storedMessageID(msg.Encoded)
+		m.MessageID = msg.MessageID
 	}
 	if sendErr != nil {
 		m.LastError = sendErr.Error()
@@ -225,18 +224,6 @@ func deferMetadata(cfg *config.Config, msg *mailgun.Message, sendErr error, n *n
 		m.DedupCooldown = n.cooldown
 	}
 	return m
-}
-
-// storedMessageID extracts the generated SMTP Message-ID from a stored
-// RFC 5322 body. MIME build has already validated the header; empty is
-// retained as a safe failure during resend rather than invented anew.
-func storedMessageID(raw []byte) string {
-	for _, line := range strings.Split(string(raw), "\r\n") {
-		if name, value, ok := strings.Cut(line, ":"); ok && strings.EqualFold(name, "Message-ID") {
-			return strings.TrimSpace(value)
-		}
-	}
-	return ""
 }
 
 // resendGuard locks the deduplication scope of a deferred message before

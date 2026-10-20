@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -56,6 +59,52 @@ func seedDeferred(t *testing.T, deferDir, to, subject string, age time.Duration)
 		}
 	}
 	return meta
+}
+
+type resendZeroStream struct{}
+
+func (resendZeroStream) Read(p []byte) (int, error) { clear(p); return len(p), nil }
+
+func TestResendLargeStoredRequestBoundedAllocation(t *testing.T) {
+	const size = 20 << 20
+	tmp, err := os.CreateTemp(t.TempDir(), "request-*.spool")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.CopyN(tmp, resendZeroStream{}, size); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store := &deferral.Store{Dir: t.TempDir()}
+	meta, err := store.SaveMessageFile(deferral.Metadata{
+		To: []string{"to@example.com"}, Subject: "large", ContentType: "multipart/form-data; boundary=x",
+		Provider: config.ProviderMailgun,
+	}, tmp.Name(), size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, `{"id":"resent","message":"Queued"}`)
+	}))
+	defer srv.Close()
+	cfg := &config.Config{Provider: config.ProviderMailgun, APIKey: "test-key", Domain: "mg.example.com", Region: "us"}
+	rc := &runContext{clientOpts: []mailgun.Option{mailgun.WithBaseURL(srv.URL)}}
+	var stdout, stderr bytes.Buffer
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	code, gone := resendOne(cfg, 0, store, nil, nil, meta, time.Now(), config.DefaultCooldown, rc,
+		&resendMessage{ID: meta.ID}, &stdout, &stderr)
+	runtime.ReadMemStats(&after)
+	if code != ExitOK || gone {
+		t.Fatalf("resend = (%d, %t); stderr: %s", code, gone, stderr.String())
+	}
+	if delta := after.TotalAlloc - before.TotalAlloc; delta > 2<<20 {
+		t.Fatalf("TotalAlloc grew by %d bytes resending a 20 MiB stored request", delta)
+	}
 }
 
 func TestResendAccountMismatchKeepsRetryState(t *testing.T) {
@@ -849,7 +898,7 @@ func TestStoredFrom(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if got := storedFrom(w.FormDataContentType(), buf.Bytes()); got != "Ops <ops@example.com>" {
+	if got := storedFrom(w.FormDataContentType(), bytes.NewReader(buf.Bytes())); got != "Ops <ops@example.com>" {
 		t.Errorf("storedFrom = %q, want the from field", got)
 	}
 	for _, tc := range []struct{ name, ct, body string }{
@@ -858,7 +907,7 @@ func TestStoredFrom(t *testing.T) {
 		{"no from field", "multipart/form-data; boundary=zzz", "--zzz\r\nContent-Disposition: form-data; name=\"to\"\r\n\r\nx\r\n--zzz--\r\n"},
 		{"garbage body", w.FormDataContentType(), "garbage"},
 	} {
-		if got := storedFrom(tc.ct, []byte(tc.body)); got != "" {
+		if got := storedFrom(tc.ct, strings.NewReader(tc.body)); got != "" {
 			t.Errorf("%s: storedFrom = %q, want empty", tc.name, got)
 		}
 	}

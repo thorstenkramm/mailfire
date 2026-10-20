@@ -84,6 +84,13 @@ func (p *preparedDelivery) sendMessage(rc *runContext, msg *mailgun.Message, res
 	}
 
 	resp, err, setupErr := p.provider.send(msg)
+	if msg.Spool != nil {
+		defer func() {
+			if cleanupErr := msg.Spool.Abort(); cleanupErr != nil {
+				printfOutput(stderr, "mailfire: removing message spool: %v\n", cleanupErr)
+			}
+		}()
+	}
 	if setupErr != nil {
 		// Nothing was sent: the provider is not usable as configured.
 		printfOutput(stderr, "mailfire: send: %v\n", setupErr)
@@ -345,9 +352,9 @@ func (p *preparedRendering) renderMessage(opts *SendOptions, body string) (html,
 
 // openAttachments resolves the --attach paths into message attachments.
 // A leading ~ is expanded; the attachment's filename is the path's base
-// name. Content type is left empty: the Mailgun client sniffs it from
-// the first bytes of the part. Files are opened for streaming (the
-// client io.Copies them into the request) and must be closed by the
+// name. Content type is left empty: the provider encoder sniffs it from
+// the first bytes of the part. Files are opened for streaming into the
+// request spool and must be closed by the
 // caller via closeFiles once the message is encoded. On error, any
 // files opened so far are closed.
 //
@@ -358,7 +365,7 @@ func (p *preparedRendering) renderMessage(opts *SendOptions, body string) (html,
 //
 // File.Reader is consumed once and holds an *os.File, so the Message
 // cannot be re-encoded after a send attempt. Deferral (task 14) therefore
-// persists the encoded request body (Message.Encoded), never the Message
+// adopts the encoded request spool, never the Message
 // itself (review 09).
 func openAttachments(paths []string) ([]mailgun.File, error) {
 	files := make([]mailgun.File, 0, len(paths))
@@ -609,7 +616,7 @@ func deferDisabledBy(cfg *config.Config) string {
 	return "defer = false in " + cfg.Path
 }
 
-// deferMessage persists the encoded request in the defer_dir, recording
+// deferMessage adopts the encoded request spool into the defer_dir, recording
 // sendErr as its last error, removes messages older than max_age, and
 // enforces max_size, dropping the oldest deferred messages (FR-4); each
 // removal is reported on stderr and logged when logging is enabled. When
@@ -625,7 +632,7 @@ func deferMessage(cfg *config.Config, msg *mailgun.Message, sendErr error, logge
 		printfOutput(stderr, "mailfire: defer: test-mode sends are never deferred; the message was NOT saved\n")
 		return ExitSendFail
 	}
-	if len(msg.Encoded) == 0 || msg.EncodedType == "" {
+	if msg.Spool == nil || msg.Spool.Size() == 0 || msg.EncodedType == "" {
 		// Cannot happen: a deferrable failure implies the request was
 		// encoded (encoding errors are permanent). Guard anyway —
 		// storing nothing would silently lose the mail.
@@ -640,7 +647,7 @@ func deferMessage(cfg *config.Config, msg *mailgun.Message, sendErr error, logge
 		logDrop(logger, meta, false, time.Now(), stderr)
 	}
 	store.OnExpire = expireReporter("defer", logger, time.Now, stderr)
-	meta, err := store.SaveMessage(deferMetadata(cfg, msg, sendErr, n), msg.Encoded)
+	meta, err := store.SaveMessageFile(deferMetadata(cfg, msg, sendErr, n), msg.Spool.Path(), msg.Spool.Size())
 	if err != nil {
 		if meta.ID == "" {
 			printfOutput(stderr, "mailfire: defer: %v; the message was NOT saved and is lost\n", err)

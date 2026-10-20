@@ -50,6 +50,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -199,6 +200,43 @@ func (s *Store) SaveWithError(to []string, subject string, body []byte, contentT
 // ContentType, LastError, DedupScope, and DedupCooldown are stored; ID,
 // Timestamp, Size, and the retry state are assigned fresh.
 func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) {
+	return s.saveMessage(m, int64(len(body)), func(path string) error {
+		return writeFileSync(path, body)
+	})
+}
+
+// SaveMessageFile adopts the completed spool at source as body.bin. Rename is
+// attempted first; when the temp and defer directories are on different file
+// systems, it falls back to an owner-only streamed copy. The existing on-disk
+// format and meta.json-last commit protocol are unchanged, so older entries
+// remain replayable.
+func (s *Store) SaveMessageFile(m Metadata, source string, size int64) (meta Metadata, err error) {
+	if source == "" || size <= 0 {
+		return Metadata{}, errors.New("deferral: no encoded request to store")
+	}
+	return s.saveMessage(m, size, func(dest string) error {
+		if err := os.Rename(source, dest); err == nil {
+			return nil
+		}
+		src, err := os.Open(source)
+		if err != nil {
+			return err
+		}
+		dst, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
+		if err != nil {
+			_ = src.Close()
+			return err
+		}
+		_, copyErr := io.Copy(dst, src)
+		closeErr := errors.Join(src.Close(), dst.Sync(), dst.Close())
+		if err := errors.Join(copyErr, closeErr); err != nil {
+			return errors.Join(err, os.Remove(dest))
+		}
+		return os.Remove(source)
+	})
+}
+
+func (s *Store) saveMessage(m Metadata, size int64, writeBody func(string) error) (meta Metadata, err error) {
 	if s.Dir == "" {
 		return Metadata{}, errors.New("deferral: no defer_dir configured")
 	}
@@ -222,7 +260,7 @@ func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) 
 		Timestamp:          now,
 		To:                 append([]string(nil), m.To...),
 		Subject:            m.Subject,
-		Size:               int64(len(body)),
+		Size:               size,
 		ContentType:        m.ContentType,
 		Provider:           m.Provider,
 		Account:            m.Account,
@@ -240,7 +278,7 @@ func (s *Store) SaveMessage(m Metadata, body []byte) (meta Metadata, err error) 
 	// a power loss cannot persist the marker without the body; meta.json
 	// itself appears atomically via rename. A failed write removes the
 	// incomplete directory.
-	if err := writeFileSync(filepath.Join(dir, BodyFile), body); err != nil {
+	if err := writeBody(filepath.Join(dir, BodyFile)); err != nil {
 		return Metadata{}, errors.Join(fmt.Errorf("deferral: writing %s: %w", filepath.Join(dir, BodyFile), err), os.RemoveAll(dir))
 	}
 	if err := writeMeta(dir, meta); err != nil {
