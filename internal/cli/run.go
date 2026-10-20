@@ -13,10 +13,8 @@ import (
 	"time"
 
 	"github.com/thorstenkramm/mailfire/internal/config"
-	"github.com/thorstenkramm/mailfire/internal/dedup"
 	"github.com/thorstenkramm/mailfire/internal/jobrun"
 	"github.com/thorstenkramm/mailfire/internal/locale"
-	"github.com/thorstenkramm/mailfire/internal/mailgun"
 	"github.com/thorstenkramm/mailfire/internal/render"
 )
 
@@ -138,10 +136,7 @@ func parseRunFlags(args []string) (opts RunOptions, showHelp bool, err error) {
 	fs.StringVar(&timeoutFlag, "timeout", "", "")
 	fs.StringVar(&opts.DedupKey, "dedup-key", "", "")
 	fs.StringVar(&cooldownFlag, "cooldown", "", "")
-	fs.StringVar(&configShort, "c", "", "")
-	fs.StringVar(&opts.Config, "config", "", "")
-	fs.StringVar(&opts.Preview, "preview", "", "")
-	fs.BoolVar(&opts.JSON, "json", false, "")
+	bindRenderCommandFlags(fs, &configShort, &opts.Config, &opts.Preview, &opts.JSON)
 
 	// flag.Parse stops at the first non-flag argument: everything from
 	// the command on belongs to the command, unparsed.
@@ -311,13 +306,29 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		printfOutput(stderr, "mailfire: run: %v\n", err)
 		return jsonFail(stdout, opts.JSON, "run", errUsage, err, ExitUsage)
 	}
+	sendOpts := opts.sendOptions(nil)
+	rendering, err := prepareRendering(cfg, &sendOpts)
+	if err == nil {
+		_, err = rendering.renderHTML("Job report", opts.Preheader, "<p>Job output</p>")
+	}
+	if err != nil {
+		printfOutput(stderr, "mailfire: run: %v\n", err)
+		return jsonFail(stdout, opts.JSON, "run", errUsage, err, ExitUsage)
+	}
+	var delivery *preparedDelivery
 	if opts.Preview == "" {
-		if err := preflightRunDelivery(cfg, &opts, rc); err != nil {
+		if delivery, err = prepareRunDelivery(cfg, &sendOpts, rc); err != nil {
 			printfOutput(stderr, "mailfire: run: %v\n", err)
 			return jsonFail(stdout, opts.JSON, "run", errConfig, err, ExitConfig)
 		}
+		defer closeReported(delivery, stderr)
 	}
 	loc := runLocale(&opts, cfg)
+	location, err := loadReportLocation()
+	if err != nil {
+		printfOutput(stderr, "mailfire: run: %v\n", err)
+		return jsonFail(stdout, opts.JSON, "run", errConfig, err, ExitConfig)
+	}
 
 	job := runJobProcess(&opts, rc, stdout, stderr)
 	defer closeReported(job, stderr)
@@ -327,9 +338,9 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		}
 	}
 
-	rep := newReport(&opts, loc, reportTmpl, job)
+	rep := newReport(&opts, loc, reportTmpl, location, job)
 	if opts.Preview != "" {
-		return finishRunPreview(&opts, rc, rep, job, stdout, stderr)
+		return finishRunPreview(cfg, rendering, &opts, rc, rep, job, stdout, stderr)
 	}
 	if opts.On == "failure" && rep.Status == statusSuccess {
 		printfOutput(humanOut(stdout, opts.JSON), "report not sent (--on failure; the job succeeded)\n")
@@ -337,14 +348,15 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 		return emitRunResult(stdout, &opts, res, rep, job.ExitCode)
 	}
 
-	msg, err := composeReport(cfg, &opts, rep)
+	msg, err := composeReport(cfg, &opts, rep, rendering)
 	if err != nil {
 		printfOutput(stderr, "mailfire: run: %v\n", err)
 		res.setError(errUsage, err)
 		return emitRunResult(stdout, &opts, res, rep, reportExitCode(rep, ExitUsage))
 	}
-	sendOpts := opts.sendOptions(rep)
-	code := sendMessage(cfg, &sendOpts, rc, msg, &res.sendResult, humanOut(stdout, opts.JSON), stderr)
+	defer closeFiles(msg.Attachments)
+	defer closeFiles(msg.Inline)
+	code := delivery.sendMessage(rc, msg, &res.sendResult, humanOut(stdout, opts.JSON), stderr)
 	if code != ExitOK {
 		return emitRunResult(stdout, &opts, res, rep, reportExitCode(rep, code))
 	}
@@ -352,7 +364,7 @@ func runJob(args []string, rc *runContext, stdout, stderr io.Writer) int {
 }
 
 // loadRunConfig loads the configuration for run: the full configuration
-// for a send, the template selection only for a preview.
+// for a send, the template selection and report locale for a preview.
 func loadRunConfig(opts *RunOptions, stderr io.Writer) (*config.Config, error) {
 	ov := config.Overrides{
 		From:     opts.From != "",
@@ -373,49 +385,6 @@ func reportExitCode(rep *report, code int) int {
 		return rep.ExitCode
 	}
 	return code
-}
-
-// Check local delivery resources without sending or refreshing credentials.
-func preflightRunDelivery(cfg *config.Config, opts *RunOptions, rc *runContext) error {
-	logger, err := openLogger(cfg)
-	if err != nil {
-		return err
-	}
-	if logger != nil {
-		if err := logger.Close(); err != nil {
-			return err
-		}
-	}
-	if opts.DedupKey != "" && !opts.Test {
-		if err := cfg.CheckDedupDir(); err != nil {
-			return err
-		}
-		// Validate state access without beginning a notification or using
-		// suppression to skip the job itself.
-		msg := &mailgun.Message{To: opts.To, Cc: opts.Cc, Bcc: opts.Bcc}
-		scope := dedup.NewScope(cfg.Domain, recipientAddrs(msg), opts.DedupKey)
-		store := &dedup.Store{Dir: cfg.DedupDir}
-		guard, err := store.Acquire(scope.ID())
-		if err != nil {
-			return err
-		}
-		_, err = queuedNotification(cfg, scope.ID(), rc.now())
-		if err := errors.Join(err, guard.Release()); err != nil {
-			return err
-		}
-	}
-	switch cfg.Provider {
-	case config.ProviderSMTP:
-		_, err = smtpClient(cfg, opts.Timeout, rc)
-	case config.ProviderGmail:
-		_, err = gmailStore(cfg).Read()
-		if err == nil {
-			err = gmailOAuth(cfg, opts.Timeout, rc).Configured()
-		}
-	default:
-		_, err = mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...)
-	}
-	return err
 }
 
 // preflightRun checks everything that does not depend on the job's
@@ -444,18 +413,6 @@ func preflightRun(cfg *config.Config, opts *RunOptions) error {
 	}
 	if opts.Preview == "" && cfg.Provider != config.ProviderMailgun && opts.Test {
 		return errTestUnsupported(cfg.Provider)
-	}
-	_, file := templateSelection(cfg, &SendOptions{Template: opts.Template, TemplateFile: opts.TemplateFile})
-	if file != "" {
-		// The layout template must parse and render before the job runs.
-		if _, err := render.File(config.ExpandPath(file), render.Data{}); err != nil {
-			return err
-		}
-	}
-	if opts.Footer != "" {
-		if _, err := readFooter(opts.Footer); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -523,7 +480,7 @@ func (rc *runContext) signalSource() (<-chan os.Signal, func()) {
 // finishRunPreview renders the report locally and writes it to
 // opts.Preview. The job already ran for real; the preview only affects
 // the email.
-func finishRunPreview(opts *RunOptions, rc *runContext, rep *report, job *jobrun.Result,
+func finishRunPreview(cfg *config.Config, rendering *preparedRendering, opts *RunOptions, rc *runContext, rep *report, job *jobrun.Result,
 	stdout, stderr io.Writer) int {
 	if rep.err != nil {
 		printfOutput(stderr, "mailfire: run: preview: %v\n", rep.err)
@@ -531,14 +488,7 @@ func finishRunPreview(opts *RunOptions, rc *runContext, rep *report, job *jobrun
 	}
 	sendOpts := opts.sendOptions(rep)
 	sendOpts.Preview = opts.Preview
-	cfg, err := config.LoadRender(opts.Config, stderr, config.Overrides{
-		Template: opts.Template != "" || opts.TemplateFile != "",
-	})
-	if err != nil {
-		printfOutput(stderr, "mailfire: %v\n", err)
-		return ExitConfig
-	}
-	doc, inputs, err := renderPreview(cfg, &sendOpts, rc.stdin)
+	doc, inputs, err := renderPreviewPrepared(cfg, &sendOpts, rc.stdin, rendering)
 	if err != nil {
 		printfOutput(stderr, "mailfire: run: preview: %v\n", err)
 		return ExitUsage

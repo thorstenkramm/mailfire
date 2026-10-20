@@ -3,7 +3,9 @@
 package jobrun
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,8 +22,7 @@ import (
 // tree through it. A capture file cannot be removed while it is open, so
 // Close removes it.
 
-// setPgid is a no-op on Windows: process-tree control uses a Job Object,
-// assigned in startProc.
+// Start suspended so the Job Object can be assigned before user code runs.
 func setPgid(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED}
 }
@@ -70,8 +71,13 @@ func startProc(cmd *exec.Cmd) (proc, error) {
 		return proc{}, err
 	}
 	fail := func(err error) (proc, error) {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
+		killProcess(cmd)
+		if waitErr := cmd.Wait(); waitErr != nil {
+			var exit *exec.ExitError
+			if !errors.As(waitErr, &exit) {
+				err = errors.Join(err, waitErr)
+			}
+		}
 		p.close()
 		return proc{}, err
 	}
@@ -79,7 +85,7 @@ func startProc(cmd *exec.Cmd) (proc, error) {
 	if err != nil {
 		return fail(fmt.Errorf("opening job process: %w", err))
 	}
-	defer windows.CloseHandle(handle)
+	defer closeHandle(handle)
 	if err := windows.AssignProcessToJobObject(job, handle); err != nil {
 		return fail(fmt.Errorf("assigning job process: %w", err))
 	}
@@ -97,7 +103,7 @@ func resumeProcess(pid uint32) error {
 	if err != nil {
 		return fmt.Errorf("listing job threads: %w", err)
 	}
-	defer windows.CloseHandle(snapshot)
+	defer closeHandle(snapshot)
 	entry := windows.ThreadEntry32{Size: uint32(unsafe.Sizeof(windows.ThreadEntry32{}))}
 	for err = windows.Thread32First(snapshot, &entry); err == nil; err = windows.Thread32Next(snapshot, &entry) {
 		if entry.OwnerProcessID != pid {
@@ -108,8 +114,7 @@ func resumeProcess(pid uint32) error {
 			return fmt.Errorf("opening job thread: %w", err)
 		}
 		_, err = windows.ResumeThread(thread)
-		_ = windows.CloseHandle(thread)
-		return err
+		return errors.Join(err, windows.CloseHandle(thread))
 	}
 	return fmt.Errorf("finding suspended job thread: %w", err)
 }
@@ -118,12 +123,12 @@ func resumeProcess(pid uint32) error {
 // terminate for console processes, so termination is immediate.
 func (p proc) terminate() {
 	if p.job != 0 {
-		_ = windows.TerminateJobObject(p.job, 1)
+		if err := windows.TerminateJobObject(p.job, 1); err != nil {
+			log.Printf("mailfire: terminating job object: %v", err)
+		}
 		return
 	}
-	if p.cmd.Process != nil {
-		_ = p.cmd.Process.Kill()
-	}
+	killProcess(p.cmd)
 }
 
 // kill is terminate: the Job Object already ended the tree.
@@ -136,10 +141,24 @@ func (p proc) running() bool { return false }
 func (p proc) forward(os.Signal) { p.terminate() }
 
 // close releases the Job Object handle after the job has exited.
-func (p proc) close() {
+func (p *proc) close() {
 	if p.job != 0 {
-		_ = windows.CloseHandle(p.job)
+		closeHandle(p.job)
 		p.job = 0
+	}
+}
+
+func closeHandle(handle windows.Handle) {
+	if err := windows.CloseHandle(handle); err != nil {
+		log.Printf("mailfire: closing job handle: %v", err)
+	}
+}
+
+func killProcess(cmd *exec.Cmd) {
+	if cmd != nil && cmd.Process != nil {
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			log.Printf("mailfire: killing job process: %v", err)
+		}
 	}
 }
 
@@ -147,7 +166,7 @@ func (p proc) close() {
 func signalName(sig syscall.Signal) string { return "" }
 
 // unlinkOnCreate is a no-op: an open file cannot be removed on Windows.
-func unlinkOnCreate(f *os.File) {}
+func unlinkOnCreate(f captureFile) {}
 
 // removeTempFile removes the capture file on Close.
 func removeTempFile(name string, closeErr error) error {

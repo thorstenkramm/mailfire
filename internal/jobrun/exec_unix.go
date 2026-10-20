@@ -5,6 +5,7 @@ package jobrun
 import (
 	"errors"
 	"io/fs"
+	"log"
 	"os"
 	"os/exec"
 	"syscall"
@@ -62,7 +63,9 @@ func signalGroup(cmd *exec.Cmd, sig syscall.Signal) {
 	}
 	// The process may already have exited: ESRCH is expected, and the
 	// waiter reports the job's outcome either way.
-	_ = syscall.Kill(-cmd.Process.Pid, sig)
+	if err := syscall.Kill(-cmd.Process.Pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) {
+		log.Printf("mailfire: signaling job process group: %v", err)
+	}
 }
 
 // signalName maps a signal number to its conventional name for the
@@ -101,13 +104,17 @@ func signalName(sig syscall.Signal) string {
 
 // unlinkOnCreate removes the temporary capture file's directory entry:
 // the open handle keeps working, and no crash can leave the file behind.
-func unlinkOnCreate(f *os.File) {
+func unlinkOnCreate(f captureFile) {
 	if err := os.Remove(f.Name()); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		// Not fatal: Close's removal covers the normal exits.
 		_ = err
 	}
 }
 
-// removeTempFile removes the capture file on Close. It was unlinked at
-// creation, so this is a no-op on Unix.
-func removeTempFile(name string, closeErr error) error { return nil }
+// Normally already unlinked; retry if unlinking at creation failed.
+func removeTempFile(name string, closeErr error) error {
+	if err := os.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}

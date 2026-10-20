@@ -142,15 +142,14 @@ func readRegular(kind, path string) ([]byte, error) {
 }
 
 // newReport composes the report of a finished job.
-func newReport(opts *RunOptions, loc string, tmpl *template.Template, job *jobrun.Result) *report {
+func newReport(opts *RunOptions, loc string, tmpl *template.Template, location reportLocation, job *jobrun.Result) *report {
 	r := &report{job: job}
 	d := &r.ReportData
 	d.Status = jobStatus(opts, job)
 	d.Emoji, d.StatusWord = statusEmoji[d.Status], statusWord[d.Status]
 	d.Job = jobName(opts)
 	d.JobFull = quoteCommand(opts.Command)
-	d.Host, _ = os.Hostname()
-	d.WorkDir, _ = os.Getwd()
+	d.Host, d.WorkDir = location.host, location.workdir
 	d.Start = locale.Format(job.Start, monday.Locale(loc))
 	d.End = locale.Format(job.End, monday.Locale(loc))
 	d.Duration = formatDuration(job.Duration())
@@ -187,16 +186,36 @@ func newReport(opts *RunOptions, loc string, tmpl *template.Template, job *jobru
 	if subject == "" {
 		subject = defaultRunSubject
 	}
-	r.subject, _ = expandSubject(subject, map[string]string{
+	var err error
+	r.subject, err = expandSubject(subject, map[string]string{
 		"emoji": d.Emoji, "job": d.Job, "jobfull": d.JobFull, "status": d.StatusWord,
 		"duration": d.Duration, "exitcode": fmt.Sprint(d.ExitCode), "host": d.Host,
 	})
+	if err != nil {
+		r.err = fmt.Errorf("subject template: %w", err)
+		return r
+	}
 	var body strings.Builder
 	if err := tmpl.Execute(&body, d); err != nil {
 		r.err = fmt.Errorf("report template: %w", err)
 	}
 	r.markdown = body.String()
 	return r
+}
+
+type reportLocation struct{ host, workdir string }
+
+// Resolve location before execution: a job may remove its working directory.
+func loadReportLocation() (reportLocation, error) {
+	host, err := os.Hostname()
+	if err != nil {
+		return reportLocation{}, fmt.Errorf("job hostname: %w", err)
+	}
+	workdir, err := os.Getwd()
+	if err != nil {
+		return reportLocation{}, fmt.Errorf("job working directory: %w", err)
+	}
+	return reportLocation{host: host, workdir: workdir}, nil
 }
 
 // jobStatus classifies the job's outcome.
@@ -240,12 +259,12 @@ func fileSafe(name string) string {
 // composeReport builds the report message: the Markdown body rendered
 // into the layout template, plus the log attachments. Sender, recipients,
 // and subject are validated as for send.
-func composeReport(cfg *config.Config, opts *RunOptions, rep *report) (*mailgun.Message, error) {
+func composeReport(cfg *config.Config, opts *RunOptions, rep *report, rendering *preparedRendering) (*mailgun.Message, error) {
 	if rep.err != nil {
 		return nil, rep.err
 	}
 	sendOpts := opts.sendOptions(rep)
-	msg, err := compose(cfg, &sendOpts, strings.NewReader(""))
+	msg, err := composePrepared(cfg, &sendOpts, strings.NewReader(""), rendering)
 	if err != nil {
 		return nil, err
 	}

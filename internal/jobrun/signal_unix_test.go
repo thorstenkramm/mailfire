@@ -28,7 +28,7 @@ func TestTimeoutKillsDescendantAfterParentExits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer res.Close()
+	defer closeTest(t, res)
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestTimeoutKillsDescendantAfterParentExits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Kill(pid, syscall.SIGKILL)
+	defer killDescendant(t, pid)
 	if !res.TimedOut {
 		t.Fatal("expected timeout")
 	}

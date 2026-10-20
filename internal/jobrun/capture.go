@@ -3,6 +3,7 @@ package jobrun
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -33,21 +34,34 @@ const (
 // by newCapture; Write never fails, recording the first I/O error in err
 // instead (a full disk must not kill the job being watched).
 type capture struct {
-	label string // "stdout" or "stderr", for the temporary file name
-	cap   int64  // log cap: head cap/2 + ring cap/2
-	mem   int64  // in-memory limit, memLimit; tests lower it
-	buf   []byte // in-memory content while len ≤ mem
-	high  int64  // buffer high-water mark, for tests
-	file  *os.File
-	head  int64 // bytes stored in the head region [0, cap/2)
-	ring  int64 // bytes stored in the ring region
-	ringW int64 // next write offset within the ring region
-	total int64 // bytes the job wrote
-	err   error // first I/O error
+	label      string // "stdout" or "stderr", for the temporary file name
+	cap        int64  // log cap: head cap/2 + ring cap/2
+	mem        int64  // in-memory limit, memLimit; tests lower it
+	buf        []byte // in-memory content while len ≤ mem
+	high       int64  // buffer high-water mark, for tests
+	file       captureFile
+	createTemp func(string, string) (captureFile, error)
+	head       int64 // bytes stored in the head region [0, cap/2)
+	ring       int64 // bytes stored in the ring region
+	ringW      int64 // next write offset within the ring region
+	total      int64 // bytes the job wrote
+	err        error // first I/O error
+}
+
+// The small file contract permits deterministic disk-error tests without
+// global hooks, special devices, or filesystem-permission assumptions.
+type captureFile interface {
+	io.ReaderAt
+	io.WriterAt
+	io.Closer
+	Name() string
+	Chmod(os.FileMode) error
+	Stat() (os.FileInfo, error)
 }
 
 func newCapture(label string, cap int64) *capture {
-	return &capture{label: label, cap: cap, mem: memLimit}
+	return &capture{label: label, cap: cap, mem: min(int64(memLimit), cap),
+		createTemp: func(dir, pattern string) (captureFile, error) { return os.CreateTemp(dir, pattern) }}
 }
 
 // headCap returns the size of the head region, half the log cap.
@@ -83,6 +97,9 @@ func (c *capture) Spilled() bool { return c.file != nil }
 
 func (c *capture) Write(p []byte) (int, error) {
 	c.total += int64(len(p))
+	if c.err != nil {
+		return len(p), nil //nolint:nilerr // CaptureErr reports disk failures; keep draining the job.
+	}
 	if c.file == nil {
 		if int64(len(c.buf))+int64(len(p)) <= c.mem {
 			c.buf = append(c.buf, p...)
@@ -112,21 +129,21 @@ func (c *capture) setErr(err error) {
 // switches to file capture. The file is owner-only and, on Unix, unlinked
 // immediately.
 func (c *capture) spill() error {
-	f, err := os.CreateTemp("", "mailfire-run-*."+c.label+".log")
+	f, err := c.createTemp("", "mailfire-run-*."+c.label+".log")
 	if err != nil {
 		return fmt.Errorf("creating temporary file for %s: %w", c.label, err)
 	}
 	if err := f.Chmod(0o600); err != nil {
 		return errors.Join(fmt.Errorf("securing temporary file: %w", err), f.Close(), os.Remove(f.Name()))
 	}
-	c.file, c.high = f, c.mem
+	c.file = f
 	unlinkOnCreate(f)
 	if len(c.buf) > 0 {
-		if _, err := c.file.WriteAt(c.buf, 0); err != nil {
+		buf := c.buf
+		c.buf = nil
+		if err := c.writeFile(buf); err != nil {
 			return fmt.Errorf("writing %s capture: %w", c.label, err)
 		}
-		c.head = int64(len(c.buf))
-		c.buf = nil
 	}
 	return nil
 }
@@ -137,10 +154,14 @@ func (c *capture) writeFile(p []byte) error {
 		switch {
 		case c.head < c.headCap():
 			n := min(int64(len(p)), c.headCap()-c.head)
-			if _, err := c.file.WriteAt(p[:n], c.head); err != nil {
+			written, err := c.file.WriteAt(p[:n], c.head)
+			c.head += int64(written)
+			if err != nil {
 				return err
 			}
-			c.head += n
+			if int64(written) != n {
+				return io.ErrShortWrite
+			}
 			p = p[n:]
 		default:
 			ring := c.ringCap()

@@ -52,7 +52,11 @@ func TestExportedReportTemplateRuns(t *testing.T) {
 	if code := Run([]string{"export-templates", only}, &stdout, &stderr, BuildInfo{}); code != ExitUsage {
 		t.Errorf("export over an existing job-report.md: exit %d, want %d", code, ExitUsage)
 	}
-	if data, _ := os.ReadFile(filepath.Join(only, "job-report.md")); string(data) != "mine" {
+	data, err := os.ReadFile(filepath.Join(only, "job-report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "mine" {
 		t.Error("export replaced an existing job-report.md")
 	}
 

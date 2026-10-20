@@ -306,10 +306,7 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 	fs.StringVar(&timeoutFlag, "timeout", "", "")
 	fs.StringVar(&opts.DedupKey, "dedup-key", "", "")
 	fs.StringVar(&cooldownFlag, "cooldown", "", "")
-	fs.StringVar(&configShort, "c", "", "")
-	fs.StringVar(&opts.Config, "config", "", "")
-	fs.StringVar(&opts.Preview, "preview", "", "")
-	fs.BoolVar(&opts.JSON, "json", false, "")
+	bindRenderCommandFlags(fs, &configShort, &opts.Config, &opts.Preview, &opts.JSON)
 
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -400,6 +397,15 @@ func ParseSendFlags(args []string) (opts SendOptions, showHelp bool, err error) 
 		return SendOptions{JSON: opts.JSON}, false, errors.New("missing required flag: --subject")
 	}
 	return opts, false, nil
+}
+
+// bindRenderCommandFlags registers the configuration and output controls
+// shared by send and run. The job's positional arguments still remain unparsed.
+func bindRenderCommandFlags(fs *flag.FlagSet, configShort, configPath, preview *string, json *bool) {
+	fs.StringVar(configShort, "c", "", "")
+	fs.StringVar(configPath, "config", "", "")
+	fs.StringVar(preview, "preview", "", "")
+	fs.BoolVar(json, "json", false, "")
 }
 
 // resolveFormat maps the format flags to a single format name. Exactly one

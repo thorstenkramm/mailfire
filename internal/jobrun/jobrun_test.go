@@ -3,7 +3,9 @@ package jobrun
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
@@ -29,27 +31,53 @@ func TestHelperProcess(t *testing.T) {
 	}
 	switch mode {
 	case "echo":
-		fmt.Fprintln(os.Stdout, strings.Join(args, " "))
+		fmt.Println(strings.Join(args, " "))
 	case "stderr":
 		fmt.Fprintln(os.Stderr, strings.Join(args, " "))
 	case "exit":
-		n, _ := strconv.Atoi(args[0])
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		os.Exit(n)
 	case "sleep":
-		d, _ := time.ParseDuration(args[0])
+		fmt.Println("ready")
+		d, err := time.ParseDuration(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(d)
+	case "tree":
+		child := exec.Command(os.Args[0], "-test.run=TestHelperProcess", "--")
+		child.Env = append(os.Environ(), "HELPER_MODE=tree-child")
+		child.Stdout, child.Stderr = os.Stdout, os.Stderr
+		if err := child.Run(); err != nil {
+			os.Exit(1)
+		}
+	case "tree-child":
+		ignoreTerm()
+		fmt.Printf("child %d\n", os.Getpid())
+		closeTest(t, os.Stdout)
+		closeTest(t, os.Stderr)
+		time.Sleep(30 * time.Second)
 	case "big":
 		// Big output: n lines of numbered text, to exercise spill and cap.
-		n, _ := strconv.Atoi(args[0])
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := 0; i < n; i++ {
-			fmt.Fprintf(os.Stdout, "line %06d of the job's standard output\n", i)
+			fmt.Printf("line %06d of the job's standard output\n", i)
 		}
 	case "cr":
-		fmt.Fprint(os.Stdout, "progress 10%\rprogress 60%\rprogress 100%\r\n")
+		fmt.Print("progress 10%\rprogress 60%\rprogress 100%\r\n")
 	case "stubborn": // ignore SIGTERM, so only SIGKILL ends the job
 		ignoreTerm()
 		fmt.Println("ready")
-		d, _ := time.ParseDuration(args[0])
+		d, err := time.ParseDuration(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(d)
 	}
 	os.Exit(0)
@@ -106,7 +134,7 @@ func TestRunNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer res.Close()
+	defer closeTest(t, res)
 	if res.StartErr == nil {
 		t.Fatal("StartErr = nil, want an error")
 	}
@@ -130,7 +158,7 @@ func TestRunNotExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	defer res.Close()
+	defer closeTest(t, res)
 	if res.StartErr == nil {
 		t.Fatal("StartErr = nil, want an error")
 	}
@@ -187,8 +215,10 @@ func TestRunDrainsOutputAfterExit(t *testing.T) {
 
 func TestCaptureHugeTailLineIsBounded(t *testing.T) {
 	c := newCapture("stdout", DefaultLogCap)
-	defer c.Close()
-	_, _ = c.Write(bytes.Repeat([]byte("x"), DefaultLogCap))
+	defer closeTest(t, c)
+	if _, err := c.Write(bytes.Repeat([]byte("x"), DefaultLogCap)); err != nil {
+		t.Fatal(err)
+	}
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	lines := c.tail(10)
@@ -199,7 +229,9 @@ func TestCaptureHugeTailLineIsBounded(t *testing.T) {
 	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 256*1024 {
 		t.Errorf("tail allocated %d bytes for one huge line", allocated)
 	}
-	_, _ = c.Write([]byte("\rfinal progress\r\n"))
+	if _, err := c.Write([]byte("\rfinal progress\r\n")); err != nil {
+		t.Fatal(err)
+	}
 	if got := c.tail(1); len(got) != 1 || string(got[0]) != "final progress" {
 		t.Errorf("progress tail = %q", got)
 	}
@@ -259,26 +291,33 @@ func TestRunInterrupt(t *testing.T) {
 		t.Skip("no signal forwarding on Windows")
 	}
 	signals := make(chan os.Signal, 1)
-	spec := &Spec{Signals: signals, KillGrace: time.Second}
-	done := make(chan *Result, 1)
-	go func() { done <- runHelper(t, spec, "sleep", "30s") }()
-	// Give the job a moment to start, then interrupt mailfire.
-	time.Sleep(300 * time.Millisecond)
-	signals <- syscall.SIGTERM
-	select {
-	case res := <-done:
-		if !res.Interrupted {
-			t.Error("Interrupted = false, want true")
-		}
-		if res.ExitCode != 128+int(syscall.SIGTERM) {
-			t.Errorf("exit code = %d, want %d", res.ExitCode, 128+int(syscall.SIGTERM))
-		}
-		if !strings.Contains(res.Signal, "TERM") {
-			t.Errorf("Signal = %q, want it to name TERM", res.Signal)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the job was not stopped after the interrupt")
+	spec := &Spec{Signals: signals, KillGrace: time.Second, MaxRuntime: 10 * time.Second,
+		TeeOut: &signalOnReady{signals: signals}}
+	res := runHelper(t, spec, "sleep", "30s")
+	if !res.Interrupted {
+		t.Error("Interrupted = false, want true")
 	}
+	if res.ExitCode != 128+int(syscall.SIGTERM) {
+		t.Errorf("exit code = %d, want %d", res.ExitCode, 128+int(syscall.SIGTERM))
+	}
+	if !strings.Contains(res.Signal, "TERM") {
+		t.Errorf("Signal = %q, want it to name TERM", res.Signal)
+	}
+}
+
+type signalOnReady struct {
+	bytes.Buffer
+	signals chan os.Signal
+	sent    bool
+}
+
+func (w *signalOnReady) Write(p []byte) (int, error) {
+	n, err := w.Buffer.Write(p)
+	if !w.sent && strings.Contains(w.String(), "ready\n") {
+		w.sent = true
+		w.signals <- syscall.SIGTERM
+	}
+	return n, err
 }
 
 // TestRunBigOutput checks that a job printing much more than the memory
@@ -447,7 +486,7 @@ func TestCaptureTailInMemory(t *testing.T) {
 
 func TestCaptureTailSpilled(t *testing.T) {
 	c := newCapture("stdout", 64*1024)
-	defer func() { _ = c.Close() }()
+	defer closeTest(t, c)
 	var lines []string
 	for i := 0; i < 2000; i++ {
 		lines = append(lines, fmt.Sprintf("line %06d of the job's standard output", i))
@@ -471,3 +510,10 @@ func TestCaptureTailSpilled(t *testing.T) {
 }
 
 func isWindows() bool { return runtime.GOOS == "windows" }
+
+func closeTest(t *testing.T, c io.Closer) {
+	t.Helper()
+	if err := c.Close(); err != nil {
+		t.Error(err)
+	}
+}

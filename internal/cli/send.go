@@ -33,18 +33,17 @@ func send(cfg *config.Config, opts *SendOptions, rc *runContext, res *sendResult
 		res.setError(errUsage, err)
 		return ExitUsage
 	}
+	defer closeFiles(msg.Attachments)
+	defer closeFiles(msg.Inline)
 	return sendMessage(cfg, opts, rc, msg, res, stdout, stderr)
 }
 
 // sendMessage sends an already composed message: the send subcommand's
 // pipeline after composition, shared with run (task 33), which composes
-// its report itself. Attachment and inline-image files stay open until
-// the message is encoded.
+// its report itself. The caller owns attachment and inline-image files
+// and keeps them open until this returns.
 func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mailgun.Message,
 	res *sendResult, stdout, stderr io.Writer) int {
-	defer closeFiles(msg.Attachments)
-	defer closeFiles(msg.Inline)
-
 	// SMTP and Gmail have no Mailgun-style validation-only mode: a "test"
 	// would deliver real email, so it is refused before anything happens.
 	if cfg.Provider != config.ProviderMailgun && opts.Test {
@@ -56,13 +55,18 @@ func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mai
 
 	// The logfile is opened before any send attempt (FR-3): an unusable
 	// path is a configuration error and aborts the run.
-	logger, err := openLogger(cfg)
+	delivery, err := prepareDelivery(cfg, opts, rc)
 	if err != nil {
 		printfOutput(stderr, "mailfire: %v\n", err)
 		res.setError(errConfig, err)
 		return ExitConfig
 	}
-	defer closeLogger(logger, stderr)
+	defer closeReported(delivery, stderr)
+	return delivery.sendMessage(rc, msg, res, stdout, stderr)
+}
+
+func (p *preparedDelivery) sendMessage(rc *runContext, msg *mailgun.Message, res *sendResult, stdout, stderr io.Writer) int {
+	cfg, opts, logger := &p.cfg, &p.opts, p.logger
 
 	// Notification deduplication (task 24) is opt-in via --dedup-key.
 	// Test sends deliver nothing, so they neither check nor start the
@@ -79,7 +83,7 @@ func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mai
 		defer n.close()
 	}
 
-	resp, err, setupErr := deliver(cfg, opts, rc, msg)
+	resp, err, setupErr := p.provider.send(msg)
 	if setupErr != nil {
 		// Nothing was sent: the provider is not usable as configured.
 		printfOutput(stderr, "mailfire: send: %v\n", setupErr)
@@ -122,6 +126,10 @@ func sendMessage(cfg *config.Config, opts *SendOptions, rc *runContext, msg *mai
 // deterministic, so it fails the send instead of silently falling back
 // to an uninlined (differently rendered) mail.
 func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.Message, error) {
+	return composePrepared(cfg, opts, stdin, nil)
+}
+
+func composePrepared(cfg *config.Config, opts *SendOptions, stdin io.Reader, rendering *preparedRendering) (*mailgun.Message, error) {
 	from := opts.From
 	if from == "" {
 		from = cfg.From
@@ -167,7 +175,13 @@ func compose(cfg *config.Config, opts *SendOptions, stdin io.Reader) (*mailgun.M
 		Subject:  opts.Subject,
 		TestMode: opts.Test,
 	}
-	msg.HTML, msg.Text, msg.Inline, err = renderMessage(cfg, opts, body)
+	if rendering == nil {
+		rendering, err = prepareRendering(cfg, opts)
+		if err != nil {
+			return nil, err
+		}
+	}
+	msg.HTML, msg.Text, msg.Inline, err = rendering.renderMessage(opts, body)
 	if err != nil {
 		return nil, err
 	}
@@ -228,42 +242,56 @@ func templateSelection(cfg *config.Config, opts *SendOptions) (name, file string
 	return name, file
 }
 
-// renderMessage renders body in opts.Format into the html part (empty
-// for --txt), the text part and, for --md, the inline image parts the
-// html references via cid:. It is shared by sending and --preview, so a
-// preview shows exactly what would be sent. The caller owns the inline
-// files and must close them (closeFiles). Inlining is deterministic, so
-// a CSS inlining failure fails the render instead of silently falling
-// back to an uninlined (differently rendered) mail.
-func renderMessage(cfg *config.Config, opts *SendOptions, body string) (html, text string, inline []mailgun.File, err error) {
+// preparedRendering owns the layout and footer snapshot. Message-dependent
+// fields (subject and body) are supplied only when the job has completed.
+type preparedRendering struct {
+	name   string
+	layout *render.Custom
+	footer render.HTML
+}
+
+func prepareRendering(cfg *config.Config, opts *SendOptions) (*preparedRendering, error) {
 	// --preheader and --footer only reach here with --md or --html
 	// (checkFlags). The footer is trusted HTML read from a file and
 	// inserted into the template as is (FR-1, FR-7).
-	var footer render.HTML
+	p := &preparedRendering{}
+	var err error
 	if opts.Footer != "" {
-		if footer, err = readFooter(opts.Footer); err != nil {
-			return "", "", nil, err
+		if p.footer, err = readFooter(opts.Footer); err != nil {
+			return nil, err
 		}
 	}
-	template, templateFile := templateSelection(cfg, opts)
+	var file string
+	p.name, file = templateSelection(cfg, opts)
+	if file != "" && (opts.Format == "md" || opts.Format == "html") {
+		p.layout, err = render.LoadFile(config.ExpandPath(file))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return p, nil
+}
+
+func (p *preparedRendering) renderHTML(subject, preheader, fragment string) (string, error) {
+	d := render.Data{Template: p.name, Subject: subject, Preheader: preheader, Body: render.HTML(fragment), Footer: p.footer}
+	var doc string
+	if p.layout != nil {
+		var err error
+		if doc, err = p.layout.Render(d); err != nil {
+			return "", err
+		}
+	} else {
+		doc = render.Base(d)
+	}
+	return inliner.Inline(doc)
+}
+
+// renderMessage is shared by sending and previews. The caller owns the
+// returned inline files and must close them after encoding or abandoning the
+// message. CSS inlining errors fail rendering rather than changing the layout.
+func (p *preparedRendering) renderMessage(opts *SendOptions, body string) (html, text string, inline []mailgun.File, err error) {
 	renderHTML := func(fragment string) (string, error) {
-		d := render.Data{
-			Template:  template,
-			Subject:   opts.Subject,
-			Preheader: opts.Preheader,
-			Body:      render.HTML(fragment),
-			Footer:    footer,
-		}
-		var doc string
-		if templateFile != "" {
-			var err error
-			if doc, err = render.File(config.ExpandPath(templateFile), d); err != nil {
-				return "", err
-			}
-		} else {
-			doc = render.Base(d)
-		}
-		return inliner.Inline(doc)
+		return p.renderHTML(opts.Subject, opts.Preheader, fragment)
 	}
 
 	switch opts.Format {

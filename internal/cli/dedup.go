@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -46,6 +47,16 @@ type notification struct {
 	stderr   io.Writer
 }
 
+// checkNotificationStorage validates the same state used at send time without
+// beginning a notification, suppressing the job, or retaining its scope lock.
+func checkNotificationStorage(cfg *config.Config, opts *SendOptions, msg *mailgun.Message, rc *runContext) error {
+	n, _, err := prepareNotification(cfg, opts, msg, rc, io.Discard)
+	if err != nil {
+		return err
+	}
+	return n.guard.Release()
+}
+
 // startNotification checks the scope of msg and, unless it is a
 // duplicate, records that an attempt starts. done reports that the send
 // must end with code: skipped as a duplicate (0) or unable to use the
@@ -53,16 +64,37 @@ type notification struct {
 // (delivered or notDelivered) and close the notification.
 func startNotification(cfg *config.Config, opts *SendOptions, msg *mailgun.Message, rc *runContext,
 	res *sendResult, stdout, stderr io.Writer) (n *notification, code int, done bool) {
-	if err := cfg.CheckDedupDir(); err != nil {
-		printfOutput(stderr, "mailfire: %v\n", err)
+	n, queued, err := prepareNotification(cfg, opts, msg, rc, stderr)
+	if err != nil {
+		printfOutput(stderr, "mailfire: send: %v; nothing was sent\n", err)
 		res.setError(errDedup, err)
 		return nil, ExitConfig, true
+	}
+	if skip := n.guard.Check(queued); skip != nil {
+		reportSkip(stdout, opts.DedupKey, skip, rc.now())
+		res.Outcome = "skipped"
+		res.Skip = newSkipInfo(opts.DedupKey, skip)
+		n.close()
+		return nil, ExitOK, true
+	}
+	if err := n.guard.Begin(&n.scope); err != nil {
+		printfOutput(stderr, "mailfire: send: %v; nothing was sent\n", err)
+		res.setError(errDedup, err)
+		n.close()
+		return nil, ExitConfig, true
+	}
+	return n, ExitOK, false
+}
+
+func prepareNotification(cfg *config.Config, opts *SendOptions, msg *mailgun.Message, rc *runContext, stderr io.Writer) (*notification, string, error) {
+	if err := cfg.CheckDedupDir(); err != nil {
+		return nil, "", err
 	}
 	cooldown := opts.Cooldown
 	if cooldown <= 0 {
 		cooldown = cfg.DedupCooldown
 	}
-	n = &notification{
+	n := &notification{
 		store:    &dedup.Store{Dir: cfg.DedupDir, Now: rc.now},
 		scope:    dedup.NewScope(cfg.Domain, recipientAddrs(msg), opts.DedupKey),
 		cooldown: cooldown,
@@ -71,32 +103,14 @@ func startNotification(cfg *config.Config, opts *SendOptions, msg *mailgun.Messa
 	}
 	guard, err := n.store.Acquire(n.scope.ID())
 	if err != nil {
-		printfOutput(stderr, "mailfire: send: %v; nothing was sent\n", err)
-		res.setError(errDedup, err)
-		return nil, ExitConfig, true
+		return nil, "", err
 	}
 	n.guard = guard
 	queued, err := queuedNotification(cfg, n.scope.ID(), rc.now())
 	if err != nil {
-		printfOutput(stderr, "mailfire: send: dedup: checking deferred messages: %v; nothing was sent\n", err)
-		res.setError(errDedup, fmt.Errorf("checking deferred messages: %w", err))
-		n.close()
-		return nil, ExitConfig, true
+		return nil, "", errors.Join(fmt.Errorf("checking deferred messages: %w", err), guard.Release())
 	}
-	if skip := guard.Check(queued); skip != nil {
-		reportSkip(stdout, opts.DedupKey, skip, rc.now())
-		res.Outcome = "skipped"
-		res.Skip = newSkipInfo(opts.DedupKey, skip)
-		n.close()
-		return nil, ExitOK, true
-	}
-	if err := guard.Begin(&n.scope); err != nil {
-		printfOutput(stderr, "mailfire: send: %v; nothing was sent\n", err)
-		res.setError(errDedup, err)
-		n.close()
-		return nil, ExitConfig, true
-	}
-	return n, ExitOK, false
+	return n, queued, nil
 }
 
 // recipientAddrs returns the bare addresses of all recipients.

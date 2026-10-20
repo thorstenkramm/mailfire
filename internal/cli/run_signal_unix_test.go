@@ -40,7 +40,9 @@ func TestRunRealSIGTERM(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
+			if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				t.Error(err)
+			}
 			t.Fatalf("the job did not start; stderr:\n%s", stderr.String())
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -54,7 +56,9 @@ func TestRunRealSIGTERM(t *testing.T) {
 	select {
 	case err = <-done:
 	case <-time.After(15 * time.Second):
-		_ = cmd.Process.Kill()
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Error(err)
+		}
 		t.Fatal("mailfire did not finish after SIGTERM")
 	}
 	var ee *exec.ExitError

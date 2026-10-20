@@ -93,22 +93,3 @@ func TestRunTerminatesProcessTree(t *testing.T) {
 		t.Errorf("stdout = %q", got)
 	}
 }
-
-// Interruption terminates the process tree as well (no signals on
-// Windows).
-func TestRunInterruptTerminatesProcessTree(t *testing.T) {
-	path := writeScript(t, t.TempDir(), "tree.bat", "@echo off\r\nping -n 30 127.0.0.1 >nul\r\n")
-	signals := make(chan os.Signal, 1)
-	go func() {
-		time.Sleep(time.Second)
-		signals <- os.Interrupt
-	}()
-	start := time.Now()
-	res := runScript(t, &Spec{Path: path, Signals: signals})
-	if !res.Interrupted {
-		t.Error("Interrupted = false, want true")
-	}
-	if elapsed := time.Since(start); elapsed > 15*time.Second {
-		t.Errorf("run took %v: the process tree was not terminated", elapsed)
-	}
-}

@@ -15,26 +15,44 @@ import (
 
 // File renders a user-supplied, self-contained Go text/template.
 func File(path string, d Data) (string, error) {
+	t, err := LoadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return t.Render(d)
+}
+
+// Custom is a parsed layout. It retains its source across long-running jobs
+// and is safe to render concurrently; rendering never reads the source file.
+type Custom struct{ tmpl *template.Template }
+
+// LoadFile reads and parses a custom layout once.
+func LoadFile(path string) (*Custom, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return "", fmt.Errorf("template file: %w", err)
+		return nil, fmt.Errorf("template file: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("template file %s: not a regular file", path)
+		return nil, fmt.Errorf("template file %s: not a regular file", path)
 	}
 	source, err := os.ReadFile(path)
 	if err != nil {
-		return "", fmt.Errorf("template file: %w", err)
+		return nil, fmt.Errorf("template file: %w", err)
 	}
 	t, err := template.New(path).Funcs(template.FuncMap{"html": html.EscapeString}).Option("missingkey=error").Parse(string(source))
 	if err != nil {
-		return "", fmt.Errorf("template file: %w", err)
+		return nil, fmt.Errorf("template file: %w", err)
 	}
+	return &Custom{tmpl: t}, nil
+}
+
+// Render executes the already parsed layout with the message data.
+func (t *Custom) Render(d Data) (string, error) {
 	if d.Lang == "" {
 		d.Lang = "en"
 	}
 	var buf bytes.Buffer
-	if err := t.Execute(&buf, d); err != nil {
+	if err := t.tmpl.Execute(&buf, d); err != nil {
 		return "", fmt.Errorf("template file: %w", err)
 	}
 	return buf.String(), nil

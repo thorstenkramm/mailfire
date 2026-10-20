@@ -33,7 +33,9 @@ func TestRunHelperProcess(t *testing.T) {
 	if os.Getenv("RUN_AS_MAILFIRE") != "" {
 		// Act as the mailfire binary itself, with real signal handling
 		// (no injected signal channel). The job must not act as the CLI.
-		_ = os.Unsetenv("RUN_AS_MAILFIRE")
+		if err := os.Unsetenv("RUN_AS_MAILFIRE"); err != nil {
+			t.Fatal(err)
+		}
 		os.Exit(Run(args, os.Stdout, os.Stderr, testInfo, WithBaseURL(os.Getenv("RUN_MOCK_URL"))))
 	}
 	mode := os.Getenv("RUN_HELPER")
@@ -41,12 +43,28 @@ func TestRunHelperProcess(t *testing.T) {
 		return
 	}
 	switch mode {
+	case "remove-inputs":
+		for _, path := range args {
+			if err := os.Remove(path); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(99)
+			}
+		}
+		fmt.Println("job completed")
 	case "spill-sleep": // spill both streams to temporary files, then sleep args[0]
 		for i := 0; i < 2000; i++ {
 			fmt.Printf("stdout line %d of a job that prints more than the memory limit\n", i)
 			fmt.Fprintf(os.Stderr, "stderr line %d of a job that prints more than the memory limit\n", i)
 		}
-		d, _ := time.ParseDuration(args[0])
+		if len(args) > 1 {
+			if err := os.WriteFile(args[1], nil, 0o600); err != nil {
+				os.Exit(99)
+			}
+		}
+		d, err := time.ParseDuration(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(d)
 	case "echo": // print the arguments, one per line
 		for _, a := range args {
@@ -55,30 +73,44 @@ func TestRunHelperProcess(t *testing.T) {
 	case "fail": // stdout, stderr, then exit with args[0]
 		fmt.Println("some output")
 		fmt.Fprintln(os.Stderr, "something went wrong")
-		n, _ := strconv.Atoi(args[0])
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		os.Exit(n)
 	case "touch": // create the marker file args[0]
 		if err := os.WriteFile(args[0], nil, 0o600); err != nil {
 			os.Exit(99)
 		}
 	case "sleep":
-		d, _ := time.ParseDuration(args[0])
+		d, err := time.ParseDuration(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(d)
 	case "touch-sleep": // create the marker file args[0], then sleep args[1]
 		if err := os.WriteFile(args[0], nil, 0o600); err != nil {
 			os.Exit(99)
 		}
-		d, _ := time.ParseDuration(args[1])
+		d, err := time.ParseDuration(args[1])
+		if err != nil {
+			t.Fatal(err)
+		}
 		time.Sleep(d)
 	case "lines": // n numbered lines
-		n, _ := strconv.Atoi(args[0])
+		n, err := strconv.Atoi(args[0])
+		if err != nil {
+			t.Fatal(err)
+		}
 		for i := 1; i <= n; i++ {
 			fmt.Printf("line %d\n", i)
 		}
 	case "fancy": // ANSI colors, progress, invalid UTF-8, a long line
 		fmt.Print("\x1b[32mgreen\x1b[0m\n")
 		fmt.Print("10%\r50%\r100%\r\n")
-		os.Stdout.Write([]byte("bad \xff byte\n"))
+		if _, err := os.Stdout.Write([]byte("bad \xff byte\n")); err != nil {
+			t.Fatal(err)
+		}
 		fmt.Println(strings.Repeat("x", 1500))
 	}
 	os.Exit(0)
@@ -362,11 +394,14 @@ func TestRunJSONWithTee(t *testing.T) {
 	if doc["command"] != "run" || doc["outcome"] != "sent" || doc["exit_code"] != float64(3) || doc["error"] != nil {
 		t.Errorf("document = %v", doc)
 	}
-	job := doc["job"].(map[string]any)
+	job, ok := doc["job"].(map[string]any)
+	if !ok {
+		t.Fatalf("job is not an object: %v", doc["job"])
+	}
 	if job["status"] != "failure" || job["exit_code"] != float64(3) || job["name"] != "nightly" {
 		t.Errorf("job = %v", job)
 	}
-	if out := job["stdout"].(map[string]any); out["bytes"] != float64(12) || out["attached"] != true {
+	if out, ok := job["stdout"].(map[string]any); !ok || out["bytes"] != float64(12) || out["attached"] != true {
 		t.Errorf("job.stdout = %v", out)
 	}
 	for _, want := range []string{"some output", "something went wrong"} {

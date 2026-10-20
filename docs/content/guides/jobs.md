@@ -44,6 +44,10 @@ sender, the subject and report templates, the locale, and the selected provider'
 error (exit 1) or a configuration error (exit 2), and the job does **not** run. Provider problems that show only when
 sending — a rejected API key, an unreachable server — are reported after the job, with the exit codes below.
 
+The configuration, report template, layout template, and footer are loaded before the job starts and reused for its
+report. Edits to those files during a long-running job apply to the next run. Gmail access tokens are refreshed when
+the report is sent, if needed.
+
 `--test` (Mailgun only) and `--preview` affect only the email: the job always runs for real.
 
 ## Exit codes

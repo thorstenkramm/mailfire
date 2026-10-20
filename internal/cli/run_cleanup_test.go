@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -43,13 +44,33 @@ func captureFiles(t *testing.T, dir string) []string {
 	return names
 }
 
-// interruptAfter sends SIGTERM on the returned channel after d, standing
-// in for a signal delivered to mailfire.
-func interruptAfter(d time.Duration) chan os.Signal {
+// Wait for the helper's readiness marker rather than assuming startup has
+// completed after an arbitrary delay (especially on loaded Windows runners).
+func interruptWhenReady(t *testing.T, marker string) chan os.Signal {
+	t.Helper()
 	signals := make(chan os.Signal, 1)
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
 	go func() {
-		time.Sleep(d)
-		signals <- syscall.SIGTERM
+		ticker := time.NewTicker(10 * time.Millisecond)
+		defer ticker.Stop()
+		timeout := time.NewTimer(10 * time.Second)
+		defer timeout.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-timeout.C:
+				t.Error("job did not signal readiness")
+				signals <- syscall.SIGTERM
+				return
+			case <-ticker.C:
+				if _, err := os.Stat(marker); err == nil {
+					signals <- syscall.SIGTERM
+					return
+				}
+			}
+		}
 	}()
 	return signals
 }
@@ -78,10 +99,11 @@ func TestRunLeavesNoTemporaryFiles(t *testing.T) {
 			if tc.fail {
 				m.SendResponse = testutil.BadRequest()
 			}
-			args := append([]string{"run"}, append(runArgs(cfg, tc.args...), helperJob(t, "spill-sleep", tc.sleep)...)...)
+			marker := filepath.Join(tmp, "ready")
+			args := append([]string{"run"}, append(runArgs(cfg, tc.args...), helperJob(t, "spill-sleep", tc.sleep, marker)...)...)
 			opts := []Option{WithBaseURL(m.URL())}
 			if tc.signal {
-				opts = append(opts, WithSignals(interruptAfter(time.Second)))
+				opts = append(opts, WithSignals(interruptWhenReady(t, marker)))
 			}
 			var stdout, stderr bytes.Buffer
 			code := Run(args, &stdout, &stderr, testInfo, opts...)
@@ -109,10 +131,11 @@ func TestRunInterrupted(t *testing.T) {
 	for _, on := range []string{"always", "failure"} {
 		t.Run(on, func(t *testing.T) {
 			m := testutil.NewMockMailgun(t)
-			args := append([]string{"run"}, append(runArgs(cfg, "--on", on), helperJob(t, "sleep", "30s")...)...)
+			marker := filepath.Join(t.TempDir(), "ready")
+			args := append([]string{"run"}, append(runArgs(cfg, "--on", on), helperJob(t, "touch-sleep", marker, "30s")...)...)
 			var stdout, stderr bytes.Buffer
 			start := time.Now()
-			code := Run(args, &stdout, &stderr, testInfo, WithBaseURL(m.URL()), WithSignals(interruptAfter(500*time.Millisecond)))
+			code := Run(args, &stdout, &stderr, testInfo, WithBaseURL(m.URL()), WithSignals(interruptWhenReady(t, marker)))
 			if time.Since(start) > 15*time.Second {
 				t.Error("the job was not stopped promptly")
 			}

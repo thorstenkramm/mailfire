@@ -97,6 +97,10 @@ type previewInput struct {
 // the sending pipeline and returns the preview document plus the input
 // files it read.
 func renderPreview(cfg *config.Config, opts *SendOptions, stdin io.Reader) (string, []previewInput, error) {
+	return renderPreviewPrepared(cfg, opts, stdin, nil)
+}
+
+func renderPreviewPrepared(cfg *config.Config, opts *SendOptions, stdin io.Reader, rendering *preparedRendering) (string, []previewInput, error) {
 	if opts.From != "" {
 		if _, err := parseAddress(opts.From); err != nil {
 			return "", nil, fmt.Errorf("invalid sender %q: %w", opts.From, err)
@@ -137,7 +141,13 @@ func renderPreview(cfg *config.Config, opts *SendOptions, stdin io.Reader) (stri
 	if body == "" {
 		return "", nil, errors.New("mail body missing: use stdin, --file or --message")
 	}
-	doc, _, inline, err := renderMessage(cfg, opts, body)
+	if rendering == nil {
+		rendering, err = prepareRendering(cfg, opts)
+		if err != nil {
+			return "", nil, err
+		}
+	}
+	doc, _, inline, err := rendering.renderMessage(opts, body)
 	if err != nil {
 		return "", nil, err
 	}

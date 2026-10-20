@@ -106,44 +106,80 @@ func gmailClient(ctx context.Context, cfg *config.Config, flagTimeout time.Durat
 	return gmail.New(creds.AccessToken, providerTimeout(cfg, config.ProviderGmail, flagTimeout), gmail.WithBaseURL(rc.gmailAPIURL))
 }
 
-// deliver sends msg through the selected provider. setupErr reports a
-// configuration problem found before anything was sent (exit 2, nothing
-// stored); sendErr is the classified outcome of the attempt. For Gmail the
-// message is encoded before the token is refreshed, so a transient refresh
-// failure still leaves an encoded message to defer.
-func deliver(cfg *config.Config, opts *SendOptions, rc *runContext, msg *message.Message) (resp *message.SendResponse, sendErr, setupErr error) {
-	ctx := context.Background()
+// preparedProvider captures local provider settings and reusable clients.
+// Gmail credentials are deliberately refreshed only at delivery time: a job
+// may outlive an access token. checkLocal performs no network requests.
+type preparedProvider struct {
+	send       func(*message.Message) (resp *message.SendResponse, sendErr, setupErr error)
+	checkLocal func() error
+}
+
+// prepareProvider is the single provider-selection point for send and run.
+func prepareProvider(cfg *config.Config, opts *SendOptions, rc *runContext) (*preparedProvider, error) {
 	switch cfg.Provider {
 	case config.ProviderSMTP:
 		client, err := smtpClient(cfg, opts.Timeout, rc)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		resp, err = client.SendMessage(ctx, msg)
-		return resp, err, nil
+		return messageProvider(client.SendMessage), nil
 	case config.ProviderGmail:
-		raw, err := gmail.EncodeMessage(msg)
-		if err != nil {
-			return nil, err, nil
-		}
-		msg.Encoded, msg.EncodedType, msg.Size = raw, mime.ContentType, len(raw)
-		client, err := gmailClient(ctx, cfg, opts.Timeout, rc)
-		switch {
-		case err != nil && !classified(err):
-			return nil, nil, err
-		case err != nil:
-			return nil, err, nil
-		}
-		resp, err = client.SendRaw(ctx, msg.EncodedType, msg.Encoded)
-		return resp, err, nil
-	default:
+		store, oauth := gmailStore(cfg), gmailOAuth(cfg, opts.Timeout, rc)
+		timeout, apiURL := providerTimeout(cfg, config.ProviderGmail, opts.Timeout), rc.gmailAPIURL
+		return &preparedProvider{
+			checkLocal: func() error {
+				if _, err := store.Read(); err != nil {
+					return err
+				}
+				return oauth.Configured()
+			},
+			send: func(msg *message.Message) (*message.SendResponse, error, error) {
+				return deliverGmail(store, oauth, timeout, apiURL, msg)
+			},
+		}, nil
+	case config.ProviderMailgun, "":
 		client, err := mailgun.New(cfg.APIKey, cfg.Domain, cfg.Region, clientOptions(rc, cfg, opts.Timeout)...)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
-		resp, err = client.SendMessage(ctx, msg)
-		return resp, err, nil
+		return messageProvider(client.SendMessage), nil
+	default:
+		return nil, fmt.Errorf("unsupported sending provider %q", cfg.Provider)
 	}
+}
+
+func messageProvider(send func(context.Context, *message.Message) (*message.SendResponse, error)) *preparedProvider {
+	return &preparedProvider{send: func(msg *message.Message) (*message.SendResponse, error, error) {
+		resp, err := send(context.Background(), msg)
+		return resp, err, nil
+	}}
+}
+
+// deliverGmail sends msg through Gmail. setupErr reports a
+// configuration problem found before anything was sent (exit 2, nothing
+// stored); sendErr is the classified outcome of the attempt. For Gmail the
+// message is encoded before the token is refreshed, so a transient refresh
+// failure still leaves an encoded message to defer.
+func deliverGmail(store *gmail.Store, oauth gmail.OAuthClient, timeout time.Duration, apiURL string, msg *message.Message) (resp *message.SendResponse, sendErr, setupErr error) {
+	ctx := context.Background()
+	raw, err := gmail.EncodeMessage(msg)
+	if err != nil {
+		return nil, err, nil
+	}
+	msg.Encoded, msg.EncodedType, msg.Size = raw, mime.ContentType, len(raw)
+	creds, err := store.AccessToken(ctx, oauth, false)
+	switch {
+	case err != nil && !classified(err):
+		return nil, nil, err
+	case err != nil:
+		return nil, err, nil
+	}
+	client, err := gmail.New(creds.AccessToken, timeout, gmail.WithBaseURL(apiURL))
+	if err != nil {
+		return nil, nil, err
+	}
+	resp, err = client.SendRaw(ctx, msg.EncodedType, msg.Encoded)
+	return resp, err, nil
 }
 
 // storedProvider is the provider a deferred message was encoded for;

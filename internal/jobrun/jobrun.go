@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"sync"
@@ -149,14 +150,14 @@ func Run(spec *Spec) (*Result, error) {
 	if err != nil {
 		return fail(fmt.Errorf("capturing stdout: %w", err))
 	}
-	defer outPipe.Close()
-	defer outWrite.Close()
+	defer closePipe(outPipe)
+	defer closePipe(outWrite)
 	errPipe, errWrite, err := os.Pipe()
 	if err != nil {
 		return fail(fmt.Errorf("capturing stderr: %w", err))
 	}
-	defer errPipe.Close()
-	defer errWrite.Close()
+	defer closePipe(errPipe)
+	defer closePipe(errWrite)
 	cmd.Stdout, cmd.Stderr = outWrite, errWrite
 	p, err := startProc(cmd)
 	if err != nil {
@@ -166,8 +167,8 @@ func Run(spec *Spec) (*Result, error) {
 		return res, nil
 	}
 	res.proc = p
-	_ = outWrite.Close()
-	_ = errWrite.Close()
+	closePipe(outWrite)
+	closePipe(errWrite)
 
 	// Capture both streams concurrently: reading only one would
 	// deadlock a job that fills the other's pipe buffer. The tee copies
@@ -191,10 +192,7 @@ func Run(spec *Spec) (*Result, error) {
 	}
 	var waitErr error
 	var exited, captured bool
-	for {
-		if exited && captured && (graceCh == nil || !p.running()) {
-			break
-		}
+	for !exited || !captured || graceCh != nil && p.running() {
 		select {
 		case waitErr = <-wait:
 			exited = true
@@ -271,7 +269,15 @@ func copyStream(cap *capture, tee io.Writer, src io.Reader) {
 	if tee != nil {
 		dst = io.MultiWriter(cap, tee)
 	}
-	_, _ = io.Copy(dst, src)
+	if _, err := io.Copy(dst, src); err != nil {
+		cap.setErr(fmt.Errorf("reading %s pipe: %w", cap.label, err))
+	}
+}
+
+func closePipe(f *os.File) {
+	if err := f.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		log.Printf("mailfire: closing job pipe: %v", err)
+	}
 }
 
 // exitCode classifies the wait result: the process exit code, or 128+n
