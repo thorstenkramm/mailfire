@@ -225,25 +225,33 @@ func removeStale(dir string, now time.Time) {
 	}
 }
 
-// afterCleanup ends the process with sig's default effect once the spools
-// are removed; a variable so tests can observe the cleanup instead.
+// afterCleanup ends the process as sig would have (reraise, per OS) once
+// the spools are removed; a variable so tests can observe the cleanup
+// instead.
 var afterCleanup = reraise
 
-// CleanupOnSignal removes every live spool when SIGINT or SIGTERM arrives,
-// then lets the signal take its default effect. Go does not run deferred
-// calls when a signal ends the process, so without it an interrupted send
-// would leave a copy of the message in the temporary directory. The
-// returned stop restores the default handling; call it once no spool
-// exists any more.
+// CleanupOnSignal removes every live spool when SIGINT or SIGTERM (on
+// Windows: Ctrl+C, Ctrl+Break, console close) arrives, then ends the
+// process as the signal would have. Go does not run deferred calls when a
+// signal ends the process, so without it an interrupted send would leave a
+// copy of the message in the temporary directory. The returned stop
+// restores the default handling; call it once no spool exists any more.
 func CleanupOnSignal() (stop func()) {
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt, syscall.SIGTERM)
+	return watch(ch, func() { signal.Stop(ch) })
+}
+
+// watch is CleanupOnSignal's handler, separate from the OS signal source so
+// it can be tested on every platform. release stops the signal delivery;
+// it may run twice.
+func watch(ch <-chan os.Signal, release func()) (stop func()) {
 	done := make(chan struct{})
 	go func() {
 		select {
 		case sig := <-ch:
 			removeLive()
-			signal.Stop(ch)
+			release()
 			afterCleanup(sig)
 		case <-done:
 		}
@@ -251,20 +259,8 @@ func CleanupOnSignal() (stop func()) {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
-			signal.Stop(ch)
+			release()
 			close(done)
 		})
 	}
-}
-
-// reraise restores the default handling of sig and delivers it again, so
-// the process ends as it would have without CleanupOnSignal. Where a
-// process cannot signal itself (Windows), it exits with the conventional
-// status 130.
-func reraise(sig os.Signal) {
-	signal.Reset(os.Interrupt, syscall.SIGTERM)
-	if p, err := os.FindProcess(os.Getpid()); err == nil && p.Signal(sig) == nil {
-		time.Sleep(time.Second) // delivery is asynchronous; the default action ends the process
-	}
-	os.Exit(130)
 }

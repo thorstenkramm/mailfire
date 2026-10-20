@@ -43,6 +43,58 @@ func TestFileLifecycle(t *testing.T) {
 	}
 }
 
+// The signal handler itself, fed through a channel so it runs on every OS
+// (Windows cannot signal its own process; spool_unix_test.go covers the
+// real SIGTERM path).
+func TestWatchRemovesLiveSpoolsOnSignal(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+	t.Setenv("TMP", os.Getenv("TMPDIR"))
+	t.Setenv("TEMP", os.Getenv("TMPDIR"))
+	got := make(chan os.Signal, 1)
+	afterCleanup = func(sig os.Signal) { got <- sig }
+	t.Cleanup(func() { afterCleanup = reraise })
+
+	s, err := Compose(func(w io.Writer) error { _, err := io.WriteString(w, "message"); return err })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := make(chan os.Signal, 1)
+	released := make(chan struct{}, 2)
+	stop := watch(ch, func() { released <- struct{}{} })
+	defer stop()
+	ch <- os.Interrupt
+	select {
+	case sig := <-got:
+		if sig != os.Interrupt {
+			t.Errorf("signal = %v", sig)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not run")
+	}
+	if len(released) == 0 {
+		t.Error("signal delivery was not released before ending the process")
+	}
+	if _, err := os.Stat(s.Path()); !os.IsNotExist(err) {
+		t.Fatalf("spool survived the signal: %v", err)
+	}
+}
+
+// After stop, a signal no longer triggers the cleanup: the spool of the
+// next send must not be removed by a stale handler.
+func TestWatchStopDisarms(t *testing.T) {
+	called := make(chan os.Signal, 1)
+	afterCleanup = func(sig os.Signal) { called <- sig }
+	t.Cleanup(func() { afterCleanup = reraise })
+	ch := make(chan os.Signal, 1)
+	watch(ch, func() {})()
+	ch <- os.Interrupt
+	select {
+	case <-called:
+		t.Fatal("cleanup ran after stop")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestRemoveStaleKeepsRecentAndForeignFiles(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
